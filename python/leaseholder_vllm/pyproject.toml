@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [project]
 name = "leaseholder-vllm"
 version = "0.0.1"
@@ -11,10 +15,6 @@ dependencies = []
 [project.optional-dependencies]
 # The vLLM dependencies the offload manager imports when it is loaded from source.
 test = ["pytest>=8", "msgspec", "numpy", "typing-extensions>=4.12"]
-
-[build-system]
-requires = ["hatchling>=1.26"]
-build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

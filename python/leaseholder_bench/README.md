@@ -153,8 +153,8 @@ own output. E1 and E3 need that reuse. Options considered:
   setting changes it. The live-reply mode also assumes linear traversal, which `agentic_replay`'s
   mid-trace starts break. Using it would mean forking AIPerf's Weka reconstruction (about 3,600
   lines).
-- **Our own thin driver.** It reads the same scaled trace files and keeps their structure.
-  About 280 lines.
+- **Our own thin driver.** It reads the same scaled trace files and keeps their structure,
+  in one module of under 400 lines.
 
 **Decision: our own driver, `lh-bench replay`.** AIPerf stays the tool for steady-state
 background load (`agentic_replay`, E2). The driver serves E1 and E3, where decode-written KV
@@ -171,8 +171,9 @@ How it works:
 - **History.** Each request continues the chain of its agent whose last prompt shares the
   longest hash prefix with it, or starts a new one, as AIPerf does for interleaved side chains.
   If the request extends that prompt, the live reply stands for the first `ceil(out / block_size)`
-  new blocks and the rest become one user message. If it keeps only part of it (a compaction or
-  an edit), the messages inside the shared prefix stay and the rest is resent.
+  new blocks and the rest become one user message; a reply longer than the extension counts
+  against the next request's new blocks. If it keeps only part of it (a compaction or an edit),
+  the messages inside the shared prefix stay and the rest is resent.
 - **Decode length.** Each request asks for the trace's `out` tokens with `ignore_eos`, so
   contexts grow as recorded (`--no-ignore-eos` to let the model stop).
 - **Timing.** Think times are waited out, capped by `--think-cap`. Subagents run concurrently
@@ -182,10 +183,11 @@ How it works:
   directory in seeded random order. No new request starts after `--duration`, and in-flight
   requests are cancelled after `--grace`.
 
-Output: one JSON line per request with `session_id`, `trace_id`, `agent_id` (null for the main
-agent), `chain`, `turn`, `class`, `status`, `error`, `trace_in`, `trace_out`, `messages`,
-`prompt_tokens`, `cached_tokens` (`usage.prompt_tokens_details.cached_tokens`),
-`completion_tokens`, `ttft_ms` and `latency_ms`. A summary prints at the end.
+Output: one JSON line per request with `start` (wall-clock send time), `session_id`, `trace_id`,
+`agent_id` (null for the main agent), `chain`, `turn`, `class`, `status`, `error`, `trace_in`,
+`trace_out`, `messages`, `prompt_tokens`, `cached_tokens`
+(`usage.prompt_tokens_details.cached_tokens`), `completion_tokens`, `ttft_ms` and `latency_ms`.
+A summary prints at the end, and the command exits 1 if no request succeeded.
 
 Not yet: mid-trace starts (sessions start at turn 0, so a run should span several session
 lengths), and parallel replay of side chains within one agent (they run in recorded order).
@@ -204,7 +206,7 @@ vLLM's `prefix_cache_hits` and `external_prefix_cache_hits` counters, read aroun
 - the LLM's first sentence, counted once it reaches 20 characters as in LiveKit's tokenizer;
 - TTS first audio for that sentence, sent while the reply is still streaming.
 
-Both take `--background prefill:8192x1` or `decode:1024x8` to measure under agent load. They write `run.json`, the samples and `summary.json` to `--out`.
+Both take `--background prefill:8192x1` or `decode:1024x8` to measure under agent load. They write `run.json`, the samples and `summary.json` to `--out`; each summary cell has the count, the mean and p10, p50, p90, p95 (where the SLOs are set) and p99. `tiers` exits 3 if any sample was invalid.
 
 ```bash
 lh-bench tiers --url http://127.0.0.1:18000 --reps 5 --out runs/e0-idle
@@ -239,10 +241,11 @@ When evicted blocks were idle for less time than blocks typically wait between r
 ## Mock server
 
 `lh-bench mock-server --port P --log FILE` binds 127.0.0.1 only and streams chat completions.
-Each request appends one JSON line to the log: every header, every body field except
-`messages`, a role/size digest of the messages, `cached_tokens` (the longest prefix shared with
-one of the session's recent prompts, also returned in `usage`), and `echoed_replies` (assistant
-messages that repeat a reply it streamed to the same session).
+Each request appends one JSON line to the log: arrival and end times, every header, every body
+field except `messages`, a role/size digest of the messages, `cached_tokens` (the longest prefix
+shared with one of the session's recent prompts, also returned in `usage`), and `echoed_replies`
+(assistant messages that repeat a reply it streamed to the same session). The replay tests use
+the same recorder in process.
 
 ## Quickstart (cyan)
 
@@ -261,7 +264,7 @@ lh-bench scale-traces cc-traces-weka-062126/traces.jsonl weka-x64 --factor 64
 # A quick-check subset; sub16.ids lists 16 short traces, one id per line (8 with subagents)
 lh-bench scale-traces cc-traces-weka-062126/traces.jsonl weka-x32-sub16 --factor 32 --ids sub16.ids
 
-# Mock on loopback (keep clear of the deployed ports 18000, 18100, 18880, 15557-15558, 17880-17882)
+# Mock on loopback (keep clear of cyan's deployed ports 18000, 18080, 18100, 18880, 15558 and 17880-17882)
 mkdir -p ~/leaseholder/runs/w0-e2e && cd ~/leaseholder/runs/w0-e2e
 setsid nohup lh-bench mock-server --port 19180 --log $PWD/mock-aiperf.jsonl < /dev/null > mock.out 2>&1 &
 echo $! > mock.pid
@@ -294,12 +297,15 @@ Results on 2026-10-22, against the mock:
 
 ## Tests
 
+The tests are offline and take a few seconds. CI runs them with `make test-python`:
+
 ```bash
-pytest python/leaseholder_bench/tests      # offline, about 2 s
+uv run --extra test pytest      # in python/leaseholder_bench
 ```
 
 They cover the scaling math and schema, the loader's prefix reproduction (both loaders, through
 AIPerf's own reconstruction with a tokenizer-free prompt generator), the plugin's headers and
-body as AIPerf's transport sends them, the class-to-priority mapping, the YAML template, and
-the driver against an in-process server: live replies, compaction cuts, side chains, subagent
-joins, think-time caps and failures.
+body as AIPerf's transport sends them, the wire names and class-to-priority mapping against
+`lh-proto`, the YAML template, the probes against in-process fake servers, and the driver against
+an in-process server: live replies, compaction cuts, side chains, subagent joins, think-time caps
+and failures.

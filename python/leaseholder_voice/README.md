@@ -73,7 +73,7 @@ The `phastform-*.sock` files are the tunnel's Unix-socket forwards (`deploy/cyan
 Unit tests need no network. CI runs them with `make test-python`:
 
 ```bash
-uv run --extra test pytest -m "not integration"
+uv run --extra test pytest -m "not integration"      # in python/leaseholder_voice
 ```
 
 The integration test (the W0 barge-in and header findings) runs on cyan. It needs Linux with unprivileged user namespaces,
@@ -131,8 +131,8 @@ nsenter --target=<holder pid> --user --net --preserve-credentials -- <command>
   - `X-LiveKit-Room-ID` (the room SID), `X-LiveKit-Job-ID` and `X-LiveKit-Agent-ID`;
   - a new `X-LiveKit-Session-ID: inference_...` on every request. Despite its name, that
     one is a request id, not the conversation.
-- `api_key` goes out as `Authorization: Bearer <key>`. For the worker, pass its
-  control-plane key.
+- `api_key` goes out as `Authorization: Bearer <key>`. The worker sends the factory's
+  placeholder key: the gateway's voice socket names its tenant, so it needs none.
 - All three plugins accept `client=`. The factory passes an `openai.AsyncClient` whose
   `httpx2` transport is `AsyncHTTPTransport(uds=...)`.
 - Request timeouts: the LLM plugin sets each request's timeout from the session's

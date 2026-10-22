@@ -31,11 +31,12 @@ The frozen box ships the stock `OffloadingConnector` with LRU. The policy is swi
 
 ## Tests
 
-The offload manager and its policies are plain Python, so the tests run without a GPU, torch or an installed vLLM. They load vLLM's real `CPUOffloadingManager` from a v0.32.0 source checkout:
+The offload manager and its policies are plain Python, so the tests run without a GPU, torch or an installed vLLM. They load vLLM's real `CPUOffloadingManager` from a v0.32.0 source checkout. CI runs them with `make test-vllm`, which makes a sparse checkout in `~/.cache/leaseholder/vllm-v0.32.0` on first use; `VLLM_SRC` points the tests at another checkout:
 
 ```sh
-git clone --depth 1 --branch v0.32.0 https://github.com/vllm-project/vllm ~/src/vllm-v0.32.0
-VLLM_SRC=~/src/vllm-v0.32.0 uv run --extra test pytest
+VLLM_SRC=~/src/vllm-v0.32.0 uv run --extra test pytest      # in python/leaseholder_vllm
 ```
 
 Without `VLLM_SRC` the tests use the installed vLLM (the engine environment on a GPU node), and they skip when neither is available.
+
+The live check runs on the GPU node against the running engine. `tests/live/run.sh` links the `engine-check.conf` drop-in into `lh-engine` (the frozen configuration with `LeaseConnector` and a recording `LeasePolicy`), restarts the engine, runs `tests/live/test_live_engine.py`, and restores the frozen configuration, also on failure. It checks that the hint reaches both plugins, that `X-Session-ID` reaches the GPU-tier KV events and the hint, and that a CPU restore shows up in the hit receipt.

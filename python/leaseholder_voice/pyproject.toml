@@ -1,14 +1,14 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "leaseholder-voice"
 version = "0.1.0"
-description = "LiveKit Agents voice components for the Leaseholder control plane"
+description = "Leaseholder's realtime voice plane on LiveKit Agents 1.8.8: the voice agent, measurement callers and plugin factory"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "livekit-agents[openai,silero,turn-detector]==1.8.8",
     "livekit==1.1.20",  # the rtc SDK livekit-agents 1.8.8 pins
@@ -28,9 +28,6 @@ test = [
 [project.scripts]
 lh-voice = "leaseholder_voice.cli:main"
 lh-voice-worker = "leaseholder_voice.worker:main"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/leaseholder_voice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
