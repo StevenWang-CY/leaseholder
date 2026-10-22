@@ -227,6 +227,8 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
   - An explicit small `num_idle_processes`, because production mode defaults to the CPU count.
   - An LLM request timeout of 30 s, because `llm_conn_options` defaults to 10 s and a cold prefill can exceed it.
   - Each call's room is deleted when the caller hangs up, so finished calls do not hold a job.
+  - Interruptions by VAD, which production mode picks anyway: adaptive detection needs LiveKit Inference, and the namespace has no route out.
+  - No AEC warm-up, because the callers play files: the default 3 s warm-up would only discard a barge-in on each call's first reply.
 - **Lifecycle** (*planned*, W3).
   - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended` and `interrupted` to the control plane, which already accepts and deduplicates them (`POST /v1/events`).
   - Speech onset triggers prefetch and headroom.

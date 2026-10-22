@@ -16,7 +16,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 | 16–31 | Load generators: AIPerf on 16–23, `lh-bench` on 16–31, callers on 24–31 |
 | 32–47 | The voice plane: LiveKit and the worker |
 
-The `lh-gateway` and `lh-voice-worker` units set their own affinity and load generators run under `taskset`; `lh-livekit` sets none.
+The `lh-gateway`, `lh-livekit` and `lh-voice-worker` units set their own affinity, and load generators run under `taskset`.
 
 ## Deploy
 
@@ -32,7 +32,7 @@ deploy/deploy.sh cyan.cis.upenn.edu
 1. Enable lingering: `loginctl enable-linger $USER`.
 2. Run its bootstrap:
    - Phastform: `deploy/phastform/bootstrap.sh` builds `~/leaseholder/venvs/{engine,tts}` from the lock files, plus the Kokoro checkout, the FlashInfer JIT workspace and the curand header links.
-   - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key. Write the tunnel's SSH target to `~/.config/leaseholder/tunnel-phastform.env` as `LH_TUNNEL_TARGET=<user>@<gpu node>`.
+   - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, builds `~/leaseholder/venvs/{voice,bench}` from the lock files with uv (set `UV` when uv is neither in `~/.local/bin` nor on `PATH`), checks that the worker's models load offline, and generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key. Stop `lh-voice-worker` before re-running it, because the sync may change the voice venv. Write the tunnel's SSH target to `~/.config/leaseholder/tunnel-phastform.env` as `LH_TUNNEL_TARGET=<user>@<gpu node>`.
 3. Authorize the tunnel key on each GPU node: `deploy/authorize-tunnel.sh cyan.cis.upenn.edu phastform.cis.upenn.edu`. The entry may forward only the listed loopback ports, with no shell. Re-running the script replaces the entry.
 4. On cyan, install the gateway:
    - Build it on a Linux host (`cargo build --release -p lh-gateway`) and copy `target/release/lh-gateway` to `~/leaseholder/bin/`.
