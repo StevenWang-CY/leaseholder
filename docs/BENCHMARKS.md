@@ -56,6 +56,37 @@ What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) i
 
 **Live check on the frozen box** (`python/leaseholder_vllm/tests/live`). A 7,921-token prompt was written through to the CPU tier. After the GPU prefix cache was reset, the same prompt was restored with 7,920 tokens from the CPU tier, as reported by both the hit receipt and `usage.prompt_tokens_details.cached_tokens`.
 
+## Agent replay on the frozen box: a first retention-headroom signal
+
+This was W0 checklist item 5. The setup: AIPerf `agentic_replay` of the 32×-scaled Claude Code corpus, 16 session trees, think times capped at 120 s, `ignore_eos`, 10 minutes, against the frozen box through the tunnel. `lh-bench kv-metrics` compared vLLM's sampled KV block histograms over the run.
+
+**Load.** 688 requests, 0 errors.
+
+| | p50 | p90 | p99 |
+|---|---|---|---|
+| TTFT | 135 ms | 815 ms | 8,501 ms |
+| Inter-token latency | 15.6 ms | 40.9 ms | 59.1 ms |
+
+**Where prompt tokens came from.** 93.4% were served from cache, and only 6.6% were computed, mostly the cold first turns of new session plays.
+
+| Source | Share of prompt tokens |
+|---|---|
+| GPU prefix cache | about 57% |
+| Restored from the CPU tier | about 37% |
+| Computed | 6.6% |
+
+**KV block lifecycle.**
+
+| Histogram | p50 | p90 |
+|---|---|---|
+| Reuse gap | 2.54 s | 6.33 s |
+| Idle before eviction | 6.22 s | 27.3 s |
+
+**Reading.**
+- Half of the evicted blocks (50.4%) had been idle no longer than the 90th-percentile reuse gap, so LRU evicts sessions that are coming back.
+- With the 4× write-through CPU tier, those misses cost a restore, not a recompute. The headroom on this configuration is GPU placement and prefetch timing, not CPU-tier retention.
+- The reuse-gap histogram counts only blocks that survived until reuse, so it is biased short. This is a signal, and the simulator's OPT bound is the measurement.
+
 ## Load generation
 
 - AIPerf 0.13.0 `agentic_replay` over the SemiAnalysis Claude Code traces: 99.4% of turns arrive within 50 ms of their recorded delay.

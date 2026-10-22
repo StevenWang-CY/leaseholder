@@ -184,6 +184,29 @@ agent), `chain`, `turn`, `class`, `status`, `error`, `trace_in`, `trace_out`, `m
 Not yet: mid-trace starts (sessions start at turn 0, so a run should span several session
 lengths), and parallel replay of side chains within one agent (they run in recorded order).
 
+## KV block lifecycle (`lh-bench kv-metrics`)
+
+Snapshot an engine's `/metrics` around a run, then compare vLLM's sampled KV block histograms over it. The engine needs `--kv-cache-metrics`. The histograms are `vllm:kv_block_reuse_gap_seconds`, `vllm:kv_block_idle_before_evict_seconds` and `vllm:kv_block_lifetime_seconds`.
+
+```bash
+lh-bench kv-metrics snapshot http://127.0.0.1:18000/metrics before.prom
+# ... run the load ...
+lh-bench kv-metrics snapshot http://127.0.0.1:18000/metrics after.prom
+lh-bench kv-metrics compare before.prom after.prom
+```
+
+On the frozen box, 10 minutes of the replay above with 16 sessions (2026-10-22):
+
+```text
+vllm:kv_block_reuse_gap_seconds: n=1763 p10=0.495s p50=2.54s p90=6.33s
+vllm:kv_block_idle_before_evict_seconds: n=4930 p10=1.32s p50=6.22s p90=27.3s
+vllm:kv_block_lifetime_seconds: n=4930 p10=1.52s p50=7.91s p90=46.3s
+evicted blocks idle no longer than the reuse-gap p50 (2.54s): 23.8%
+evicted blocks idle no longer than the reuse-gap p90 (6.33s): 50.4%
+```
+
+When evicted blocks were idle for less time than blocks typically wait between reuses, LRU is evicting KV that would have been reused. Reuse gaps are recorded only for blocks that survived until reuse, so the comparison is a signal, not a bound.
+
 ## Mock server
 
 `lh-bench mock-server --port P --log FILE` binds 127.0.0.1 only and streams chat completions.
