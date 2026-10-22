@@ -42,6 +42,7 @@ Unknown keys are errors, so a misspelled setting fails at start instead of silen
 | Key | Default | Meaning |
 |---|---|---|
 | `upstream` | required | The engine, `http://host:port` |
+| `upstream_idle_timeout_s` | 4 | How long an idle upstream connection is kept for reuse. Keep it below the engine's keep-alive (`VLLM_HTTP_TIMEOUT_KEEP_ALIVE`, 5 s by default), or a request can go out on a connection the engine is closing |
 | `max_body_bytes` | 33554432 (32 MiB) | Larger request bodies get 413 |
 | `stream_buffer_frames` | 64 | Frames buffered between the upstream and a client |
 | `stall_timeout_s` | 30 | How long that buffer may stay full before the stream is aborted |
@@ -100,7 +101,7 @@ Each request writes one log line at its end (target `lh_gateway::request`, level
 
 ## Design notes
 
-- **Upstream client: hyper-util's pooled client rather than reqwest.** The request is already an `http::Request` with a sanitized `HeaderMap`, so it goes upstream without conversion, and the response body is hyper's `Incoming`, read frame by frame. reqwest wraps the same client and would add a URL parse, header conversions and redirect handling per request, none of which a fixed loopback upstream needs. Idle upstream connections close after 4 s, before vLLM's 5 s keep-alive timeout closes them under a request.
+- **Upstream client: hyper-util's pooled client rather than reqwest.** The request is already an `http::Request` with a sanitized `HeaderMap`, so it goes upstream without conversion, and the response body is hyper's `Incoming`, read frame by frame. reqwest wraps the same client and would add a URL parse, header conversions and redirect handling per request, none of which a fixed loopback upstream needs. Idle upstream connections close after `upstream_idle_timeout_s`, before the engine's keep-alive closes them under a request. With vLLM's default of 5 s, a voice call, whose turns are often more than 4 s apart, opens a new upstream connection for most turns; on cyan the engine keeps connections for 60 s and the gateway for 55 s.
 - **Request ids** are a random 64-bit prefix chosen at start and a counter. They need to be unique, not unpredictable (a client cannot set them), and they cost no system call. Minted session ids use 128 random bits.
 - **The overhead metric starts when the request body is complete and ends at the first poll of the upstream request body,** which hyper does on a checked-out connection as it writes the request, so connection checkout is included. The body's arrival is timed separately (`lh_gateway_request_body_seconds`): a client that sends its body some time after its headers would otherwise have its own delay counted as the gateway's.
 

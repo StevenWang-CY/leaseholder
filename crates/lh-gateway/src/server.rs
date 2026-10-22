@@ -96,7 +96,7 @@ impl Server {
         }
         let shared = Shared {
             tenants,
-            upstream: Upstream::new(config.upstream),
+            upstream: Upstream::new(config.upstream, config.upstream_idle_timeout),
             metrics: Arc::new(Metrics::new()),
             events: Events::new(config.event_dedup_capacity, config.event_dedup_ttl, sink),
             max_body_bytes: config.max_body_bytes,

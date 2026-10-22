@@ -20,6 +20,9 @@ Environment=FLASHINFER_WORKSPACE_BASE=%h/leaseholder/cache/flashinfer
 Environment=HF_HUB_OFFLINE=1
 # Dev mode exposes /reset_prefix_cache, which experiments use between load levels. The server binds loopback only.
 Environment=VLLM_SERVER_DEV_MODE=1
+# Keep idle HTTP connections for 60 s (vLLM's default is 5 s), so the gateway's pooled connections survive the
+# seconds between voice turns instead of being reopened for most of them.
+Environment=VLLM_HTTP_TIMEOUT_KEEP_ALIVE=60
 ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
 ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/engine.yaml
 ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8000/health 1200

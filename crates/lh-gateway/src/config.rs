@@ -16,6 +16,9 @@ use serde::Deserialize;
 pub struct Config {
     /// The engine's address (`host:port`), spoken to over plain HTTP/1.1.
     pub upstream: Authority,
+    /// How long an idle upstream connection is kept for reuse. It must be shorter than the engine's own
+    /// keep-alive, or a request can be sent on a connection the engine is closing.
+    pub upstream_idle_timeout: Duration,
     pub listeners: Vec<Listen>,
     pub tenants: Vec<Tenant>,
     /// Largest accepted request body; larger requests get 413.
@@ -105,6 +108,7 @@ impl std::error::Error for ConfigError {}
 #[serde(default, deny_unknown_fields)]
 struct RawConfig {
     upstream: String,
+    upstream_idle_timeout_s: f64,
     listen: Vec<RawListen>,
     tenants: BTreeMap<String, RawTenant>,
     max_body_bytes: usize,
@@ -122,6 +126,8 @@ impl Default for RawConfig {
     fn default() -> Self {
         Self {
             upstream: String::new(),
+            // vLLM closes idle connections after VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s by default.
+            upstream_idle_timeout_s: 4.0,
             listen: Vec::new(),
             tenants: BTreeMap::new(),
             max_body_bytes: 32 << 20,
@@ -252,6 +258,10 @@ impl RawConfig {
         }
         Ok(Config {
             upstream,
+            upstream_idle_timeout: seconds(
+                "upstream_idle_timeout_s",
+                self.upstream_idle_timeout_s,
+            )?,
             listeners,
             tenants,
             max_body_bytes: self.max_body_bytes,
@@ -356,6 +366,7 @@ mod tests {
     fn defaults_follow_the_spec() {
         let config = config("", &format!("[tenants.agents]\nkeys_sha256 = [\"{KEY}\"]")).unwrap();
         assert_eq!(config.upstream.as_str(), "127.0.0.1:18000");
+        assert_eq!(config.upstream_idle_timeout, Duration::from_secs(4));
         assert_eq!(
             (config.max_body_bytes, config.stream_buffer_frames),
             (32 << 20, 64)

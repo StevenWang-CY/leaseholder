@@ -40,10 +40,6 @@ use crate::sanitize::{
 use crate::server::App;
 use crate::usage::Scanner;
 
-/// Idle upstream connections close after this. vLLM closes them after `VLLM_HTTP_TIMEOUT_KEEP_ALIVE` (5 s by
-/// default), and a request sent on a connection the server is closing fails, so the gateway lets go first.
-const UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(4);
-
 /// The pooled HTTP/1.1 client to the engine.
 #[derive(Debug)]
 pub(crate) struct Upstream {
@@ -52,12 +48,14 @@ pub(crate) struct Upstream {
 }
 
 impl Upstream {
-    pub fn new(authority: Authority) -> Self {
+    /// A client that keeps idle connections for `idle_timeout`. The engine closes idle connections after its
+    /// keep-alive, and a request sent on a connection it is closing fails, so the gateway must let go first.
+    pub fn new(authority: Authority, idle_timeout: Duration) -> Self {
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
         let client = Client::builder(TokioExecutor::new())
             .pool_timer(TokioTimer::new())
-            .pool_idle_timeout(UPSTREAM_IDLE_TIMEOUT)
+            .pool_idle_timeout(idle_timeout)
             .build(connector);
         Self { client, authority }
     }

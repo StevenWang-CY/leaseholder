@@ -5,6 +5,9 @@
 
 # vLLM on Phastform, through lh-tunnel-phastform.
 upstream = "http://127.0.0.1:18000"
+# The engine keeps idle connections for 60 s (VLLM_HTTP_TIMEOUT_KEEP_ALIVE in lh-engine.service), so voice turns
+# seconds apart reuse a warm connection; let go of one 5 s before the engine would.
+upstream_idle_timeout_s = 55
 log_format = "json"
 
 # The host network. Other users of cyan can reach loopback, so requests here need a key.
