@@ -14,6 +14,11 @@
 //!   Chunks are 1 ms apart, so they are not coalesced.
 //! - CPU: busy time of the proxy's runtime workers per request (per stream for streaming rows), which includes
 //!   the system calls the proxy makes.
+//!
+//! A second table prices each admission policy: background requests, which every policy holds, through one
+//! gateway per policy with limits the runs never reach, so that what a policy adds is its bookkeeping and never
+//! a wait. "Added" there is over a gateway without a policy, which runs the same requests just before; each
+//! gateway's `lh_gateway_overhead_seconds` follows.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -42,6 +47,26 @@ const KEY: &str = "overhead-bench-key";
 const CHUNKS: usize = 8;
 const CHUNK_GAP: Duration = Duration::from_millis(1);
 const WORKERS: usize = 4;
+/// The class of the main table's requests, which a trusted tenant chooses with `X-LH-Class`.
+const INTERACTIVE: &str = "interactive";
+/// The class of the policy table's requests: every policy holds background requests.
+const BACKGROUND: &str = "background";
+/// Each admission policy, with limits no run reaches.
+const POLICIES: [(&str, &str); 4] = [
+    (
+        "static-cap",
+        "policy = \"static-cap\"\nbackground_max_in_flight = 4096",
+    ),
+    (
+        "token-reservation",
+        "policy = \"token-reservation\"\npool_tokens = 1000000000\nreserved_tokens = 36400",
+    ),
+    (
+        "flow-control",
+        "policy = \"flow-control\"\nceilings = { realtime = 4096, interactive = 4096, background = 4096 }",
+    ),
+    ("preempt-resubmit", "policy = \"preempt-resubmit\""),
+];
 const RESPONSE: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1792650000,"model":"qwen",
 "choices":[{"index":0,"message":{"role":"assistant","content":"The table for four is booked for seven tonight. We will hold it for fifteen minutes."},"finish_reason":"stop"}],
 "usage":{"prompt_tokens":512,"completion_tokens":21,"total_tokens":533,"prompt_tokens_details":{"cached_tokens":448}}}"#;
@@ -71,6 +96,11 @@ impl Target {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_writer(std::io::sink)
+        .init();
     let (engine_rt, bare_rt, gateway_rt, client_rt) = (runtime(), runtime(), runtime(), runtime());
     let engine = engine_rt.block_on(start_engine());
     let direct = Target {
@@ -81,11 +111,21 @@ fn main() {
         addr: bare_rt.block_on(start_bare_proxy(engine)),
         runtime: Some(bare_rt.handle().clone()),
     };
-    let gateway = Target {
-        addr: gateway_rt.block_on(start_gateway(engine)),
+    let gateway = |admission: &str| Target {
+        addr: gateway_rt.block_on(start_gateway(engine, admission)),
         runtime: Some(gateway_rt.handle().clone()),
     };
-    client_rt.block_on(measure([direct, bare, gateway]));
+    let targets = [direct, bare, gateway("")];
+    // A gateway without a policy for the policy table, with its own overhead histogram.
+    let policies: Vec<(&str, Target)> = [("none", "")]
+        .into_iter()
+        .chain(POLICIES)
+        .map(|(name, admission)| (name, gateway(&format!("[admission]\n{admission}"))))
+        .collect();
+    client_rt.block_on(async {
+        measure(targets).await;
+        price_policies(&policies).await;
+    });
 }
 
 fn runtime() -> Runtime {
@@ -152,12 +192,8 @@ async fn start_bare_proxy(engine: SocketAddr) -> SocketAddr {
     .await
 }
 
-async fn start_gateway(engine: SocketAddr) -> SocketAddr {
-    tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_writer(std::io::sink)
-        .init();
+/// A gateway in front of `engine`, with `admission` (an `[admission]` table, or nothing) in its configuration.
+async fn start_gateway(engine: SocketAddr, admission: &str) -> SocketAddr {
     let digest: String = Sha256::digest(KEY)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -165,7 +201,7 @@ async fn start_gateway(engine: SocketAddr) -> SocketAddr {
     let config = Config::from_toml(&format!(
         "upstream = \"http://{engine}\"\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
          [tenants.agents]\nkeys_sha256 = [\"{digest}\"]\ntrusted = true\ndefault_class = \"background\"\n\
-         max_class = \"interactive\""
+         max_class = \"interactive\"\n{admission}"
     ))
     .unwrap();
     let server = Server::bind(config, Arc::new(LogSink)).await.unwrap();
@@ -194,17 +230,30 @@ struct Samples {
 
 type HttpClient = Client<HttpConnector, Full<Bytes>>;
 
-async fn measure(targets: [Target; 3]) {
+fn http_client() -> HttpClient {
     let mut connector = HttpConnector::new();
     connector.set_nodelay(true);
-    let client: HttpClient = Client::builder(TokioExecutor::new()).build(connector);
+    Client::builder(TokioExecutor::new()).build(connector)
+}
+
+async fn measure(targets: [Target; 3]) {
+    let client = http_client();
     let small = chat_body(2 << 10, false);
     let large = chat_body(64 << 10, false);
     let streaming = chat_body(2 << 10, true);
     // Warm every path: connections, allocator, metric series.
     for target in &targets {
-        run(&client, target, &small, Kind::Json, 64, 2_000).await;
-        run(&client, target, &streaming, Kind::Stream, 16, 200).await;
+        run(&client, target, &small, Kind::Json, 64, 2_000, INTERACTIVE).await;
+        run(
+            &client,
+            target,
+            &streaming,
+            Kind::Stream,
+            16,
+            200,
+            INTERACTIVE,
+        )
+        .await;
     }
 
     println!(
@@ -238,7 +287,7 @@ async fn measure(targets: [Target; 3]) {
             let count = per_task * concurrency.min(8);
             let mut runs = Vec::with_capacity(3);
             for target in &targets {
-                runs.push(run(&client, target, body, kind, concurrency, count).await);
+                runs.push(run(&client, target, body, kind, concurrency, count, INTERACTIVE).await);
             }
             match kind {
                 Kind::Json => row(name, concurrency, &runs, |s| &s.requests, count),
@@ -261,7 +310,72 @@ async fn measure(targets: [Target; 3]) {
             }
         }
     }
-    report_gateway_metric(&client, &targets[2]).await;
+    println!();
+    report_gateway_metric(&client, &targets[2], "lh-gateway").await;
+}
+
+/// The policy table: each scenario through a gateway without a policy and through one per policy.
+async fn price_policies(gateways: &[(&str, Target)]) {
+    let client = http_client();
+    let small = chat_body(2 << 10, false);
+    let streaming = chat_body(2 << 10, true);
+    for (_, target) in gateways {
+        run(&client, target, &small, Kind::Json, 64, 2_000, BACKGROUND).await;
+        run(
+            &client,
+            target,
+            &streaming,
+            Kind::Stream,
+            16,
+            200,
+            BACKGROUND,
+        )
+        .await;
+    }
+    println!(
+        "\nAdmission policies: background requests, limits never reached. Microseconds, p50 / p99.\n"
+    );
+    println!(
+        "| Policy | Scenario | Concurrency | lh-gateway | Added over none | CPU per request |"
+    );
+    println!("|---|---|---:|---:|---:|---:|");
+    let scenarios: [(&str, &Bytes, Kind, usize, usize); 4] = [
+        ("Non-streaming, 2 KiB body", &small, Kind::Json, 1, 5_000),
+        ("Non-streaming, 2 KiB body", &small, Kind::Json, 8, 40_000),
+        ("Non-streaming, 2 KiB body", &small, Kind::Json, 64, 40_000),
+        ("Streaming, first byte", &streaming, Kind::Stream, 8, 4_000),
+    ];
+    for (scenario, body, kind, concurrency, count) in scenarios {
+        let mut none = None;
+        for (policy, target) in gateways {
+            let run = run(&client, target, body, kind, concurrency, count, BACKGROUND).await;
+            let samples = match kind {
+                Kind::Json => &run.requests,
+                Kind::Stream => &run.first_bytes,
+            };
+            let us = |q: f64| quantile(samples, q) as f64 / 1e3;
+            let base = none.get_or_insert_with(|| (us(0.5), us(0.99)));
+            let added = if *policy == "none" {
+                "".to_owned()
+            } else {
+                format!(
+                    "{:.0} / {:.0}",
+                    (us(0.5) - base.0).max(0.0),
+                    (us(0.99) - base.1).max(0.0)
+                )
+            };
+            println!(
+                "| {policy} | {scenario} | {concurrency} | {:.0} / {:.0} | {added} | {:.0} |",
+                us(0.5),
+                us(0.99),
+                run.busy.as_secs_f64() * 1e6 / count as f64,
+            );
+        }
+    }
+    println!();
+    for (policy, target) in gateways {
+        report_gateway_metric(&client, target, policy).await;
+    }
 }
 
 fn row(
@@ -297,8 +411,8 @@ fn quantile(sorted: &[u64], q: f64) -> u64 {
     sorted[((sorted.len() - 1) as f64 * q).round() as usize]
 }
 
-/// Runs `total` requests from `concurrency` tasks. Streaming tasks start staggered over one stream's length,
-/// so equal-length streams do not start in lockstep.
+/// Runs `total` requests of `class` from `concurrency` tasks. Streaming tasks start staggered over one
+/// stream's length, so equal-length streams do not start in lockstep.
 async fn run(
     client: &HttpClient,
     target: &Target,
@@ -306,6 +420,7 @@ async fn run(
     kind: Kind,
     concurrency: usize,
     total: usize,
+    class: &'static str,
 ) -> Samples {
     let busy_before = target.busy();
     let tasks: Vec<_> = (0..concurrency)
@@ -320,7 +435,7 @@ async fn run(
                 tokio::time::sleep(stagger).await;
                 let mut samples = Samples::default();
                 for _ in 0..count {
-                    one(&client, addr, body.clone(), kind, &mut samples).await;
+                    one(&client, addr, body.clone(), kind, class, &mut samples).await;
                 }
                 samples
             })
@@ -345,6 +460,7 @@ async fn one(
     addr: SocketAddr,
     body: Bytes,
     kind: Kind,
+    class: &str,
     samples: &mut Samples,
 ) {
     let request = http::Request::post(format!("http://{addr}/v1/chat/completions"))
@@ -352,7 +468,7 @@ async fn one(
         .header(AUTHORIZATION, format!("Bearer {KEY}"))
         .header(CONTENT_TYPE, "application/json")
         .header("x-session-id", "0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41")
-        .header("x-lh-class", "interactive")
+        .header("x-lh-class", class)
         .body(Full::new(body))
         .unwrap();
     let started = Instant::now();
@@ -414,8 +530,8 @@ fn chat_body(size: usize, stream: bool) -> Bytes {
     )
 }
 
-/// The gateway's own view of its overhead, from `lh_gateway_overhead_seconds`.
-async fn report_gateway_metric(client: &HttpClient, gateway: &Target) {
+/// The gateway's own view of its overhead, from `lh_gateway_overhead_seconds`; `label` names the gateway.
+async fn report_gateway_metric(client: &HttpClient, gateway: &Target, label: &str) {
     let request = http::Request::get(format!("http://{}/metrics", gateway.addr))
         .header(HOST, "gateway")
         .body(Full::default())
@@ -436,7 +552,7 @@ async fn report_gateway_metric(client: &HttpClient, gateway: &Target) {
         )) / count
     };
     println!(
-        "\nlh_gateway_overhead_seconds, all {count:.0} requests: mean {:.0} us; {:.1}% within 100 us, \
+        "lh_gateway_overhead_seconds, {label}, all {count:.0} requests: mean {:.0} us; {:.1}% within 100 us, \
          {:.1}% within 500 us, {:.2}% within 2 ms",
         sum / count * 1e6,
         within("0.0001") * 100.0,
