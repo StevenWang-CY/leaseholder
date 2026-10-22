@@ -54,7 +54,7 @@ Week 0 of a 12-week plan.
 | Control host: restricted SSH tunnels, LiveKit in a network namespace with no route out | **Running** ([deploy/cyan](deploy/cyan)) |
 | `lh-proto`: lifecycle events, headers, engine lease hint, ledger rows, with JSON Schemas | **v0** ([crates/lh-proto](crates/lh-proto)) |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0**. CPU-tested against vLLM's real offload manager; live-checked on the GPU |
-| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay | v0 |
+| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison | **v0**. Replays the 32× corpus against the frozen box (688 requests, 0 errors) |
 | `leaseholder_voice`: LiveKit plugin factory, barge-in and header integration test | **v0**. The barge-in test passes on cyan: the LLM stream closes 0.58 s after onset when interrupting on speech, 2.19 s with stock handling |
 | `lh-core`, `lh-gateway`, `lh-node`, `lh-sim` | W1 |
 
