@@ -14,7 +14,7 @@ use lh_sim::engine::Engine;
 use lh_sim::replay::{ReplayConfig, Service};
 use lh_sim::replay_log;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
-use lh_sim::scheduler::StepBudget;
+use lh_sim::scheduler::{Scheduler, StepBudget};
 use lh_sim::{metrics, mrc};
 use serde_json::json;
 
@@ -273,6 +273,13 @@ struct LogArgs {
     /// The engine policy: gpu-lru, lru-cpu or s3fifo-cpu.
     #[arg(long, default_value_t = Arm::LruCpu)]
     arm: Arm,
+    /// Send each request at its measured start and serve it with the step loop, instead of holding
+    /// it in the engine from its measured start to its measured end; reports time to first token.
+    #[arg(long)]
+    timed: bool,
+    /// The step-time model for `--timed`, as for `run`.
+    #[arg(long, requires = "timed")]
+    step_costs: Option<PathBuf>,
     /// Write one CSV row per request to this file.
     #[arg(long)]
     csv: Option<PathBuf>,
@@ -601,7 +608,14 @@ fn replay_log(args: LogArgs) -> Result<(), String> {
     let capacity = args.capacity.capacities(&cfg.geometry, 1)[0];
     let engine = Engine::new(&cfg.engine_config(args.arm, capacity), None);
     let mut corpus = Corpus::open(&args.traces, PlanOptions::default())?;
-    let out = replay_log::replay(&mut corpus, &args.log, engine, cfg.replay.block_tokens)?;
+    let block_tokens = cfg.replay.block_tokens;
+    let out = if args.timed {
+        let steps = step_cost(args.step_costs.as_deref())?;
+        let scheduler = Scheduler::new(StepBudget::FROZEN_BOX, steps, cfg.cost.clone());
+        replay_log::replay_timed(&mut corpus, &args.log, engine, block_tokens, scheduler)?
+    } else {
+        replay_log::replay(&mut corpus, &args.log, engine, block_tokens)?
+    };
     let prompt = out.prompt_tokens.max(1) as f64;
     let pct = |x: u64, of: f64| 100.0 * x as f64 / of;
     println!(
@@ -630,12 +644,29 @@ fn replay_log(args: LogArgs) -> Result<(), String> {
         100.0 * out.mean_abs_cached_share_error
     );
     println!("stalls                    {}", out.stalls);
+    if args.timed {
+        let resumed = |f: &dyn Fn(&replay_log::LoggedRequest) -> f64| {
+            let values = out.requests.iter().filter(|r| !r.warmup && r.turn > 0);
+            metrics::Percentiles::of(values.map(f).collect())
+        };
+        let measured = resumed(&|r| r.measured_ttft_ms);
+        let simulated = resumed(&|r| r.ttft_ms.unwrap_or(f64::NAN));
+        println!(
+            "resume ttft p50/p90/p99   measured {:.0}/{:.0}/{:.0} ms  simulated {:.0}/{:.0}/{:.0} ms",
+            measured.p50, measured.p90, measured.p99, simulated.p50, simulated.p90, simulated.p99
+        );
+    }
     if let Some(path) = &args.csv {
         let mut text = String::from(
-            "conversation,turn,warmup,measured_prompt_tokens,measured_cached_tokens,prompt_tokens,output_tokens,gpu_tokens,cpu_tokens,computed_tokens\n",
+            "conversation,turn,warmup,measured_prompt_tokens,measured_cached_tokens,prompt_tokens,output_tokens,gpu_tokens,cpu_tokens,computed_tokens",
         );
+        text.push_str(if args.timed {
+            ",measured_ttft_ms,ttft_ms\n"
+        } else {
+            "\n"
+        });
         for r in &out.requests {
-            writeln!(
+            write!(
                 text,
                 "{},{},{},{},{},{},{},{},{},{}",
                 r.conversation,
@@ -650,6 +681,11 @@ fn replay_log(args: LogArgs) -> Result<(), String> {
                 r.sources.computed
             )
             .expect("writing to a String");
+            if args.timed {
+                let ttft = r.ttft_ms.map_or(String::new(), |t| format!("{t:.3}"));
+                write!(text, ",{:.3},{ttft}", r.measured_ttft_ms).expect("writing to a String");
+            }
+            text.push('\n');
         }
         write(path, &text)?;
     }

@@ -1,13 +1,17 @@
-//! A measured AIPerf run (its `profile_export.jsonl`) replayed through the engine model alone.
+//! A measured AIPerf run (its `profile_export.jsonl`) replayed through the engine model.
 //!
-//! Every request enters the engine at its measured start and leaves at its measured end, with the
-//! prompt its conversation turn has in the corpus, its measured output length, and one KV namespace
-//! per session tree (AIPerf's cache-bust marker). Requests to different models share KV, as they did
-//! against one served model. A request that finds no free blocks waits as in a simulated run.
-//! Comparing the hit pattern with the engine's counters isolates the cache model from the replay
-//! scheduler and the cost model.
+//! Every request has the prompt its conversation turn has in the corpus, its measured output length,
+//! and one KV namespace per session tree (AIPerf's cache-bust marker). Requests to different models
+//! share KV, as they did against one served model.
+//! - [`replay`]: every request enters the engine at its measured start and leaves at its measured
+//!   end; one that finds no free blocks waits as in a simulated run. Comparing the hit pattern with
+//!   the engine's counters isolates the cache model from the replay scheduler and the service model.
+//! - [`replay_timed`]: every request is sent at its measured start and served by the step loop
+//!   ([`crate::scheduler`]). Comparing its time to first token with the measured one isolates the
+//!   service model from the replay's closed loop.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::BufRead;
 use std::path::Path;
 
@@ -16,7 +20,8 @@ use serde::Deserialize;
 
 use crate::corpus::Corpus;
 use crate::engine::{Engine, EngineRequest};
-use crate::prefix::{NodeId, Tokens};
+use crate::prefix::{BlockId, NodeId, Tokens};
+use crate::scheduler::{Outcome, Scheduler};
 
 /// One request of the log.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +38,10 @@ pub struct LoggedRequest {
     pub output_tokens: u64,
     /// Where the engine model found the prompt.
     pub sources: PromptSources,
+    /// Time to first token as AIPerf measured it, in ms.
+    pub measured_ttft_ms: f64,
+    /// Time to first token in a timed replay, in ms.
+    pub ttft_ms: Option<f64>,
 }
 
 /// The log replayed, with totals over its profiling requests.
@@ -74,27 +83,34 @@ struct Metric {
 }
 
 impl Record {
-    fn metric(&self, name: &str) -> u64 {
+    fn value(&self, name: &str) -> f64 {
         self.metrics
             .get(name)
             .and_then(|m| m.value.as_f64())
-            .map_or(0, |v| v.max(0.0).round() as u64)
+            .unwrap_or(0.0)
+    }
+
+    fn metric(&self, name: &str) -> u64 {
+        self.value(name).max(0.0).round() as u64
     }
 }
 
-/// Replays the requests of `log` through `engine`, whose blocks hold `block_tokens` tokens.
-pub fn replay(
-    corpus: &mut Corpus,
-    log: &Path,
-    mut engine: Engine,
-    block_tokens: u32,
-) -> Result<LogReplay, String> {
+/// The requests of a log, with their engine prompts and measured start and end times.
+struct Log {
+    requests: Vec<LoggedRequest>,
+    prompts: Vec<Vec<BlockId>>,
+    spans: Vec<(u64, u64)>,
+}
+
+/// Reads the requests of `log`, their prompts cut in `block_tokens`-token blocks.
+fn read(corpus: &mut Corpus, log: &Path, block_tokens: u32) -> Result<Log, String> {
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", log.display());
     let file = std::fs::File::open(log).map_err(|e| err(&e))?;
-    let mut out = LogReplay::default();
-    let mut prompts = Vec::new();
-    // (time, admission after finishes at the same instant, request)
-    let mut events: Vec<(u64, bool, usize)> = Vec::new();
+    let mut out = Log {
+        requests: Vec::new(),
+        prompts: Vec::new(),
+        spans: Vec::new(),
+    };
     let mut trees: HashMap<String, u64> = HashMap::new();
     let mut scratch: Vec<NodeId> = Vec::new();
     for (n, line) in std::io::BufReader::new(file).lines().enumerate() {
@@ -122,10 +138,9 @@ pub fn replay(
         let mut prompt = Vec::new();
         plan.prefixes
             .engine_blocks(turn.prompt_end, tokens, play, 0, &mut scratch, &mut prompt);
-        let i = out.requests.len();
-        events.push((m.request_start_ns, true, i));
-        events.push((m.request_end_ns.max(m.request_start_ns), false, i));
-        prompts.push(prompt);
+        out.spans
+            .push((m.request_start_ns, m.request_end_ns.max(m.request_start_ns)));
+        out.prompts.push(prompt);
         out.requests.push(LoggedRequest {
             conversation: m.conversation_id.clone(),
             turn: m.turn_index,
@@ -135,7 +150,35 @@ pub fn replay(
             prompt_tokens: tokens.prompt_tokens(turn.hash_blocks),
             output_tokens: r.metric("output_sequence_length").max(1),
             sources: PromptSources::default(),
+            measured_ttft_ms: r.value("time_to_first_token"),
+            ttft_ms: None,
         });
+    }
+    Ok(out)
+}
+
+/// Replays the requests of `log` through `engine`, whose blocks hold `block_tokens` tokens, each
+/// from its measured start to its measured end.
+pub fn replay(
+    corpus: &mut Corpus,
+    log: &Path,
+    mut engine: Engine,
+    block_tokens: u32,
+) -> Result<LogReplay, String> {
+    let Log {
+        requests,
+        mut prompts,
+        spans,
+    } = read(corpus, log, block_tokens)?;
+    let mut out = LogReplay {
+        requests,
+        ..LogReplay::default()
+    };
+    // (time, admission after finishes at the same instant, request)
+    let mut events: Vec<(u64, bool, usize)> = Vec::with_capacity(2 * spans.len());
+    for (i, &(start, end)) in spans.iter().enumerate() {
+        events.push((start, true, i));
+        events.push((end, false, i));
     }
     events.sort_unstable();
     let mut admitted = vec![false; out.requests.len()];
@@ -169,6 +212,93 @@ pub fn replay(
             }
         }
     }
+    totals(out, &engine)
+}
+
+/// Replays the requests of `log` through `engine` and `scheduler`: each is sent at its measured
+/// start, reaches the scheduler after its host time and is served from there.
+pub fn replay_timed(
+    corpus: &mut Corpus,
+    log: &Path,
+    mut engine: Engine,
+    block_tokens: u32,
+    mut scheduler: Scheduler,
+) -> Result<LogReplay, String> {
+    let Log {
+        requests,
+        mut prompts,
+        spans,
+    } = read(corpus, log, block_tokens)?;
+    let mut out = LogReplay {
+        requests,
+        ..LogReplay::default()
+    };
+    let origin = spans.iter().map(|s| s.0).min().unwrap_or(0);
+    // (time, a send (0) or an arrival at the scheduler (1), request)
+    let mut events: BinaryHeap<Reverse<(u64, u8, usize)>> = spans
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Reverse((s.0 - origin, 0, i)))
+        .collect();
+    let mut wake: Option<u64> = None;
+    let mut outcomes = Vec::new();
+    loop {
+        let event = events.peek().map(|e| e.0);
+        let now = match (event, wake) {
+            (None, None) => break,
+            (Some((t, ..)), Some(w)) => t.min(w),
+            (Some((t, ..)), None) => t,
+            (None, Some(w)) => w,
+        };
+        if let Some((t, stage, i)) = event
+            && t == now
+        {
+            events.pop();
+            let r = &out.requests[i];
+            if stage == 0 {
+                let req = EngineRequest {
+                    prompt: Vec::new(),
+                    prompt_tokens: r.prompt_tokens,
+                    output_tokens: r.output_tokens,
+                };
+                if !engine.reject_oversized(&req) {
+                    events.push(Reverse((
+                        now + scheduler.host_ns(r.prompt_tokens, now),
+                        1,
+                        i,
+                    )));
+                }
+                continue;
+            }
+            let req = EngineRequest {
+                prompt: std::mem::take(&mut prompts[i]),
+                prompt_tokens: r.prompt_tokens,
+                output_tokens: r.output_tokens,
+            };
+            scheduler.arrive(i as u64, req);
+            if scheduler.busy() {
+                continue;
+            }
+        }
+        wake = scheduler.run(now, &mut engine, &mut outcomes);
+        for outcome in outcomes.drain(..) {
+            match outcome {
+                Outcome::Admitted { id, admission, .. } => {
+                    out.requests[id as usize].sources = admission.sources;
+                }
+                Outcome::FirstToken(id) => {
+                    let sent = spans[id as usize].0 - origin;
+                    out.requests[id as usize].ttft_ms = Some((now - sent) as f64 / 1e6);
+                }
+                Outcome::Finished(_) => {}
+            }
+        }
+    }
+    totals(out, &engine)
+}
+
+/// Adds the totals over the profiling requests.
+fn totals(mut out: LogReplay, engine: &Engine) -> Result<LogReplay, String> {
     if engine.stats.oversized > 0 {
         return Err(format!(
             "{} requests need more KV blocks than the GPU pool's {}",
