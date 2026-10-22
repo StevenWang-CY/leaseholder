@@ -1,5 +1,7 @@
 # Leaseholder
 
+[![CI](https://github.com/StevenWang-CY/leaseholder/actions/workflows/ci.yml/badge.svg)](https://github.com/StevenWang-CY/leaseholder/actions/workflows/ci.yml)
+
 **One GPU, two clocks.** Leaseholder is a session-aware serving control plane for vLLM. It lets one 16 GB GPU serve realtime voice calls and a swarm of coding agents at the same time, within explicit SLOs.
 
 Agents run on tool time: seconds to minutes between turns, with long contexts they come back to. Voice runs on speech time: the caller expects an answer about a second after they stop talking. Stock engines schedule both from one queue and evict idle sessions by LRU. Leaseholder turns the lifecycle events of both workloads into **KV-cache leases**. The inputs are tool waits for agents, and speech onset, end of turn and barge-in for voice. With the leases it:
@@ -50,8 +52,8 @@ Week 0 of a 12-week plan.
 
 | Component | State |
 |---|---|
-| Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Running** ([deploy/phastform](deploy/phastform)) |
-| Control host: restricted SSH tunnels, LiveKit in a network namespace with no route out | **Running** ([deploy/cyan](deploy/cyan)) |
+| Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Deployed**; paused when idle ([deploy/phastform](deploy/phastform)) |
+| Control host: restricted SSH tunnels, LiveKit in a network namespace with no route out | **Deployed** ([deploy/cyan](deploy/cyan)) |
 | `lh-proto`: lifecycle events, headers, engine lease hint, ledger rows, with JSON Schemas | **v0** ([crates/lh-proto](crates/lh-proto)) |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0**. CPU-tested against vLLM's real offload manager; live-checked on the GPU |
 | `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison | **v0**. Replays the 32× corpus against the frozen box (688 requests, 0 errors) |
