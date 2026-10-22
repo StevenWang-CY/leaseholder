@@ -1,5 +1,5 @@
 [Unit]
-Description=Leaseholder TTS: Kokoro-82M on Kokoro-FastAPI 0.9.1 at 127.0.0.1:8880
+Description=Leaseholder TTS: Kokoro-82M on Kokoro-FastAPI 0.9.1-rc1 at 127.0.0.1:8880
 Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
 PartOf=leaseholder.target
 StartLimitIntervalSec=1800
