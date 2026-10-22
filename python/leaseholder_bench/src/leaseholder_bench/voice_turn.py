@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import orjson
 
-from leaseholder_bench.load import BackgroundLoad, LoadSpec, summarize
+from leaseholder_bench.load import BackgroundLoad, LoadSpec, stream_chunks, summarize
 from leaseholder_bench.protocol import CLASS_HEADER, ENGINE_PRIORITY, SloClass
 
 SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?:\s|$)")
@@ -139,10 +139,8 @@ class VoiceTurn:
         tts: asyncio.Task[float] | None = None
         async with self.llm.stream("POST", "/chat/completions", headers=headers, json=body) as r:
             r.raise_for_status()
-            async for line in r.aiter_lines():
-                if not line.startswith("data: {"):
-                    continue
-                choices = orjson.loads(line[6:]).get("choices") or [{}]
+            async for chunk in stream_chunks(r):
+                choices = chunk.get("choices") or [{}]
                 delta = (choices[0].get("delta") or {}).get("content") or ""
                 if delta and t_first is None:
                     t_first = time.perf_counter()

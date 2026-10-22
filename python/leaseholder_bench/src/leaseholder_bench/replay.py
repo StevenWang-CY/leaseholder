@@ -36,7 +36,7 @@ from typing import IO, Any
 import httpx
 import orjson
 
-from leaseholder_bench.load import summarize
+from leaseholder_bench.load import stream_chunks, summarize
 from leaseholder_bench.protocol import SessionTagger
 from leaseholder_bench.traces import common_prefix_len
 
@@ -299,13 +299,7 @@ class Replayer:
                 if status != 200:
                     error = (await response.aread()).decode(errors="replace")[:300]
                 else:
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        chunk = orjson.loads(data)
+                    async for chunk in stream_chunks(response):
                         if "error" in chunk:  # vLLM reports a failure inside a 200 stream
                             error = str(chunk["error"])[:300]
                             break

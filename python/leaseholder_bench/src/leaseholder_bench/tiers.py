@@ -21,7 +21,6 @@ import asyncio
 import math
 import platform
 import random
-import re
 import time
 from collections import defaultdict
 from collections.abc import Sequence
@@ -32,32 +31,28 @@ from typing import Any
 import httpx
 import orjson
 
+from leaseholder_bench.kv_metrics import samples
 from leaseholder_bench.load import BackgroundLoad, LoadSpec, random_prompt, summarize
 
 TIERS = ("recompute", "gpu", "cpu")
 GPU_HITS = "vllm:prefix_cache_hits_total"
 CPU_HITS = "vllm:external_prefix_cache_hits_total"
-_SAMPLE = re.compile(r"^(?P<name>[\w:]+)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>\S+)$")
-_LABEL = re.compile(r'(\w+)="([^"]*)"')
 FLUSH_CHUNK = 16_384
 
 
 def read_counters(exposition: str) -> dict[str, float]:
     """The two hit counters of a Prometheus exposition, summed over label sets."""
     totals = {GPU_HITS: 0.0, CPU_HITS: 0.0}
-    for line in exposition.splitlines():
-        m = _SAMPLE.match(line)
-        if m and m["name"] in totals:
-            totals[m["name"]] += float(m["value"])
+    for name, _, value in samples(exposition):
+        if name in totals:
+            totals[name] += value
     return totals
 
 
 def pool_tokens(exposition: str) -> int | None:
     """GPU KV pool size in tokens, from vLLM's ``cache_config_info`` labels."""
-    for line in exposition.splitlines():
-        m = _SAMPLE.match(line)
-        if m and m["name"] == "vllm:cache_config_info" and m["labels"]:
-            labels = dict(_LABEL.findall(m["labels"]))
+    for name, labels, _ in samples(exposition):
+        if name == "vllm:cache_config_info":
             try:
                 return int(labels["num_gpu_blocks"]) * int(labels["block_size"])
             except (KeyError, ValueError):

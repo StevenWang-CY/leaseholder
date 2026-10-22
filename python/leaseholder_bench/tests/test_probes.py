@@ -6,11 +6,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import orjson
 import pytest
 from aiohttp import web
 
-from leaseholder_bench.load import LoadSpec, summarize
+from leaseholder_bench.load import LoadSpec, stream_chunks, summarize
 from leaseholder_bench.tiers import (
     Sample,
     TiersConfig,
@@ -39,6 +40,29 @@ def test_summarize_reports_percentiles():
     single = {"n": 1, "mean": 7.0, "p10": 7.0, "p50": 7.0, "p90": 7.0, "p95": 7.0, "p99": 7.0}
     assert summarize([7.0]) == single
     assert summarize([]) == {"n": 0}
+
+
+def test_stream_chunks_reads_the_json_chunks_and_the_whole_stream():
+    drained: list[bool] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        yield b'data: {"choices": []}\n\n'
+        yield b": keep-alive\n\n"
+        yield b'data:{"usage": {"prompt_tokens": 3}}\n\n'
+        yield b"data: [DONE]\n\n"
+        yield b"\n"
+        drained.append(True)  # the body was read past [DONE], so the connection can be reused
+
+    async def main() -> list[dict]:
+        transport = httpx.MockTransport(lambda _: httpx.Response(200, content=body()))
+        async with (
+            httpx.AsyncClient(transport=transport) as client,
+            client.stream("POST", "http://engine.test/v1/chat/completions") as response,
+        ):
+            return [chunk async for chunk in stream_chunks(response)]
+
+    assert asyncio.run(main()) == [{"choices": []}, {"usage": {"prompt_tokens": 3}}]
+    assert drained == [True]
 
 
 EXPOSITION = """\
