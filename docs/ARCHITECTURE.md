@@ -135,15 +135,15 @@ There is one row per upstream request, written as Parquet and queried with DuckD
 
 ### 4.1 Crates
 
-The control plane is a Rust workspace of about 3–4k lines, excluding tests. The policy is a library behind a narrow trait, so another router can embed it.
+The control plane is a Rust workspace. The policy is a library behind a narrow trait, so another router can embed it. The state column says what exists after W1.
 
-| Crate | Responsibility |
-|---|---|
-| `lh-proto` | Wire types: lifecycle events, headers, engine lease hints, ledger rows. JSON Schemas for the Python components |
-| `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions over an injected clock, with no I/O. `trait Policy { admit, place, on_event, on_complete }` |
-| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane |
-| `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health |
-| `lh-sim` | A trace-driven two-tier KV simulator that runs `lh-core`'s cost model and policies, with a clairvoyant reference (Belady's MIN per tier) |
+| Crate | Responsibility | State |
+|---|---|---|
+| `lh-proto` | Wire types: lifecycle events, headers, engine lease hints, ledger rows. JSON Schemas for the Python components | v0 |
+| `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions over an injected clock, with no I/O. `trait Policy { admit, place, on_event, on_complete }` | v0 holds the E0 tier cost model and KV geometry; the policies arrive in W3 |
+| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane | v0, deployed on cyan: everything but the prefetch executor and the ledger sink, which come with the policies |
+| `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health | W3 |
+| `lh-sim` | A trace-driven two-tier KV simulator that runs `lh-core`'s cost model and policies, with a clairvoyant reference (Belady's MIN per tier) | v0: the stock arms, the clairvoyant reference and miss-ratio curves |
 
 ### 4.2 Request path
 
@@ -285,7 +285,7 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 | `lh-proto` | Wire format pinned by examples; schemas kept current; ledger accounting identities |
 | `lh-core` | Unit and property tests for the lease invariants; deterministic simulation with seeded event sequences and an injected clock |
 | `lh-sim` | The AIPerf port against AIPerf's own plan; engine semantics on hand-made sequences; the clairvoyant tiers and MIN against exhaustive search; Mattson stack distances against a direct LRU simulation; every arm end to end on a 16-trace subset |
-| `lh-gateway` | Integration against a mock upstream (llm-d-inference-sim or a recorded server): mid-stream disconnect, backpressure, header sanitization, admission decisions, event idempotency |
+| `lh-gateway` | Integration against an in-process mock engine: mid-stream disconnect, backpressure, header sanitization, event idempotency; admission decisions with the policies. The proxy tax in process and in place (BENCHMARKS) |
 | Ledger | The injected-cause suite: at least 95% correct attribution, with the `unknown` share reported |
 | Engine plugins | CPU tests against vLLM's real offload manager (in CI); a live check on the GPU node |
 | Voice | Hermetic LiveKit barge-in and header test in the voice-plane namespace; a nightly bot smoke test on the frozen box |
