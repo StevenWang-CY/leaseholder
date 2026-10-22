@@ -20,6 +20,7 @@ http-body = "1"
 http-body-util = "0.1"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+lh-core = { path = "crates/lh-core" }
 lh-proto = { path = "crates/lh-proto" }
 memchr = "2"
 prometheus-client = "0.25"

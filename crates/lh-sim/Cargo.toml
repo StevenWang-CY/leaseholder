@@ -1,0 +1,20 @@
+[package]
+name = "lh-sim"
+description = "Trace-driven two-tier KV cache simulator for vLLM agent replays"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+lh-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# AIPerf derives each lane's start point from SHA-256 of the seed, trace id and lane; matching its
+# lane plan exactly needs the same digest.
+sha2.workspace = true
+
+[lints]
+workspace = true
