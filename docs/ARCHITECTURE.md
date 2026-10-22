@@ -241,7 +241,7 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
 - **Arms.**
   - in v0: GPU-only LRU; LRU + CPU; S3-FIFO + CPU;
   - the clairvoyant reference, in v0: Belady's MIN in each tier, replayed on the LRU + CPU timeline. It is a reference, not a bound: MIN is optimal only for one tier's hit count over unit-size blocks, and here hits are prefixes served from two tiers;
-  - next: a fixed-TTL hold; prefetch by session history and by oracle; lease-aware CPU eviction; active-session admission.
+  - next: the other E1 arms, from TTL holds and prefetch by session history or oracle to the published policies ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)).
 - **Outputs.** Per arm: prompt-token shares by source, with recompute split by cause; time to first token overall and for resumes; PCIe bytes, evictions and stalls; the regime coordinates (KV pressure, π, ρ). Miss-ratio curves of the GPU tier (Mattson stack distances for LRU, MIN at chosen capacities) at 32× and at the original token counts show what scaling keeps (reuse structure) and what it changes (timing).
 - **Calibration.** Driven by W0's measured request times, the engine model matches the measured GPU and CPU shares closely. Its own replay runs faster than the loaded box, because the cost model is the idle box's: it overstates GPU hits and understates the latency tail ([validation](../crates/lh-sim/README.md#validation-against-w0)). The target is 10–15% on resume TTFT at 2–3 GPU operating points, which needs a contention model (W2).
 - **Code reuse.** The cost model and KV geometry are `lh-core`'s. The policies that are to run in the gateway as well (leases, prefetch timing) are to live in `lh-core` too, so the simulator and the gateway run the same code.
