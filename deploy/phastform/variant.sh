@@ -5,17 +5,19 @@
 # variant-NAME.conf; "off" removes those links. The box restarts in both cases: ~2 min with warm caches.
 set -euo pipefail
 action=${1:?on|off} name=${2:?variant name}
+[[ $action == on || $action == off ]] || { echo "variant: action must be on or off" >&2; exit 2; }
 dir=$(cd "$(dirname "$0")" && pwd)/variants/$name
 [[ -d $dir ]] || { echo "variant: no such variant: $dir" >&2; exit 2; }
 units=$HOME/.config/systemd/user
 systemctl --user stop leaseholder.target lh-engine lh-stt lh-tts
 for conf in "$dir"/*.conf; do
   link=$units/$(basename "$conf" .conf).service.d/variant-$name.conf
-  case $action in
-    on) mkdir -p "$(dirname "$link")"; ln -sf "$conf" "$link" ;;
-    off) rm -f "$link" ;;
-    *) echo "variant: action must be on or off" >&2; exit 2 ;;
-  esac
+  if [[ $action == on ]]; then
+    mkdir -p "$(dirname "$link")"
+    ln -sf "$conf" "$link"
+  else
+    rm -f "$link"
+  fi
 done
 systemctl --user daemon-reload
 systemctl --user start leaseholder.target
