@@ -208,6 +208,26 @@ fn ledger_rows_with_unattributed_tokens_are_rejected() {
 }
 
 #[test]
+fn out_of_range_counts_are_rejected_not_wrapped() {
+    // The two cached counts sum past u32::MAX: wrapped, they would look smaller than the prompt.
+    let mut bad = row();
+    bad.cached_device_tokens = u32::MAX;
+    bad.cached_host_tokens = 1;
+    assert_eq!(bad.check(), Err(LedgerError::CachedExceedsPrompt));
+    assert_eq!(bad.uncached_tokens(), 0);
+    // Spans whose tokens sum past u32::MAX never match the recomputed count.
+    let mut bad = row();
+    bad.recompute[0].tokens = u32::MAX;
+    assert_eq!(
+        bad.check(),
+        Err(LedgerError::UnattributedTokens {
+            recomputed: 4_500,
+            attributed: u64::from(u32::MAX) + 500,
+        })
+    );
+}
+
+#[test]
 fn cause_labels_match_the_wire_names() {
     for cause in [
         RecomputeCause::ColdFirstTurn,

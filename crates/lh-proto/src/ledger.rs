@@ -125,14 +125,17 @@ impl RecomputeCause {
 impl LedgerRow {
     /// Prompt tokens computed by this request: new tokens plus recomputed ones.
     pub fn uncached_tokens(&self) -> u32 {
-        self.prompt_tokens
-            .saturating_sub(self.cached_device_tokens + self.cached_host_tokens)
+        self.prompt_tokens.saturating_sub(
+            self.cached_device_tokens
+                .saturating_add(self.cached_host_tokens),
+        )
     }
 
-    /// Checks the accounting identities every writer must uphold.
+    /// Checks the accounting identities every writer must uphold. Sums are taken in `u64`, so a row with
+    /// out-of-range counts is rejected rather than wrapping past the checks.
     pub fn check(&self) -> Result<(), LedgerError> {
-        let cached = self.cached_device_tokens + self.cached_host_tokens;
-        if cached > self.prompt_tokens {
+        let cached = u64::from(self.cached_device_tokens) + u64::from(self.cached_host_tokens);
+        if cached > u64::from(self.prompt_tokens) {
             return Err(LedgerError::CachedExceedsPrompt);
         }
         if self.expected_reusable_tokens > self.prompt_tokens {
@@ -141,8 +144,12 @@ impl LedgerRow {
         if self.recomputed_tokens > self.expected_reusable_tokens {
             return Err(LedgerError::RecomputedExceedsReusable);
         }
-        let attributed: u32 = self.recompute.iter().map(|span| span.tokens).sum();
-        if attributed != self.recomputed_tokens {
+        let attributed: u64 = self
+            .recompute
+            .iter()
+            .map(|span| u64::from(span.tokens))
+            .sum();
+        if attributed != u64::from(self.recomputed_tokens) {
             return Err(LedgerError::UnattributedTokens {
                 recomputed: self.recomputed_tokens,
                 attributed,
@@ -152,12 +159,13 @@ impl LedgerRow {
     }
 }
 
+/// An accounting identity a [`LedgerRow`] breaks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LedgerError {
     CachedExceedsPrompt,
     ReusableExceedsPrompt,
     RecomputedExceedsReusable,
-    UnattributedTokens { recomputed: u32, attributed: u32 },
+    UnattributedTokens { recomputed: u32, attributed: u64 },
 }
 
 impl fmt::Display for LedgerError {
