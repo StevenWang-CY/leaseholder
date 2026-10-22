@@ -104,6 +104,7 @@ template. AIPerf substitutes `${VAR:default}` when it loads the file:
 | Variable | Default |
 |---|---|
 | `LH_BENCH_URL` | `http://127.0.0.1:8000/v1/chat/completions` |
+| `LH_BENCH_API_KEY` | empty: no `Authorization` header. Through `lh-gateway`, a tenant's key. Only a trusted tenant's `X-Session-ID` and `X-LH-Class` are honored, so a replay that keeps its sessions and classes uses the `agents` key |
 | `LH_BENCH_DATA` | `data/weka-x32` (a `scale-traces` output directory) |
 | `LH_BENCH_MODEL`, `LH_BENCH_TOKENIZER` | `Qwen/Qwen3-4B-Instruct-2507-FP8` |
 | `LH_BENCH_SESSIONS` | 16 live session trees |

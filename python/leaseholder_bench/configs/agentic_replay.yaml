@@ -20,6 +20,7 @@ benchmark:
     name: "${LH_BENCH_TOKENIZER:Qwen/Qwen3-4B-Instruct-2507-FP8}"
   endpoint:
     url: "${LH_BENCH_URL:http://127.0.0.1:8000/v1/chat/completions}"
+    apiKey: "${LH_BENCH_API_KEY:}"  # a tenant key when the URL is lh-gateway; empty sends no Authorization header
     type: leaseholder_chat
     streaming: true
     timeout: 300.0
