@@ -360,7 +360,15 @@ def _apply(
     if gateway or worker:
         systemd("daemon-reload")
     if gateway:
-        systemd("restart", GATEWAY)  # returns once the gateway answers /health
+        since = time.time()
+        try:
+            systemd("restart", GATEWAY)  # returns once the gateway answers /health
+        except E2Error as exc:
+            # A configuration the gateway refuses (a key its build does not know) is in its log.
+            logged = "\n".join(systemd.journal(GATEWAY, since).strip().splitlines()[-5:])
+            raise E2Error(
+                f"{exc}\n{GATEWAY} logged:\n{logged}\n(lh-bench e2 reset puts it back on gateway.toml)"
+            ) from None
     if worker:
         since = time.time()
         systemd("restart", WORKER)

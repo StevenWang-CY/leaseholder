@@ -343,17 +343,21 @@ class FakeHost(Host):
 
 
 class FakeSystemd(Systemd):
-    """Records systemctl calls; the worker runs with fixed endpointing and registers at once."""
+    """Records systemctl calls; the worker runs with fixed endpointing and registers at once. A unit
+    in ``failing`` does not start, and its log says why."""
 
     def __init__(self, env: dict[str, str] | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.running: set[str] = set()
+        self.failing: set[str] = set()
         self.env = env or {"LH_TURN_DETECTION": "vad", "LH_LLM_UDS": "/run/user/1/lh/gateway.sock"}
 
     def __call__(self, *args: str) -> str:
         if args[0] == "show":
             return " ".join(f"{k}={v}" for k, v in self.env.items())
         self.calls.append(args)
+        if args[0] in ("start", "restart") and args[1] in self.failing:
+            raise E2Error(f"systemctl --user {' '.join(args)}: Job for {args[1]}.service failed")
         if args[0] == "start":
             self.running.add(args[1])
         elif args[0] == "stop":
@@ -364,6 +368,8 @@ class FakeSystemd(Systemd):
         return unit in self.running
 
     def journal(self, unit: str, since: float) -> str:
+        if unit in self.failing:
+            return f"{unit}: starting\n{unit}: config: unknown field `upstream_priority`\n"
         return "registered worker"
 
 
@@ -573,6 +579,17 @@ def test_a_wrong_engine_fails_before_anything_starts(cyan: Cyan) -> None:
     run_json = record(cyan, "a4")
     assert run_json["status"] == "failed" and run_json["engine"]["server"] == "vllm"
     assert (out / "engine.json").exists()
+
+
+def test_a_gateway_that_refuses_its_configuration_says_why(cyan: Cyan) -> None:
+    cyan.systemd.failing.add("lh-gateway")
+    with pytest.raises(E2Error, match="unknown field `upstream_priority`") as failed:
+        run_stock(cyan)
+    assert "Job for lh-gateway.service failed" in str(failed.value)
+    assert "lh-bench e2 reset puts it back on gateway.toml" in str(failed.value)
+    run_json = record(cyan, "a2-stock-s4")
+    assert run_json["status"] == "failed" and "unknown field" in run_json["error"]
+    assert not (cyan.host.root / "runs" / "a2-stock-s4" / "aiperf.log").exists()
 
 
 def test_the_window_needs_fixed_endpointing(cyan: Cyan) -> None:
