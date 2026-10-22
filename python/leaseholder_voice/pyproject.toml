@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "livekit-agents[openai,silero,turn-detector]==1.8.8",
+    "livekit-agents[openai,silero]==1.8.8",
     "livekit==1.1.20",  # the rtc SDK livekit-agents 1.8.8 pins
     "livekit-api>=1.2",
     "openai>=3.19,<4",

@@ -205,8 +205,11 @@ disconnect.
 - `turn_detection` defaults to LiveKit Inference's `TurnDetector()`, and an unset
   `interruption.mode` means adaptive (LiveKit Inference) in dev mode and VAD in production
   mode. The worker runs the local `v1-mini` model (or `"vad"` with `LH_TURN_DETECTION=vad`)
-  and pins `"vad"` interruptions; the test pins `"vad"` for both. The turn-detector model
-  needs `lh-voice-worker download-files` once.
+  and pins `"vad"` interruptions; the test pins `"vad"` for both. Nothing is downloaded:
+  the `v1-mini` weights ship in the `livekit-local-inference` wheel and Silero's in its
+  plugin's, so the worker starts with `HF_HUB_OFFLINE=1` and an empty Hugging Face cache.
+  (`download-files` serves the older text turn-detector plugin, which the package does not
+  install.)
 - `record` follows the server's recording setting. The worker and the test pass
   `record=False`.
 - When the user leaves, the job stays in the room until LiveKit's departure timeout,
