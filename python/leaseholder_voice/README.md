@@ -27,8 +27,9 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 | `LH_IDLE_PROCESSES` | Pre-started job processes (default 2) |
 | `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30) |
 | `LH_TURN_DETECTION` | `model` (default) or `vad` |
+| `LH_PREEMPTIVE_GENERATION` | `true` (default) or `false` |
 
-Turn detection is the one setting experiments change. LiveKit's end-of-turn model waits up to the endpointing maximum (3 s) when it judges a line unfinished: on the synthesized callers that happened on about one turn in six, and put a 3 s mode in voice-to-voice latency unrelated to serving. Experiments therefore run with `LH_TURN_DETECTION=vad`. That variant is `deploy/cyan/variants/vad-turns`: a turn ends a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), the same for every arm.
+Experiments change two settings. LiveKit's end-of-turn model waits up to the endpointing maximum (3 s) when it judges a line unfinished: on the synthesized callers that happened on about one turn in six, and put a 3 s mode in voice-to-voice latency unrelated to serving. Experiments therefore run with `LH_TURN_DETECTION=vad`. That variant is `deploy/cyan/variants/vad-turns`: a turn ends a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), the same for every arm. LiveKit's preemptive generation, on by default, starts the reply from the final transcript before the end of the turn is confirmed; `LH_PREEMPTIVE_GENERATION=false` (the variant `deploy/cyan/variants/no-preemptive-generation`, which `lh-bench e2 run` links for an arm that asks for it) turns it off, one of E2's factors.
 
 Everything else is LiveKit's default except two settings for this deployment, whose only callers are the measurement bots in the namespace: interruptions are detected by VAD (what production mode picks anyway; adaptive detection needs LiveKit Inference), and there is no AEC warm-up, which would discard a barge-in on the first reply of each call although the callers have no echo path.
 
