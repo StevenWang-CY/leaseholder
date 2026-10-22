@@ -1,0 +1,20 @@
+[Unit]
+Description=Leaseholder gateway on cyan: 127.0.0.1:18080 and the voice-plane socket %t/lh/gateway.sock
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+After=lh-tunnel-phastform.service
+
+[Service]
+Type=exec
+# The binary is built on a Linux host and copied to bin/; the configuration holds key digests (mode 600).
+ExecStartPre=/usr/bin/mkdir -p %t/lh
+ExecStart=%h/leaseholder/bin/lh-gateway --config %h/.config/leaseholder/gateway.toml
+ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:18080/health 30
+# Cores 0-7 belong to the control plane; the voice plane has 32-47.
+CPUAffinity=0-7
+# Stopping sends SIGTERM: the gateway stops accepting and drains in-flight requests for up to drain_timeout_s
+# (30 s), well inside systemd's 90 s stop timeout.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

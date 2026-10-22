@@ -2,8 +2,8 @@
 Description=Leaseholder voice agent: LiveKit Agents worker in the voice-plane namespace on cyan
 Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
 BindsTo=lh-voicenet.service
-After=lh-voicenet.service lh-livekit.service lh-tunnel-phastform.service
-Wants=lh-livekit.service lh-tunnel-phastform.service
+After=lh-voicenet.service lh-livekit.service lh-tunnel-phastform.service lh-gateway.service
+Wants=lh-livekit.service lh-tunnel-phastform.service lh-gateway.service
 
 [Service]
 Type=exec
