@@ -7,8 +7,8 @@
 //! - [`ledger`]: one recompute-ledger row per upstream request;
 //! - [`class`] and [`session`]: the SLO class and the session id the others carry.
 //!
-//! Python components consume the JSON Schemas generated from these types (`schema/`, written by the
-//! `lh-proto-schema` binary).
+//! The JSON Schemas generated from these types (`schema/`, written by the `lh-proto-schema` binary) are
+//! the reference for the Python components; today the engine plugins' contract test reads the lease hint's.
 
 pub mod class;
 pub mod event;

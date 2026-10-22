@@ -46,7 +46,7 @@ pub enum Arm {
 }
 
 impl Arm {
-    /// Every arm, in the order a run reports them.
+    /// Every arm, in the order a run reports them by default.
     pub const ALL: [Self; 4] = [
         Self::GpuLru,
         Self::LruCpu,

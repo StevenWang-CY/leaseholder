@@ -1,4 +1,5 @@
-//! The wire format, pinned by examples. `testdata/events.jsonl` is shared with the Python components.
+//! The wire format, pinned by examples. `testdata/events.jsonl` holds one example of every event type;
+//! the Python components are to test against it once they emit events (W3).
 
 use lh_proto::{
     EngineLeaseHint, EventKind, EventSource, HintOp, LedgerError, LedgerRow, LifecycleEvent,
