@@ -24,7 +24,10 @@ Environment=VLLM_SERVER_DEV_MODE=1
 # seconds between voice turns instead of being reopened for most of them.
 Environment=VLLM_HTTP_TIMEOUT_KEEP_ALIVE=60
 ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
-ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/engine.yaml
+# Variants add engine flags in LH_ENGINE_FLAGS (deploy/phastform/variant.sh use NAME FLAG...); flags on the command
+# line beat engine.yaml.
+Environment=LH_ENGINE_FLAGS=
+ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/engine.yaml $LH_ENGINE_FLAGS
 ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8000/health 1200
 # NUMA node 1 is local to the GPU. "preferred" spills to node 0 when node 1 is short: the measured cost of a remote
 # CPU tier is under 1% of pinned bandwidth.
