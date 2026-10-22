@@ -64,9 +64,9 @@ if [[ -z $changed ]] && systemctl --user is-active -q lh-stt lh-tts lh-engine; t
   echo "variant: the box already runs $name $*"
   exit
 fi
-# Only the engine restarts when only its drop-ins change; anything else restarts the box.
+# Only the engine restarts when only its drop-ins change and the audio servers run; anything else (re)starts the box.
 restart=("${box[@]}")
-[[ $changed == lh-engine ]] && restart=(lh-engine)
+if [[ $changed == lh-engine ]] && systemctl --user is-active -q lh-stt lh-tts; then restart=(lh-engine); fi
 systemctl --user stop "${restart[@]}"
 rm -f "$units"/lh-*.service.d/variant-*.conf
 [[ $name == frozen ]] || link "$name"
