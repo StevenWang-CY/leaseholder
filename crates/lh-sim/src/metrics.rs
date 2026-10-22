@@ -26,6 +26,7 @@ pub struct Shares {
     pub recomputed: f64,
 }
 
+/// The count, mean and percentiles of a sample.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Percentiles {
     pub n: usize,
@@ -74,6 +75,7 @@ pub struct Regime {
     pub recompute_ms_at_median: f64,
 }
 
+/// Requests by the kind of conversation that sent them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct RequestMix {
     pub main: u64,

@@ -51,6 +51,7 @@ impl Default for PlanOptions {
     }
 }
 
+/// What a conversation replays: the main agent, a subagent's chain, or a flattened agent chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConvKind {
     Root,
@@ -86,6 +87,7 @@ pub struct Turn {
     pub inner: Option<u32>,
 }
 
+/// Child conversations the root spawns together (AIPerf's SPAWN branch).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Branch {
     /// AIPerf's branch id, e.g. `<trace>:spawn:<agent id>`.
@@ -102,6 +104,7 @@ pub struct Branch {
     pub join_turn: Option<u32>,
 }
 
+/// One replayed stream of requests.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Conversation {
     /// AIPerf's conversation (session) id: the trace id for the root, with a `::sa:`, `::fa:`,
@@ -135,6 +138,7 @@ pub struct ReplayPlan {
 }
 
 impl ReplayPlan {
+    /// The main agent's conversation.
     pub fn root(&self) -> &Conversation {
         &self.convs[0]
     }

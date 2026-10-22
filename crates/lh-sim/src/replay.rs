@@ -134,12 +134,14 @@ pub struct TimelineRequest {
     pub model: u8,
 }
 
+/// An admission or a finish of a [`Timeline`] request, by its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimelineEvent {
     Admit(usize),
     Finish(usize),
 }
 
+/// How the replay itself went: lanes and plays, warmup, barriers, the idle cap, the working set.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ReplayStats {
     pub lanes: usize,
@@ -159,6 +161,7 @@ pub struct ReplayStats {
     pub working_set_peak_tokens: u64,
 }
 
+/// What one replay produced.
 #[derive(Debug)]
 pub struct ReplayOutput {
     pub records: Vec<RequestRecord>,
@@ -391,6 +394,7 @@ pub struct Replay<'a> {
 }
 
 impl<'a> Replay<'a> {
+    /// A replay of `corpus` through `engine`; with `record`, the output keeps the engine's timeline.
     pub fn new(
         cfg: ReplayConfig,
         corpus: &'a mut Corpus,
@@ -431,6 +435,7 @@ impl<'a> Replay<'a> {
         }
     }
 
+    /// Runs the replay to the end of its grace period, or until it runs out of work.
     pub fn run(mut self) -> Result<ReplayOutput, String> {
         self.start_lanes()?;
         loop {

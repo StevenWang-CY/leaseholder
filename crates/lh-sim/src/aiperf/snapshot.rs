@@ -34,6 +34,7 @@ impl State {
     }
 }
 
+/// A trace at a lane's `t*`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub t_star_ms: f64,

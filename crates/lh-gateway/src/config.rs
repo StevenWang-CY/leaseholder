@@ -47,6 +47,7 @@ pub struct Listen {
     pub tenant: Option<String>,
 }
 
+/// Where a listener binds: a loopback TCP address or a Unix socket path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListenAddr {
     Tcp(SocketAddr),
@@ -66,6 +67,7 @@ pub struct Tenant {
     pub max_class: SloClass,
 }
 
+/// `log_format`: human-readable lines, or one JSON object per line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogFormat {
@@ -73,6 +75,7 @@ pub enum LogFormat {
     Json,
 }
 
+/// `log_level`: the most verbose level logged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LogLevel {
@@ -86,8 +89,11 @@ pub enum LogLevel {
 /// Why a configuration was rejected.
 #[derive(Debug)]
 pub enum ConfigError {
+    /// The file could not be read.
     Read(PathBuf, std::io::Error),
+    /// The file is not TOML of the configuration's shape (an unknown key, a wrong type).
     Parse(PathBuf, toml::de::Error),
+    /// A value the configuration's rules reject, such as a tenant no request can reach.
     Invalid(String),
 }
 
@@ -101,7 +107,15 @@ impl fmt::Display for ConfigError {
     }
 }
 
-impl std::error::Error for ConfigError {}
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read(_, e) => Some(e),
+            Self::Parse(_, e) => Some(e),
+            Self::Invalid(_) => None,
+        }
+    }
+}
 
 /// The file as written; a missing key takes its value from [`RawConfig::default`].
 #[derive(Deserialize)]

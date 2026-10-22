@@ -88,6 +88,7 @@ pub struct Admission {
     pub cpu_blocks: u32,
 }
 
+/// Counters over a whole run, warmup included.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct EngineStats {
     pub admitted: u64,

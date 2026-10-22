@@ -6,6 +6,7 @@ use std::rc::Rc;
 use crate::aiperf::{PlanOptions, ReplayPlan};
 use crate::trace::TraceSource;
 
+/// Traces in AIPerf's sampler order, each with its replay plan, built on first use.
 #[derive(Debug)]
 pub struct Corpus {
     source: TraceSource,
@@ -14,6 +15,7 @@ pub struct Corpus {
 }
 
 impl Corpus {
+    /// Opens a directory of `<trace id>.json` or a JSONL file; plans are built with `opts`.
     pub fn open(path: &Path, opts: PlanOptions) -> Result<Self, String> {
         let source = TraceSource::open(path).map_err(|e| e.to_string())?;
         if source.is_empty() {
@@ -22,6 +24,7 @@ impl Corpus {
         Ok(Self::new(source, opts))
     }
 
+    /// A corpus over an opened source, which may be empty.
     pub fn new(source: TraceSource, opts: PlanOptions) -> Self {
         let plans = vec![None; source.len()];
         Self {
@@ -39,6 +42,7 @@ impl Corpus {
         self.plans.is_empty()
     }
 
+    /// How the plans are built.
     pub fn options(&self) -> &PlanOptions {
         &self.opts
     }

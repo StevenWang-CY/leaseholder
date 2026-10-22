@@ -25,6 +25,8 @@ const TITLE_GEN_MAX_OUTPUT: u64 = 64;
 /// requests) and its index in the planner's request table.
 pub(crate) type Item = (u32, usize);
 
+/// Where a chain forked off: the parent chain and its tail request, the hash blocks they share, and
+/// when the fork's first request started.
 #[derive(Clone, Debug)]
 pub(crate) struct Fork {
     pub parent_chain: Option<usize>,
@@ -33,16 +35,19 @@ pub(crate) struct Fork {
     pub fork_time: f64,
 }
 
+/// One detected agent chain (`AgentChain`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Chain {
     pub items: Vec<Item>,
     pub fork: Option<Fork>,
+    /// The chain a seam continuation was spliced onto.
     pub spliced_into: Option<usize>,
     tail: Option<(u32, usize)>,
     tail_end: f64,
     tail_model: u8,
 }
 
+/// The chains of one request list (`ChainDetectionResult`).
 #[derive(Debug)]
 pub(crate) struct Detection {
     pub chains: Vec<Chain>,

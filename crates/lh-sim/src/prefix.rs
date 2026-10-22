@@ -47,6 +47,8 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Panics unless both sizes are positive and a hash block spans at most 16 engine blocks, the
+    /// most a [`block_id`] can address.
     pub fn new(hash_block: u32, engine_block: u32) -> Self {
         assert!(hash_block > 0 && engine_block > 0);
         assert!(
@@ -209,7 +211,9 @@ impl Hasher for IdHasher {
     }
 }
 
+/// A map keyed by block ids or other spread integers, hashed with [`IdHasher`].
 pub type IdMap<V> = HashMap<u64, V, BuildHasherDefault<IdHasher>>;
+/// A set of block ids or other spread integers, hashed with [`IdHasher`].
 pub type IdSet = HashSet<u64, BuildHasherDefault<IdHasher>>;
 
 #[cfg(test)]

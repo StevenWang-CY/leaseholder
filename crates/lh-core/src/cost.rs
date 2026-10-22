@@ -244,6 +244,7 @@ struct E0Fits {
     recompute: Option<Quadratic>,
 }
 
+/// Why an E0 summary cannot be loaded.
 #[derive(Debug)]
 pub enum CostError {
     /// The summary is not valid JSON or does not have the `lh-bench tiers` shape.

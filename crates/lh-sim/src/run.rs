@@ -46,6 +46,7 @@ pub enum Arm {
 }
 
 impl Arm {
+    /// Every arm, in the order a run reports them.
     pub const ALL: [Self; 4] = [
         Self::GpuLru,
         Self::LruCpu,
@@ -53,6 +54,7 @@ impl Arm {
         Self::Clairvoyant,
     ];
 
+    /// The name on the command line and in the results.
     pub const fn name(self) -> &'static str {
         match self {
             Self::GpuLru => "gpu-lru",

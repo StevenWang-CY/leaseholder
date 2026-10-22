@@ -41,6 +41,7 @@ pub struct Subagent {
     pub requests: Vec<Request>,
 }
 
+/// One entry of a trace's top-level list.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
     Request(Request),
@@ -82,6 +83,7 @@ enum SourceKind {
 }
 
 impl TraceSource {
+    /// Lists a directory's `*.json` files, or indexes the lines of a JSONL file.
     pub fn open(path: &Path) -> Result<Self, TraceError> {
         let err = |source| TraceError {
             path: path.to_owned(),
