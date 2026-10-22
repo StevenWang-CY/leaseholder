@@ -1,8 +1,9 @@
 # leaseholder-bench
 
-Load generation for Leaseholder's agent workloads. It replays the SemiAnalysis Claude Code traces
+Load generation and latency probes for Leaseholder. It replays the SemiAnalysis Claude Code traces
 (`semianalysisai/cc-traces-weka-062126`: 393 sessions, 98,827 requests, subagents, think times)
-against a 16-32k context, with Leaseholder's per-session metadata on every request.
+against a 16-32k context, with Leaseholder's per-session metadata on every request. It also measures
+the tier cost model (E0) and server-side voice turns.
 
 | Piece | Module | Purpose |
 |---|---|---|
@@ -12,6 +13,10 @@ against a 16-32k context, with Leaseholder's per-session metadata on every reque
 | `configs/agentic_replay.yaml`, `configs/aiperf.env` | | AIPerf `agentic_replay` run: steady-state session trees with recycling |
 | `lh-bench replay` | `replay.py` | Live-reply driver: feeds the model's actual reply into the next turn |
 | `lh-bench mock-server` | `mock_server.py` | Recording OpenAI-compatible mock on 127.0.0.1 for CPU-only dry runs |
+| `lh-bench tiers` | `tiers.py` | E0: time to first token from the GPU pool, the CPU tier and recompute, verified per sample by vLLM's prefix-cache counters; optional background load |
+| `lh-bench voice-turn` | `voice_turn.py` | One server-side voice turn timed per stage (STT, LLM first sentence, TTS first audio); optional background load |
+| `lh-bench kv-metrics` | `kv_metrics.py` | KV block lifecycle histograms compared across a run |
+| background load | `load.py` | `prefill:<tokens>x<n>` (cold prefills) or `decode:<tokens>x<n>` (long decodes) beside a probe |
 
 Python 3.12, pinned to `aiperf==0.13.0`. Installing the package registers both AIPerf plugins
 through the `aiperf.plugins` entry point; `aiperf plugins endpoint` lists `leaseholder_chat`.
@@ -183,6 +188,29 @@ agent), `chain`, `turn`, `class`, `status`, `error`, `trace_in`, `trace_out`, `m
 
 Not yet: mid-trace starts (sessions start at turn 0, so a run should span several session
 lengths), and parallel replay of side chains within one agent (they run in recorded order).
+
+## Latency probes (`lh-bench tiers`, `lh-bench voice-turn`)
+
+`tiers` measures what resuming a session costs from each tier (E0). For each prompt length, a unique prompt of random token ids goes out three times, each asking for one token:
+1. cold, so every token is recomputed;
+2. again at once, a GPU prefix-cache hit;
+3. after other prompts have pushed it out of the GPU pool, restored from the CPU tier.
+
+vLLM's `prefix_cache_hits` and `external_prefix_cache_hits` counters, read around each request, verify where its tokens came from. A sample whose eviction or restore went wrong is flagged invalid instead of being mislabeled. The run fits GPU hit `a + b·L`, restore `a + b·L` and recompute `a + b·L + c·L²`; `lh-core` reads those fits.
+
+`voice-turn` times one turn of the cascade a voice agent runs:
+- STT on the utterance;
+- the LLM's first sentence, counted once it reaches 20 characters as in LiveKit's tokenizer;
+- TTS first audio for that sentence, sent while the reply is still streaming.
+
+Both take `--background prefill:8192x1` or `decode:1024x8` to measure under agent load. They write `run.json`, the samples and `summary.json` to `--out`.
+
+```bash
+lh-bench tiers --url http://127.0.0.1:18000 --reps 5 --out runs/e0-idle
+lh-bench tiers --url http://127.0.0.1:18000 --lengths 1024,4096,16384 --background decode:1024x8 --out runs/e0-decode
+lh-bench voice-turn --stt-url http://127.0.0.1:18100/v1 --llm-url http://127.0.0.1:18000/v1 \
+  --tts-url http://127.0.0.1:18880/v1 --audio turn.wav --reps 30 --background prefill:8192x1 --out runs/voice-x1
+```
 
 ## KV block lifecycle (`lh-bench kv-metrics`)
 

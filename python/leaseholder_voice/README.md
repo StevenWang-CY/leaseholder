@@ -1,16 +1,59 @@
 # leaseholder-voice
 
-LiveKit Agents 1.8.8 building blocks for Leaseholder's realtime voice plane
-([ARCHITECTURE §7](../../docs/ARCHITECTURE.md#7-realtime-voice-pipeline)). The package
-holds the headers the voice worker sends to the control plane, and a factory for the stock
-OpenAI STT, LLM and TTS plugins pointed at OpenAI-compatible servers over TCP or a Unix
-socket. Its integration test runs a real LiveKit room against mock endpoints. It is the
-regression test for the W0 findings below.
+Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](../../docs/ARCHITECTURE.md#7-realtime-voice-pipeline)). The package holds:
+- the production voice agent;
+- the measurement callers that read voice-to-voice latency from waveforms;
+- the headers the agent sends to the control plane;
+- a factory for the stock OpenAI STT, LLM and TTS plugins, pointed at OpenAI-compatible servers over TCP or a Unix socket.
 
 | Module | Contents |
 |---|---|
+| `leaseholder_voice.worker` | The voice agent (`lh-voice-worker start`): Silero VAD, LiveKit's local end-of-turn model, STT/LLM/TTS over the voice plane's sockets, LiveKit's default turn handling |
+| `leaseholder_voice.bots` | Measurement callers (`lh-voice bots`): voice-to-voice latency, barge-in to silence |
+| `leaseholder_voice.callers` | The caller corpus (`lh-voice render-callers`): scripted lines in six stock Kokoro voices, 16 kHz WAVs |
+| `leaseholder_voice.audio` | A real-time microphone track and the agent's speech spans, on one clock |
 | `leaseholder_voice.protocol` | `X-Session-ID` and `X-LH-Class` names, `room_session_id(room_sid)`, `realtime_headers(session_id)` |
 | `leaseholder_voice.plugins` | `make_stt`, `make_llm`, `make_tts`, `openai_client` |
+
+## The voice agent
+
+`lh-voice-worker start` registers the agent `leaseholder-voice` with the LiveKit server and serves each dispatched room with one `AgentSession`. It runs in the voice-plane namespace on cyan as `lh-voice-worker.service`, configured by the environment:
+
+| Variable | Meaning |
+|---|---|
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | The LiveKit server (from `~/.config/leaseholder/livekit.env`) |
+| `LH_LLM_UDS` | The control plane's socket (`gateway.sock`), or the engine's tunnel (`phastform-engine.sock`) |
+| `LH_STT_UDS`, `LH_TTS_UDS` | The tunnels to the STT and TTS servers |
+| `LH_IDLE_PROCESSES` | Pre-started job processes (default 2) |
+| `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30) |
+| `LH_TURN_DETECTION` | `model` (default) or `vad` |
+
+Turn detection is the one setting experiments change. LiveKit's end-of-turn model waits up to the endpointing maximum (3 s) when it judges a line unfinished: on the synthesized callers that happened on about one turn in six, and put a 3 s mode in voice-to-voice latency unrelated to serving. Experiments therefore run with `LH_TURN_DETECTION=vad`. That variant is `deploy/cyan/variants/vad-turns`: a turn ends a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), the same for every arm.
+
+## Measurement callers
+
+`lh-voice render-callers` renders the corpus once through a TTS server:
+- 40 caller lines and 8 interruptions for a restaurant's phone line;
+- six stock Kokoro voices, none of them the agent's;
+- 16 kHz mono WAVs with 0.2 s of silence at each end, plus `manifest.json`.
+
+`lh-voice bots` runs callers inside the namespace, each in its own room. The join token dispatches the agent. Each turn:
+1. The caller plays a line.
+2. It waits for the agent's reply: voice-to-voice runs from the end of its speech to the agent's first audio above the speech threshold.
+3. On a share of turns it interrupts after a random delay: barge-in to silence runs from the interruption's speech onset until the agent's audio stops, and the reply to the interruption is a second voice-to-voice sample.
+
+Every time comes from `time.monotonic()` in one process, so no clock offset enters. The run directory gets `run.json`, `turns.jsonl` and `summary.json`, which includes the microphone loop's worst lateness as a check that the caller kept up.
+
+```bash
+lh-voice render-callers ~/leaseholder/data/callers --tts-url http://127.0.0.1:18880/v1
+set -a; . ~/.config/leaseholder/livekit.env; set +a
+~/leaseholder/src/deploy/bin/in-voicenet lh-voice bots --corpus ~/leaseholder/data/callers \
+  --callers 2 --turns 25 --barge-in 0.25 --out ~/leaseholder/runs/<run>/bots
+```
+
+The measured numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#voice-on-the-shared-gpu).
+
+## Using the plugin factory
 
 ```python
 from leaseholder_voice import plugins
@@ -23,10 +66,7 @@ stt = plugins.make_stt("http://lh/v1", uds=f"{lh}/phastform-stt.sock")  # the tu
 tts = plugins.make_tts("http://lh/v1", uds=f"{lh}/phastform-tts.sock")  # raw 24 kHz PCM
 ```
 
-The `phastform-*.sock` files are the tunnel's Unix-socket forwards (`deploy/cyan`). Until the
-control plane lands, the LLM can use `phastform-engine.sock` directly.
-
-Create one LLM per session: the headers belong to the instance.
+The `phastform-*.sock` files are the tunnel's Unix-socket forwards (`deploy/cyan`). Create one LLM per session: the headers belong to the instance.
 
 ## Tests
 
@@ -36,7 +76,7 @@ Unit tests need no network. CI runs them with `make test-python`:
 uv run --extra test pytest -m "not integration"
 ```
 
-The integration test runs on cyan. It needs Linux with unprivileged user namespaces,
+The integration test (the W0 barge-in and header findings) runs on cyan. It needs Linux with unprivileged user namespaces,
 `unshare`, `nsenter`, `setpriv`, `ip` and `ss`, and `livekit-server` 1.13.10:
 
 ```bash
