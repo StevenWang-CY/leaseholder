@@ -19,6 +19,8 @@ fn every_example_event_round_trips() {
         let event: LifecycleEvent = serde_json::from_str(line).unwrap();
         let wire: Value = serde_json::from_str(line).unwrap();
         assert_eq!(serde_json::to_value(&event).unwrap(), wire, "{line}");
+        assert_eq!(event.kind.label(), wire["type"], "{line}");
+        assert_eq!(event.source.as_str(), wire["source"], "{line}");
         types.push(wire["type"].as_str().unwrap().to_owned());
     }
     types.sort();
@@ -34,14 +36,14 @@ fn every_example_event_round_trips() {
 fn an_event_is_one_flat_object() {
     let event = LifecycleEvent {
         event_id: "vw-4".into(),
-        session_id: sid("room-7:caller"),
+        session_id: sid("voice-RM_a1B2c3"),
         at_ms: 1_792_650_014_940,
         source: EventSource::VoiceWorker,
         kind: EventKind::Interrupted { played_ms: 1840 },
     };
     assert_eq!(
         serde_json::to_value(&event).unwrap(),
-        json!({"event_id": "vw-4", "session_id": "room-7:caller", "at_ms": 1_792_650_014_940u64,
+        json!({"event_id": "vw-4", "session_id": "voice-RM_a1B2c3", "at_ms": 1_792_650_014_940u64,
                "source": "voice-worker", "type": "interrupted", "played_ms": 1840})
     );
 }
@@ -61,7 +63,7 @@ fn unknown_fields_are_ignored_and_unknown_types_rejected() {
 #[test]
 fn session_ids_are_header_safe() {
     assert!(SessionId::new("0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41").is_ok());
-    assert!(SessionId::new("room-7:caller").is_ok());
+    assert!(SessionId::new("voice-RM_a1B2c3").is_ok());
     assert_eq!(SessionId::new(""), Err(SessionIdError::Length(0)));
     assert_eq!(
         SessionId::new("a".repeat(129)),

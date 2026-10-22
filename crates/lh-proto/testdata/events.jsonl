@@ -2,9 +2,9 @@
 {"event_id": "gw-2", "session_id": "0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41", "at_ms": 1792650004210, "source": "inferred", "type": "turn_finished", "stop_reason": "tool_calls", "prompt_tokens": 18342, "completion_tokens": 96}
 {"event_id": "aa-7", "session_id": "0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41", "at_ms": 1792650004300, "source": "agentic-api", "type": "tool_wait_started", "tool": "web_search", "eta_ms": 2400}
 {"event_id": "aa-8", "session_id": "0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41", "at_ms": 1792650006650, "source": "agentic-api", "type": "tool_wait_ended", "tool": "web_search"}
-{"event_id": "vw-1", "session_id": "room-7:caller", "at_ms": 1792650010000, "source": "voice-worker", "type": "user_speech_started"}
-{"event_id": "vw-2", "session_id": "room-7:caller", "at_ms": 1792650012400, "source": "voice-worker", "type": "user_turn_ended"}
-{"event_id": "vw-3", "session_id": "room-7:caller", "at_ms": 1792650013100, "source": "voice-worker", "type": "playback_started"}
-{"event_id": "vw-4", "session_id": "room-7:caller", "at_ms": 1792650014940, "source": "voice-worker", "type": "interrupted", "played_ms": 1840}
-{"event_id": "vw-5", "session_id": "room-7:caller", "at_ms": 1792650020000, "source": "voice-worker", "type": "playback_ended", "played_ms": 3200}
-{"event_id": "vw-6", "session_id": "room-7:caller", "at_ms": 1792650060000, "source": "voice-worker", "type": "session_closed"}
+{"event_id": "vw-1", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650010000, "source": "voice-worker", "type": "user_speech_started"}
+{"event_id": "vw-2", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650012400, "source": "voice-worker", "type": "user_turn_ended"}
+{"event_id": "vw-3", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650013100, "source": "voice-worker", "type": "playback_started"}
+{"event_id": "vw-4", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650014940, "source": "voice-worker", "type": "interrupted", "played_ms": 1840}
+{"event_id": "vw-5", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650020000, "source": "voice-worker", "type": "playback_ended", "played_ms": 3200}
+{"event_id": "vw-6", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650060000, "source": "voice-worker", "type": "session_closed"}

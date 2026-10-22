@@ -9,6 +9,10 @@ pub const SESSION_ID: &str = "x-session-id";
 /// Claude Code's own session header: the second source in session resolution.
 pub const CLAUDE_CODE_SESSION_ID: &str = "x-claude-code-session-id";
 
+/// Prefix of the headers between callers and the control plane. The control plane consumes them and never
+/// forwards them to the engine.
+pub const LH_PREFIX: &str = "x-lh-";
+
 /// SLO class requested by a trusted caller: `realtime`, `interactive` or `background`.
 pub const CLASS: &str = "x-lh-class";
 
@@ -25,6 +29,10 @@ pub const VLLM_PRIORITY: &str = "x-vllm-priority";
 /// vLLM data-parallel rank routing.
 pub const DATA_PARALLEL_RANK: &str = "x-data-parallel-rank";
 
+/// The request id. vLLM takes it as its own request id; the control plane generates one per request, sends it
+/// to the engine and returns it to the caller.
+pub const REQUEST_ID: &str = "x-request-id";
+
 /// Headers vLLM trusts for scheduling and accounting. The control plane removes them from every client request
 /// and sets its own.
 pub const ENGINE_CONTROL_HEADERS: [&str; 3] = [SESSION_ID, VLLM_PRIORITY, DATA_PARALLEL_RANK];
@@ -32,7 +40,7 @@ pub const ENGINE_CONTROL_HEADERS: [&str; 3] = [SESSION_ID, VLLM_PRIORITY, DATA_P
 /// Body fields with the same role. vLLM 0.32 reads `session_id` before the header (and `vllm_xargs.session_id`
 /// after it), takes `priority` for scheduling, `kv_transfer_params` for the offload policy, `cache_salt` for
 /// prefix-cache isolation and `request_id` as its own request id. The control plane removes them from client
-/// bodies and sets its own; each tenant's `cache_salt` is derived from its API key.
+/// bodies and sets its own; each tenant's `cache_salt` is derived from the tenant's name.
 pub const ENGINE_CONTROL_BODY_FIELDS: [&str; 6] = [
     "session_id",
     "priority",

@@ -7,7 +7,7 @@
 //! On the wire an event is one flat JSON object; `type` selects the variant and its fields:
 //!
 //! ```json
-//! {"event_id": "w1-0042", "session_id": "room-7:caller", "at_ms": 1792650000123,
+//! {"event_id": "w1-0042", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650000123,
 //!  "source": "voice-worker", "type": "interrupted", "played_ms": 1840}
 //! ```
 
@@ -29,6 +29,11 @@ pub struct LifecycleEvent {
     pub kind: EventKind,
 }
 
+impl LifecycleEvent {
+    /// The longest accepted `event_id`, in bytes.
+    pub const MAX_ID_LEN: usize = 128;
+}
+
 /// Who emitted an event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -41,6 +46,18 @@ pub enum EventSource {
     VoiceWorker,
     /// Any other trusted client.
     Client,
+}
+
+impl EventSource {
+    /// The wire name, also used as a metric label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inferred => "inferred",
+            Self::AgenticApi => "agentic-api",
+            Self::VoiceWorker => "voice-worker",
+            Self::Client => "client",
+        }
+    }
 }
 
 /// What happened, with the fields of that event type.
@@ -82,6 +99,24 @@ pub enum EventKind {
     Interrupted { played_ms: u64 },
     /// The session ended; its KV becomes ordinary cache.
     SessionClosed,
+}
+
+impl EventKind {
+    /// The wire `type`, also used as a metric label.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::TurnStarted => "turn_started",
+            Self::TurnFinished { .. } => "turn_finished",
+            Self::ToolWaitStarted { .. } => "tool_wait_started",
+            Self::ToolWaitEnded { .. } => "tool_wait_ended",
+            Self::UserSpeechStarted => "user_speech_started",
+            Self::UserTurnEnded => "user_turn_ended",
+            Self::PlaybackStarted => "playback_started",
+            Self::PlaybackEnded { .. } => "playback_ended",
+            Self::Interrupted { .. } => "interrupted",
+            Self::SessionClosed => "session_closed",
+        }
+    }
 }
 
 /// Why a response stopped, normalized across the OpenAI and Anthropic APIs.

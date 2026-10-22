@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 /// `gen_ai.conversation.id`.
 ///
 /// Session ids travel in HTTP headers and engine metadata, so they are 1 to 128 characters from
-/// `[A-Za-z0-9._:-]`. Claude Code's UUIDs and LiveKit `room:participant` ids fit as they are; the control plane
-/// hashes any other source (an arbitrary `prompt_cache_key`, say) into this form when it resolves the session.
+/// `[A-Za-z0-9._:-]`. Claude Code's UUIDs and the voice worker's `voice-<room SID>` ids fit as they are; the
+/// control plane hashes any other source (an arbitrary `prompt_cache_key`, say) into this form when it resolves
+/// the session.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SessionId(String);
