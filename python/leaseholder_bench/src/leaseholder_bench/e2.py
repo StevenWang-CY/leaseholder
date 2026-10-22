@@ -857,14 +857,19 @@ def _aiperf_env(arm: Arm, host: Host, out: Path) -> dict[str, str]:
 
 @contextlib.contextmanager
 def _exclusive(host: Host) -> Iterator[None]:
-    """One e2 run (or reset) at a time: they share cyan's units and cores."""
+    """One e2 run (or reset) at a time: they share cyan's units and cores. The lock file names the
+    holder's pid, to stop it by."""
     path = host.root / "runs" / ".lh-bench-e2.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as lock:
+    # Opened to append: "w" would empty the holder's pid before the lock is even tried.
+    with path.open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise E2Error(f"another lh-bench e2 run or reset holds {path}") from None
+        lock.truncate(0)
+        lock.write(f"{os.getpid()}\n")
+        lock.flush()
         yield
 
 

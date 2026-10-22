@@ -39,7 +39,10 @@ from leaseholder_bench.e2 import (
 )
 
 FAKES = Path(__file__).parent / "fakes"
-EXAMPLE = Path(__file__).resolve().parents[3] / "deploy" / "cyan" / "gateway.example.toml"
+REPO = Path(__file__).resolve().parents[3]
+EXAMPLE = REPO / "deploy" / "cyan" / "gateway.example.toml"
+BENCHMARKS = REPO / "benchmarks" / "e2"
+PHASTFORM = REPO / "deploy" / "phastform"
 
 ARM = """\
 arm = 2
@@ -135,6 +138,18 @@ def test_a_wrong_arm_file_says_what_is_wrong(tmp_path: Path, text: str, error: s
         load_arm(write(tmp_path, "a2.toml", text))
 
 
+def test_the_campaigns_name_arm_files_that_load() -> None:
+    campaigns = sorted(BENCHMARKS.glob("*.campaign"))
+    assert campaigns
+    for campaign in campaigns:
+        lines = (line.split("#")[0].strip() for line in campaign.read_text().splitlines())
+        for line in filter(None, lines):
+            arm = load_arm(campaign.parent / line)
+            variant = arm.engine.variant
+            assert variant == "frozen" or (PHASTFORM / "variants" / variant).is_dir(), line
+    assert all(load_arm(path) for path in (BENCHMARKS / "arms").glob("*.toml"))
+
+
 def test_flag_values_pair_each_flag_with_its_value() -> None:
     flags = ["--max-num-seqs", "12", "--no-async-scheduling", "--watermark", "0.1", "--x"]
     assert flag_values(flags) == {
@@ -223,7 +238,7 @@ def test_a_vllm_point_needs_the_frozen_settings_its_flags_keep() -> None:
     with pytest.raises(E2Error, match="policy = 'fcfs', the point needs --scheduling-policy prio"):
         check_engine(Engine("frozen", ()), vllm(**STOCK_SCHEDULER))  # left over from arm 2
     assert check_engine(Engine("pr54530", ()), vllm())["unchecked"] == []
-    engine_yaml = (EXAMPLE.parents[1] / "phastform" / "engine.yaml").read_text()
+    engine_yaml = (PHASTFORM / "engine.yaml").read_text()
     for flag, value in flag_values(e2.FROZEN).items():
         assert re.search(rf"^{flag.removeprefix('--')}: {value}$", engine_yaml, re.M), flag
 
@@ -586,8 +601,11 @@ def test_a_complete_point_is_kept_and_an_incomplete_one_moved_aside(
 
 
 def test_one_point_at_a_time(cyan: Cyan) -> None:
-    with e2._exclusive(cyan.host), pytest.raises(E2Error, match="another lh-bench e2 run"):
-        run(cyan, "a1-voice", VOICE_ALONE)
+    lock = cyan.host.root / "runs" / ".lh-bench-e2.lock"
+    with e2._exclusive(cyan.host):
+        with pytest.raises(E2Error, match="another lh-bench e2 run"):
+            run(cyan, "a1-voice", VOICE_ALONE)
+        assert lock.read_text() == f"{os.getpid()}\n"  # the holder's, kept through the refusal
 
 
 def test_the_engine_command_prints_what_variant_sh_use_takes(tmp_path: Path, capsys) -> None:

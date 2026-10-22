@@ -1,0 +1,31 @@
+# W2's first E2 batch: every point that does not depend on another arm's result, in groups that share an engine,
+# so that the box restarts once per group. About 12 minutes a point (AIPerf builds its dataset for 4), 4 hours in all.
+#   benchmarks/e2/campaign.sh benchmarks/e2/w2.campaign
+
+# The frozen box
+arms/a1-voice.toml
+arms/a4-b512-t256-s16.toml
+
+# vLLM out of the box
+arms/a2-stock-s8.toml
+arms/a2-stock-s16.toml
+arms/a2-stock-s24.toml
+
+# Priority scheduling, default chunking
+arms/a3-priority-s8.toml
+arms/a3-priority-s16.toml
+arms/a3-priority-s24.toml
+
+# The step-cap grid
+arms/a4-b512-t0-s16.toml
+arms/a4-b1024-t256-s16.toml
+arms/a4-b1024-t512-s16.toml
+arms/a4-b1024-t0-s16.toml
+
+# vLLM #54530, without and with
+arms/a7a-seqs12-s16.toml
+arms/a7a-pr54530-s16.toml
+
+# SGLang (deploy/phastform/variants/sglang/install.sh first)
+arms/a7b-sglang-s8.toml
+arms/a7b-sglang-s16.toml
