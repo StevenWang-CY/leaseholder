@@ -39,6 +39,10 @@ What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) i
   - the co-located STT and TTS slow down by 43–44% under time-slicing.
 - Whisper large-v3-turbo on vLLM takes 144 / 166 / 221 ms for 2 / 5 / 10 s utterances at concurrency 1.
 - Kokoro-82M reaches first audio for one sentence in 154–179 ms.
+- **A barge-in closes the LLM stream.** This is LiveKit Agents 1.8.8 with mock STT, LLM and TTS, in the voice-plane namespace on cyan (`python/leaseholder_voice`, 10 runs). Measured from the caller's barge-in onset to the LLM server seeing the disconnect:
+  - 2.19 s median with the stock handling, which pauses the reply audio and interrupts it on the barge-in's final transcript;
+  - 0.58 s with `resume_false_interruption=False`, which interrupts after 0.5 s of speech.
+  - In stock mode the reply keeps streaming on the GPU for the whole barge-in.
 
 ## Engine plugins
 

@@ -224,7 +224,12 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 ## 7. Realtime voice pipeline
 
 - **Components.** All stock: LiveKit server 1.13 and LiveKit Agents 1.8.8 in the voice-plane namespace on cyan, with Silero VAD and the turn detector on CPU. The OpenAI STT, LLM and TTS plugins reach the frozen box through Unix-socket forwards.
-- **Headers.** The LLM plugin sends `X-LH-Class: realtime` and the room-scoped session id.
+- **Headers.** The LLM plugin sends `X-LH-Class: realtime` and the room-scoped session id (`voice-<room SID>`) through its `extra_headers` option. The worker creates one LLM instance per session.
+- **Interruption handling.** The stock LiveKit setting pauses the reply audio after 0.5 s of barge-in speech and interrupts the reply only on the barge-in's final transcript. Until then the LLM stream stays open, 2.19 s after onset in the W0 test. With `resume_false_interruption=False` the stream closes 0.58 s after onset, at the cost of cutting the reply on a cough. The setting is fixed across E2 arms, and the wasted tokens are reported.
+- **Worker settings.**
+  - `AgentServer(host="127.0.0.1")`, because the default binds all interfaces.
+  - An explicit small `num_idle_processes`, because production mode defaults to the CPU count.
+  - An LLM request timeout above 10 s, because `llm_conn_options` defaults to 10 s and a cold prefill can exceed it.
 - **Lifecycle.**
   - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended` and `interrupted` to the control plane.
   - Speech onset triggers prefetch and headroom.

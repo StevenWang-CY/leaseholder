@@ -30,6 +30,8 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 | 8 | Leaseholder: turn-imminent headroom, speech-onset prefetch, class-aware admission (never shed) | This project |
 | 9 | Partitioned GPUs (one card per workload) | The upper bound |
 
+**Fixed across arms.** VAD, turn detection and interruption handling. The interrupt-on-speech setting closes the LLM stream 0.58 s after barge-in onset; the stock pause-then-interrupt keeps it open for about 2.2 s, a cost reported as wasted tokens.
+
 **Metrics.**
 - Voice V2V p50/p95/p99, from waveforms.
 - Barge-in to silence; audio gaps of 100 ms or more.
