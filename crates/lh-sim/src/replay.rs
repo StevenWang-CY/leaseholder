@@ -780,16 +780,6 @@ impl<'a> Replay<'a> {
         })
     }
 
-    fn branch_start(plan: &ReplayPlan, branch: u32) -> Option<f64> {
-        let b = &plan.root().branches[branch as usize];
-        b.start_ms.or_else(|| {
-            b.children
-                .iter()
-                .filter_map(|&c| plan.convs[c as usize].turns.first().map(|t| t.ts_ms))
-                .reduce(f64::min)
-        })
-    }
-
     /// `_spawn_children_and_register_gates`.
     fn spawn_children(&mut self, play: u32, branches: &[u32], origin: Option<f64>) {
         let plan = self.plays[play as usize].plan.clone();
@@ -804,7 +794,7 @@ impl<'a> Replay<'a> {
             } else {
                 branch.join_turn
             };
-            let base = origin.or_else(|| Self::branch_start(&plan, b));
+            let base = origin.unwrap_or(branch.start_ms);
             for &child in &branch.children {
                 let stream = self.new_stream(play, child, 1);
                 if let Some(g) = gated {
@@ -815,11 +805,8 @@ impl<'a> Replay<'a> {
                     self.streams[stream as usize].joins.push((g, b));
                 }
                 self.plays[play as usize].descendants += 1;
-                let first = plan.convs[child as usize].turns.first().map(|t| t.ts_ms);
-                let offset = match (base, first) {
-                    (Some(base), Some(t)) => (t - base).max(0.0),
-                    _ => 0.0,
-                };
+                let first = plan.convs[child as usize].turns.first();
+                let offset = first.map_or(0.0, |t| (t.ts_ms - base).max(0.0));
                 if offset > 0.0 {
                     let at = self.now + ns(offset);
                     self.push_fixed(
@@ -1185,7 +1172,7 @@ impl<'a> Replay<'a> {
             .spawns
             .iter()
             .copied()
-            .filter(|&b| Self::branch_start(&plan, b).is_some_and(|s| s < end))
+            .filter(|&b| plan.root().branches[b as usize].start_ms < end)
             .collect();
         if overlapping.is_empty() {
             return;

@@ -78,16 +78,7 @@ pub fn snapshot(plan: &ReplayPlan, t_star: f64) -> Option<Snapshot> {
     let mut children = Vec::new();
     let mut join_targets = Vec::new();
     for (b, branch) in root.branches.iter().enumerate() {
-        let start = branch.start_ms.or_else(|| {
-            branch
-                .children
-                .iter()
-                .filter_map(|&c| plan.convs[c as usize].turns.first().map(|t| t.ts_ms))
-                .reduce(f64::min)
-        });
-        if let Some(start) = start
-            && t_star < start
-        {
+        if t_star < branch.start_ms {
             let spawn = branch.spawn_turn;
             let spawn_ts = root.turns.get(spawn as usize).map(|t| t.ts_ms);
             let not_spawned = spawn_ts.is_none_or(|ts| t_star < ts)
@@ -107,9 +98,6 @@ pub fn snapshot(plan: &ReplayPlan, t_star: f64) -> Option<Snapshot> {
                 continue;
             };
             let turns = &plan.convs[child as usize].turns;
-            if start.is_none() && turns.first().is_some_and(|t| t_star < t.ts_ms) {
-                continue;
-            }
             children.push(State {
                 conv: child,
                 next_turn: next,

@@ -74,18 +74,6 @@ const POOL_SIZE: usize = 4;
 
 /// `numpy.random.SeedSequence(entropy).generate_state(4, np.uint64)` for an integer entropy.
 fn seed_sequence_state(entropy: u64) -> [u64; 4] {
-    // The entropy as little-endian 32-bit words, at least one word.
-    let words: Vec<u32> = if entropy == 0 {
-        vec![0]
-    } else {
-        let mut n = entropy;
-        let mut w = Vec::new();
-        while n > 0 {
-            w.push(n as u32);
-            n >>= 32;
-        }
-        w
-    };
     let mut hash_const = INIT_A;
     let mut hashmix = |value: u32| {
         let mut v = value ^ hash_const;
@@ -99,22 +87,17 @@ fn seed_sequence_state(entropy: u64) -> [u64; 4] {
             .wrapping_sub(MIX_MULT_R.wrapping_mul(y));
         r ^ (r >> 16)
     };
-    let mut pool = [0u32; POOL_SIZE];
-    for (i, slot) in pool.iter_mut().enumerate() {
-        *slot = hashmix(words.get(i).copied().unwrap_or(0));
-    }
+    // numpy splits the entropy into little-endian 32-bit words and hashes one into each pool slot, a
+    // zero where the words run out. A u64 is at most two words, so the zero-padded pool is exact and
+    // numpy's pass over words beyond the pool never runs.
+    let words = [entropy as u32, (entropy >> 32) as u32, 0, 0];
+    let mut pool: [u32; POOL_SIZE] = words.map(&mut hashmix);
     for src in 0..POOL_SIZE {
         for dst in 0..POOL_SIZE {
             if src != dst {
                 let h = hashmix(pool[src]);
                 pool[dst] = mix(pool[dst], h);
             }
-        }
-    }
-    for &word in words.iter().skip(POOL_SIZE) {
-        for slot in pool.iter_mut() {
-            let h = hashmix(word);
-            *slot = mix(*slot, h);
         }
     }
     let mut hash_const = INIT_B;

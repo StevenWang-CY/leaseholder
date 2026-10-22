@@ -94,8 +94,8 @@ pub struct Branch {
     pub children: Vec<u32>,
     /// No root turn waits for it.
     pub background: bool,
-    /// Recorded spawn time in ms.
-    pub start_ms: Option<f64>,
+    /// Recorded spawn time in ms: the earliest start among its members.
+    pub start_ms: f64,
     /// The root turn that spawns it.
     pub spawn_turn: u32,
     /// The root turn that waits for it.
@@ -544,7 +544,7 @@ impl<'a> Builder<'a> {
                 id: format!("{}:spawn:{}", self.trace_id, first.agent_id),
                 children,
                 background: join.is_none(),
-                start_ms: Some(start_s * 1e3),
+                start_ms: start_s * 1e3,
                 spawn_turn: *spawn as u32,
                 join_turn: join.map(|j| j as u32),
             });
@@ -578,7 +578,7 @@ impl<'a> Builder<'a> {
                 ),
                 children: members.iter().map(|&m| flat_convs[m]).collect(),
                 background: join.is_none(),
-                start_ms: Some(start_s * 1e3),
+                start_ms: start_s * 1e3,
                 spawn_turn: *spawn as u32,
                 join_turn: join.map(|j| j as u32),
             });
@@ -835,7 +835,7 @@ mod tests {
             (b.id.as_str(), b.spawn_turn, b.join_turn, b.background),
             ("t:flatspawn:0", 1, None, true)
         );
-        assert_eq!(b.start_ms, Some(3000.0));
+        assert_eq!(b.start_ms, 3000.0);
         // Root turn 2 (t=20) follows the flat chain's turn 0 (ended t=4); flat turn 1 (t=30) follows
         // root turn 2 (ended t=21); flat turn 0 (t=3) follows root turn 0 (ended t=1).
         assert_eq!(p.root().turns[2].preds, vec![(1, 0)]);

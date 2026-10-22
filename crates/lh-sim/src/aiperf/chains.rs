@@ -481,63 +481,23 @@ pub(crate) fn worker_groups(reqs: &[Req], d: &Detection) -> HashMap<usize, (usiz
     out
 }
 
-/// Connected components of `[t0, t1)` overlap, by a sweep over starts with union-find.
+/// Connected components of `[t0, t1)` overlap, each in `(t0, outer)` order. In start order, an
+/// interval joins the current component iff it starts before the latest end so far, because it then
+/// overlaps the interval that ends there. AIPerf's sweep with union-find finds the same components;
+/// touching intervals (`t1 == t0`) do not overlap.
 fn overlap_components(cands: &[Candidate]) -> Vec<Vec<Candidate>> {
-    let mut order: Vec<usize> = (0..cands.len()).collect();
-    order.sort_by(|&a, &b| {
-        cands[a]
-            .0
-            .total_cmp(&cands[b].0)
-            .then(cands[a].2.cmp(&cands[b].2))
-    });
-    let mut parent: Vec<usize> = (0..cands.len()).collect();
-    fn find(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
+    let mut sorted = cands.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)));
+    let mut comps: Vec<Vec<Candidate>> = Vec::new();
+    let mut end = f64::NEG_INFINITY;
+    for cand in sorted {
+        match comps.last_mut() {
+            Some(comp) if cand.0 < end => comp.push(cand),
+            _ => comps.push(vec![cand]),
         }
-        x
+        end = end.max(cand.1);
     }
-    // Min-heap of (t1, index) over intervals still active.
-    let mut active: BinaryHeap<Reverse<(OrdF64, usize)>> = BinaryHeap::new();
-    for i in order {
-        let t0 = cands[i].0;
-        while active.peek().is_some_and(|Reverse((t1, _))| t1.0 <= t0) {
-            active.pop();
-        }
-        if let Some(Reverse((_, j))) = active.peek() {
-            let (ri, rj) = (find(&mut parent, i), find(&mut parent, *j));
-            parent[ri] = rj;
-        }
-        active.push(Reverse((OrdF64(cands[i].1), i)));
-    }
-    let mut comps: Vec<(usize, Vec<Candidate>)> = Vec::new();
-    for (i, cand) in cands.iter().enumerate() {
-        let root = find(&mut parent, i);
-        match comps.iter_mut().find(|(r, _)| *r == root) {
-            Some((_, list)) => list.push(*cand),
-            None => comps.push((root, vec![*cand])),
-        }
-    }
-    comps.into_iter().map(|(_, list)| list).collect()
-}
-
-/// An `f64` with the total order, for heaps.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct OrdF64(pub f64);
-
-impl Eq for OrdF64 {}
-
-impl PartialOrd for OrdF64 {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrdF64 {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.total_cmp(&other.0)
-    }
+    comps
 }
 
 #[cfg(test)]
