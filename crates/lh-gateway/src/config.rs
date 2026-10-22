@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use http::uri::{Authority, Scheme, Uri};
+use lh_core::FROZEN_BOX_POOL_TOKENS;
+use lh_core::admission::Policy;
 use lh_proto::SloClass;
 use serde::Deserialize;
 
@@ -21,6 +23,8 @@ pub struct Config {
     pub upstream_idle_timeout: Duration,
     /// How a request's class reaches the upstream as a priority.
     pub upstream_priority: PrioritySignals,
+    /// The admission point; `None` (policy "none") sends every request upstream at once.
+    pub admission: Option<Admission>,
     pub listeners: Vec<Listen>,
     pub tenants: Vec<Tenant>,
     /// Largest accepted request body; larger requests get 413.
@@ -80,6 +84,16 @@ pub struct PrioritySignals {
     pub body: bool,
     /// `X-SMG-Priority`: `system`, `interactive` or `bulk`, which SMG's priority scheduler reads.
     pub smg_header: bool,
+}
+
+/// `[admission]`: the policy that decides when a request goes upstream, and the bounds of its queues.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Admission {
+    pub policy: Policy,
+    /// The requests each class's queue may hold; a request that would wait beyond them gets 429.
+    pub queue_limit: usize,
+    /// How long a request may wait before it gets 503.
+    pub queue_timeout: Duration,
 }
 
 /// One entry of `upstream_priority`.
@@ -148,6 +162,7 @@ struct RawConfig {
     upstream: String,
     upstream_idle_timeout_s: f64,
     upstream_priority: Vec<PrioritySignal>,
+    admission: RawAdmission,
     listen: Vec<RawListen>,
     tenants: BTreeMap<String, RawTenant>,
     max_body_bytes: usize,
@@ -168,6 +183,7 @@ impl Default for RawConfig {
             // vLLM closes idle connections after VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s by default.
             upstream_idle_timeout_s: 4.0,
             upstream_priority: vec![PrioritySignal::VllmHeader],
+            admission: RawAdmission::default(),
             listen: Vec::new(),
             tenants: BTreeMap::new(),
             max_body_bytes: 32 << 20,
@@ -179,6 +195,38 @@ impl Default for RawConfig {
             event_dedup_ttl_s: 600.0,
             log_format: LogFormat::Text,
             log_level: LogLevel::Info,
+        }
+    }
+}
+
+/// `[admission]` as written. Each key but `policy` belongs to some of the policies, and setting it for another
+/// one is an error, so no setting silently does nothing.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawAdmission {
+    policy: PolicyName,
+    background_max_in_flight: Option<u32>,
+    pool_tokens: Option<u64>,
+    reserved_tokens: Option<u64>,
+    queue_limit: Option<usize>,
+    queue_timeout_s: Option<f64>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PolicyName {
+    #[default]
+    None,
+    StaticCap,
+    TokenReservation,
+}
+
+impl PolicyName {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::StaticCap => "static-cap",
+            Self::TokenReservation => "token-reservation",
         }
     }
 }
@@ -224,6 +272,7 @@ impl RawConfig {
     fn validate(self) -> Result<Config, String> {
         let upstream = parse_upstream(&self.upstream)?;
         let upstream_priority = priority_signals(&self.upstream_priority)?;
+        let admission = self.admission.validate()?;
 
         let mut tenants = Vec::with_capacity(self.tenants.len());
         let mut digests = HashSet::new();
@@ -304,6 +353,7 @@ impl RawConfig {
                 self.upstream_idle_timeout_s,
             )?,
             upstream_priority,
+            admission,
             listeners,
             tenants,
             max_body_bytes: self.max_body_bytes,
@@ -316,6 +366,78 @@ impl RawConfig {
             log_format: self.log_format,
             log_level: self.log_level,
         })
+    }
+}
+
+impl RawAdmission {
+    fn validate(self) -> Result<Option<Admission>, String> {
+        let name = self.policy.as_str();
+        let reads: &[&str] = match self.policy {
+            PolicyName::None => &[],
+            PolicyName::StaticCap => {
+                &["background_max_in_flight", "queue_limit", "queue_timeout_s"]
+            }
+            PolicyName::TokenReservation => &[
+                "pool_tokens",
+                "reserved_tokens",
+                "queue_limit",
+                "queue_timeout_s",
+            ],
+        };
+        let set = [
+            (
+                "background_max_in_flight",
+                self.background_max_in_flight.is_some(),
+            ),
+            ("pool_tokens", self.pool_tokens.is_some()),
+            ("reserved_tokens", self.reserved_tokens.is_some()),
+            ("queue_limit", self.queue_limit.is_some()),
+            ("queue_timeout_s", self.queue_timeout_s.is_some()),
+        ];
+        if let Some((key, _)) = set.iter().find(|(key, set)| *set && !reads.contains(key)) {
+            return Err(format!("admission.{key} does not apply to policy {name}"));
+        }
+        let needs = |key: &str| format!("admission: policy {name} needs {key}");
+        let policy = match self.policy {
+            PolicyName::None => return Ok(None),
+            PolicyName::StaticCap => {
+                let cap = self
+                    .background_max_in_flight
+                    .ok_or_else(|| needs("background_max_in_flight"))?;
+                if cap == 0 {
+                    return Err("admission.background_max_in_flight must be positive".into());
+                }
+                Policy::StaticCap {
+                    background_max_in_flight: cap,
+                }
+            }
+            PolicyName::TokenReservation => {
+                let pool_tokens = self.pool_tokens.unwrap_or(FROZEN_BOX_POOL_TOKENS);
+                let reserved_tokens = self
+                    .reserved_tokens
+                    .ok_or_else(|| needs("reserved_tokens"))?;
+                if reserved_tokens >= pool_tokens {
+                    return Err(format!(
+                        "admission.reserved_tokens ({reserved_tokens}) must be less than pool_tokens \
+                         ({pool_tokens})"
+                    ));
+                }
+                Policy::TokenReservation {
+                    pool_tokens,
+                    reserved_tokens,
+                }
+            }
+        };
+        Ok(Some(Admission {
+            policy,
+            // SMG's bulk class queues 1,024 requests. A minute ends a wait well before clients give up on their
+            // own (AIPerf's replay after 300 s, OpenAI's SDK after 600 s).
+            queue_limit: self.queue_limit.unwrap_or(1024),
+            queue_timeout: seconds(
+                "admission.queue_timeout_s",
+                self.queue_timeout_s.unwrap_or(60.0),
+            )?,
+        }))
     }
 }
 
@@ -521,6 +643,75 @@ mod tests {
                 smg_header: true
             }
         );
+    }
+
+    #[test]
+    fn admission_policies_take_their_own_keys_and_defaults() {
+        let a = format!("[tenants.a]\nkeys_sha256 = [\"{KEY}\"]");
+        let admission = |keys: &str| config(&format!("[admission]\n{keys}"), &a);
+        assert_eq!(config("", &a).unwrap().admission, None);
+        assert_eq!(admission("policy = \"none\"").unwrap().admission, None);
+        let cap = admission("policy = \"static-cap\"\nbackground_max_in_flight = 4").unwrap();
+        assert_eq!(
+            cap.admission,
+            Some(Admission {
+                policy: Policy::StaticCap {
+                    background_max_in_flight: 4
+                },
+                queue_limit: 1024,
+                queue_timeout: Duration::from_secs(60),
+            })
+        );
+        let reservation = admission(
+            "policy = \"token-reservation\"\nreserved_tokens = 2048\nqueue_limit = 8\nqueue_timeout_s = 290",
+        )
+        .unwrap()
+        .admission
+        .unwrap();
+        assert_eq!(
+            reservation.policy,
+            Policy::TokenReservation {
+                pool_tokens: FROZEN_BOX_POOL_TOKENS,
+                reserved_tokens: 2048
+            }
+        );
+        assert_eq!(
+            (reservation.queue_limit, reservation.queue_timeout),
+            (8, Duration::from_secs(290))
+        );
+
+        for (keys, cause) in [
+            ("policy = \"static_cap\"", "unknown variant"),
+            (
+                "policy = \"none\"\nqueue_limit = 4",
+                "queue_limit does not apply to policy none",
+            ),
+            (
+                "policy = \"static-cap\"",
+                "static-cap needs background_max_in_flight",
+            ),
+            (
+                "policy = \"static-cap\"\nbackground_max_in_flight = 0",
+                "must be positive",
+            ),
+            (
+                "policy = \"static-cap\"\nbackground_max_in_flight = 2\nreserved_tokens = 1",
+                "reserved_tokens does not apply to policy static-cap",
+            ),
+            (
+                "policy = \"static-cap\"\nbackground_max_in_flight = 2\nqueue_timeout_s = 0",
+                "queue_timeout_s must be a positive",
+            ),
+            ("policy = \"token-reservation\"", "needs reserved_tokens"),
+            (
+                "policy = \"token-reservation\"\nreserved_tokens = 40000",
+                "must be less than pool_tokens (36400)",
+            ),
+            ("polcy = \"none\"", "unknown field"),
+        ] {
+            let err = admission(keys).unwrap_err();
+            assert!(err.contains(cause), "{keys}: {err}");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "lh-gateway"
-description = "Leaseholder gateway: the serving harness in front of vLLM (auth, sanitization, sessions, classes, SSE passthrough, lifecycle events, metrics)"
+description = "Leaseholder gateway: the serving harness in front of vLLM (auth, sanitization, sessions, classes, admission, SSE passthrough, lifecycle events, metrics)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ http-body.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+lh-core.workspace = true
 lh-proto.workspace = true
 memchr.workspace = true
 prometheus-client.workspace = true

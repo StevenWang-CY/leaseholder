@@ -442,6 +442,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "lh-core",
  "lh-proto",
  "memchr",
  "prometheus-client",

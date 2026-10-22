@@ -33,6 +33,8 @@ pub(crate) struct Exchange {
     pub status: Option<StatusCode>,
     /// Whether the request was sent upstream, which makes it count towards outcomes.
     pub forwarded: bool,
+    /// How long the request waited at the admission point; `None` without one.
+    pub admission_wait: Option<Duration>,
     pub first_byte: Option<Duration>,
     pub summary: Summary,
     outcome: Option<Outcome>,
@@ -51,6 +53,7 @@ impl Exchange {
             session: None,
             status: None,
             forwarded: false,
+            admission_wait: None,
             first_byte: None,
             summary: Summary::default(),
             outcome: None,
@@ -85,6 +88,7 @@ impl Exchange {
         let kind = match status {
             StatusCode::UNAUTHORIZED => "authentication_error",
             StatusCode::FORBIDDEN => "permission_error",
+            StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
             s if s.is_server_error() => "server_error",
             _ => "invalid_request_error",
         };
@@ -145,6 +149,7 @@ impl Drop for Exchange {
                     route = self.route.as_str(),
                     status,
                     outcome = outcome.map(Outcome::as_str),
+                    admission_wait_ms = self.admission_wait.map(ms),
                     first_byte_ms = self.first_byte.map(ms),
                     total_ms = ms(total),
                     prompt_tokens = usage.map(|u| u.prompt),

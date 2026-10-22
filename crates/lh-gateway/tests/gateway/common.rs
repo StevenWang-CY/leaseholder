@@ -24,11 +24,16 @@ use hyper_util::rt::TokioIo;
 use lh_gateway::{AcceptedEvent, Config, EventSink, ListenAddr, LogSink, Server};
 use sha2::{Digest, Sha256};
 use tokio::net::{TcpListener, TcpStream, UnixStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 pub const AGENTS_KEY: &str = "agents-key";
 pub const BENCH_KEY: &str = "bench-key";
+
+/// A request header naming the request, for [`Mock::tags`].
+pub const TAG: &str = "x-mock-tag";
+/// A request header that makes the mock engine hold a JSON answer until [`Mock::release`].
+pub const GATE: &str = "x-mock-gate";
 
 /// How the mock engine answers inference requests.
 #[derive(Clone, Debug)]
@@ -70,6 +75,8 @@ struct MockState {
     script: Script,
     requests: Mutex<Vec<Recorded>>,
     healthy: AtomicBool,
+    /// The permits gated answers wait for, granted in the order they began to wait.
+    gate: Semaphore,
     dropped: mpsc::UnboundedSender<Instant>,
 }
 
@@ -96,6 +103,7 @@ impl Mock {
             script,
             requests: Mutex::default(),
             healthy: AtomicBool::new(true),
+            gate: Semaphore::new(0),
             dropped: dropped_tx,
         });
         let app = Router::new()
@@ -146,9 +154,41 @@ impl Mock {
             .expect("the mock engine's response was not dropped in time")
             .unwrap()
     }
+
+    /// Lets `n` gated answers go on, the longest waiting first.
+    pub fn release(&self, n: usize) {
+        self.state.gate.add_permits(n);
+    }
+
+    /// The tags of the requests received, in order of arrival.
+    pub fn tags(&self) -> Vec<String> {
+        self.requests()
+            .iter()
+            .filter_map(|r| r.header(TAG).map(str::to_owned))
+            .collect()
+    }
+
+    /// Waits until the mock engine has received `n` requests in all.
+    pub async fn await_requests(&self, n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.requests().len() < n {
+            assert!(
+                Instant::now() < deadline,
+                "{} requests reached the mock engine, expected {n}: {:?}",
+                self.requests().len(),
+                self.tags()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
 }
 
 impl MockState {
+    /// Waits for a permit of the gate.
+    async fn pass(&self) {
+        self.gate.acquire().await.unwrap().forget();
+    }
+
     async fn record(&self, request: Request) {
         let (parts, body) = request.into_parts();
         let body = body.collect().await.unwrap().to_bytes();
@@ -166,10 +206,16 @@ async fn models(State(state): State<Arc<MockState>>, request: Request) -> &'stat
 }
 
 async fn answer(State(state): State<Arc<MockState>>, request: Request) -> Response {
+    let gated = request.headers().contains_key(GATE);
     let guard = DropSignal(state.dropped.clone());
     state.record(request).await;
     match state.script.clone() {
-        Script::Json(json) => ([(CONTENT_TYPE, "application/json")], json).into_response(),
+        Script::Json(json) => {
+            if gated {
+                state.pass().await;
+            }
+            ([(CONTENT_TYPE, "application/json")], json).into_response()
+        }
         Script::Slow(delay) => {
             tokio::time::sleep(delay).await;
             drop(guard);
@@ -390,6 +436,16 @@ pub async fn call(
         headers: parts.headers,
         body: body.collect().await.unwrap().to_bytes(),
     }
+}
+
+/// Sends a chat completion on a new connection in the background; the handle gives the whole response.
+pub fn spawn_call(
+    target: &Target,
+    headers: Vec<(&'static str, &'static str)>,
+    body: &'static str,
+) -> JoinHandle<Reply> {
+    let target = target.clone();
+    tokio::spawn(async move { call(&target, "POST", "/v1/chat/completions", &headers, body).await })
 }
 
 /// Sends one request on a new connection and returns the response head with its connection task. Aborting

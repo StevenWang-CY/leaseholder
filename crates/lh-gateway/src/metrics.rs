@@ -96,6 +96,26 @@ impl UpstreamError {
     }
 }
 
+/// Why the admission point refused a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// Its class's queue was full (429).
+    QueueFull,
+    /// It waited `queue_timeout_s` without being admitted (503).
+    Timeout,
+}
+
+impl Refusal {
+    const ALL: [Self; 2] = [Self::QueueFull, Self::Timeout];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueueFull => "queue_full",
+            Self::Timeout => "timeout",
+        }
+    }
+}
+
 /// Buckets of the gateway's own overhead, from 50 us. 2 ms, the SLO, is a bucket bound.
 const OVERHEAD_BUCKETS: [f64; 12] = [
     50e-6, 100e-6, 200e-6, 300e-6, 500e-6, 750e-6, 1e-3, 1.5e-3, 2e-3, 5e-3, 10e-3, 50e-3,
@@ -155,6 +175,12 @@ struct UsageLabels {
     kind: &'static str,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RefusalLabels {
+    class: &'static str,
+    reason: &'static str,
+}
+
 type Histograms<L> = Family<L, Histogram, fn() -> Histogram>;
 
 #[derive(Debug)]
@@ -172,6 +198,10 @@ pub(crate) struct Metrics {
     upstream_errors: Family<KindLabels, Counter>,
     events: Family<EventLabels, Counter>,
     usage_tokens: Family<UsageLabels, Counter>,
+    admitted: Family<ClassLabels, Counter>,
+    waiting: Family<ClassLabels, Gauge>,
+    admission_wait: Histograms<ClassLabels>,
+    refused: Family<RefusalLabels, Counter>,
 }
 
 impl Metrics {
@@ -190,6 +220,10 @@ impl Metrics {
             upstream_errors: Family::default(),
             events: Family::default(),
             usage_tokens: Family::default(),
+            admitted: Family::default(),
+            waiting: Family::default(),
+            admission_wait: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
+            refused: Family::default(),
         };
         for class in SloClass::ALL.map(SloClass::as_str) {
             for outcome in Outcome::ALL.map(Outcome::as_str) {
@@ -198,9 +232,15 @@ impl Metrics {
             for kind in ["prompt", "completion", "cached"] {
                 create(&metrics.usage_tokens, UsageLabels { class, kind });
             }
+            for reason in Refusal::ALL.map(Refusal::as_str) {
+                create(&metrics.refused, RefusalLabels { class, reason });
+            }
             create(&metrics.first_byte, ClassLabels { class });
             create(&metrics.duration, ClassLabels { class });
             create(&metrics.streams_active, ClassLabels { class });
+            create(&metrics.admitted, ClassLabels { class });
+            create(&metrics.waiting, ClassLabels { class });
+            create(&metrics.admission_wait, ClassLabels { class });
         }
         for route in [Route::ChatCompletions, Route::Completions, Route::Responses] {
             let route = route.as_str();
@@ -284,6 +324,27 @@ impl Metrics {
             "Tokens reported in response usage, by class and kind",
             self.usage_tokens.clone(),
         );
+        r.register(
+            "admission_admitted",
+            "Requests the admission point let go upstream, by class (none without an admission policy)",
+            self.admitted.clone(),
+        );
+        r.register(
+            "admission_waiting",
+            "Requests waiting at the admission point",
+            self.waiting.clone(),
+        );
+        r.register_with_unit(
+            "admission_wait",
+            "Time from reaching the admission point to being admitted",
+            Unit::Seconds,
+            self.admission_wait.clone(),
+        );
+        r.register(
+            "admission_refused",
+            "Requests the admission point refused, by class and reason",
+            self.refused.clone(),
+        );
         self
     }
 
@@ -354,12 +415,36 @@ impl Metrics {
     }
 
     /// Counts a stream as active until the returned guard drops.
-    pub fn stream_started(&self, class: SloClass) -> ActiveStream {
-        let gauge = self.streams_active.get_or_create_owned(&ClassLabels {
+    pub fn stream_started(&self, class: SloClass) -> GaugeGuard {
+        GaugeGuard::new(self.streams_active.get_or_create_owned(&ClassLabels {
             class: class.as_str(),
-        });
-        gauge.inc();
-        ActiveStream(gauge)
+        }))
+    }
+
+    /// Counts a request as waiting at the admission point until the returned guard drops.
+    pub fn waiting(&self, class: SloClass) -> GaugeGuard {
+        GaugeGuard::new(self.waiting.get_or_create_owned(&ClassLabels {
+            class: class.as_str(),
+        }))
+    }
+
+    /// A request was admitted after waiting `wait`.
+    pub fn admitted(&self, class: SloClass, wait: Duration) {
+        let labels = ClassLabels {
+            class: class.as_str(),
+        };
+        self.admitted.get_or_create(&labels).inc();
+        self.admission_wait
+            .get_or_create(&labels)
+            .observe(wait.as_secs_f64());
+    }
+
+    pub fn refused(&self, class: SloClass, reason: Refusal) {
+        let labels = RefusalLabels {
+            class: class.as_str(),
+            reason: reason.as_str(),
+        };
+        self.refused.get_or_create(&labels).inc();
     }
 
     pub fn sanitized(&self, field: &'static str) {
@@ -416,11 +501,18 @@ where
     drop(family.get_or_create(&labels));
 }
 
-/// Decrements `lh_gateway_streams_active` when dropped.
+/// Counts one in a gauge while it lives: an active stream, or a waiting request.
 #[derive(Debug)]
-pub(crate) struct ActiveStream(Gauge);
+pub(crate) struct GaugeGuard(Gauge);
 
-impl Drop for ActiveStream {
+impl GaugeGuard {
+    fn new(gauge: Gauge) -> Self {
+        gauge.inc();
+        Self(gauge)
+    }
+}
+
+impl Drop for GaugeGuard {
     fn drop(&mut self) {
         self.0.dec();
     }

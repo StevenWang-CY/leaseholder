@@ -27,12 +27,14 @@ use hyper::body::Incoming;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
+use lh_proto::SloClass;
 use prometheus_client::metrics::histogram::Histogram;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+use crate::admission::Ticket;
 use crate::exchange::Exchange;
-use crate::metrics::{Outcome, Route, UpstreamError};
+use crate::metrics::{Outcome, Refusal, Route, UpstreamError};
 use crate::sanitize::{
     REQUEST_ID, resolve_class, resolve_session, rewrite_body, sanitize_headers, set_engine_headers,
     strip_hop_by_hop,
@@ -129,14 +131,50 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
     parts
         .headers
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    ex.session = Some(session);
+    let session = &*ex.session.insert(session);
 
-    let sent = (read, shared.metrics.overhead(route));
+    // The admission point. Time spent waiting there is not the gateway's overhead.
+    let mut start = read;
+    let ticket = match &shared.admission {
+        None => None,
+        Some(admission) => {
+            let arrived = Instant::now();
+            let admitted = admission.admit(class, session, body.json.len()).await;
+            let wait = arrived.elapsed();
+            ex.admission_wait = Some(wait);
+            start += wait;
+            match admitted {
+                Ok(ticket) => ticket,
+                Err(refusal) => return refused(ex, refusal, class, admission.queue_timeout()),
+            }
+        }
+    };
+
+    let sent = (start, shared.metrics.overhead(route));
     let body = UpstreamBody {
         data: Some(body.json),
         sent: Some(sent),
     };
-    forward(&app, ex, parts, body).await
+    forward(&app, ex, parts, body, ticket).await
+}
+
+/// The error for a request the admission point refused.
+fn refused(ex: Exchange, refusal: Refusal, class: SloClass, timeout: Duration) -> Response {
+    match refusal {
+        Refusal::QueueFull => ex.error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "queue_full",
+            format!("the admission queue of {class} requests is full"),
+        ),
+        Refusal::Timeout => ex.error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "queue_timeout",
+            format!(
+                "not admitted within queue_timeout_s ({} s)",
+                timeout.as_secs_f64()
+            ),
+        ),
+    }
 }
 
 /// `GET /v1/models`: authenticated and sanitized, with no session or class.
@@ -153,7 +191,7 @@ pub(crate) async fn models(app: App, request: Request) -> Response {
     ex.tenant = Some(Arc::clone(&tenant.name));
     sanitize_headers(&mut parts.headers, tenant.trusted, &shared.metrics);
     parts.headers.insert(REQUEST_ID.clone(), ex.id.clone());
-    forward(&app, ex, parts, UpstreamBody::empty()).await
+    forward(&app, ex, parts, UpstreamBody::empty(), None).await
 }
 
 /// Reads a request body of at most `limit` bytes.
@@ -183,12 +221,14 @@ pub(crate) async fn read_body(
     }
 }
 
-/// Sends the request upstream and relays the response.
+/// Sends the request upstream and relays the response. An admitted request's ticket goes with the relay and
+/// is given back when the response ends.
 async fn forward(
     app: &App,
     mut ex: Exchange,
     mut parts: http::request::Parts,
     body: UpstreamBody,
+    ticket: Option<Ticket>,
 ) -> Response {
     let shared = &app.shared;
     let path = parts.uri.path_and_query().cloned();
@@ -240,6 +280,7 @@ async fn forward(
         ex,
         scanner,
         shared.stall_timeout,
+        ticket,
     ));
     let body = ClientBody {
         frames: receiver,
@@ -256,6 +297,7 @@ async fn pump(
     mut ex: Exchange,
     mut scanner: Scanner,
     stall_timeout: Duration,
+    ticket: Option<Ticket>,
 ) {
     let _active = ex.class.map(|class| ex.metrics().stream_started(class));
     let outcome = loop {
@@ -298,6 +340,11 @@ async fn pump(
     drop(upstream);
     drop(frames);
     ex.summary = scanner.finish();
+    // The request leaves the admission point once its upstream connection is gone.
+    if let Some(mut ticket) = ticket {
+        ticket.prompt_tokens = ex.summary.usage.map(|usage| usage.prompt);
+        drop(ticket);
+    }
     ex.finish(outcome);
 }
 

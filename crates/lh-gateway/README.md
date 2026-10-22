@@ -1,6 +1,6 @@
 # lh-gateway
 
-`lh-gateway` is the process in front of one vLLM engine. It carries Leaseholder's request contract: who a request belongs to, which session and SLO class it has, and which engine inputs a client may not set. It relays responses byte for byte, cancels the engine request when the client leaves, and ingests lifecycle events. Leaseholder's policy (`lh-core`: admission, turn-imminent headroom, leases, the recompute ledger) will run inside it from W3.
+`lh-gateway` is the process in front of one vLLM engine. It carries Leaseholder's request contract: who a request belongs to, which session and SLO class it has, and which engine inputs a client may not set. It relays responses byte for byte, cancels the engine request when the client leaves, and ingests lifecycle events. Its admission point runs `lh-core`'s admission policies: today the E2 baselines it emulates, and from W3 Leaseholder's own policy (turn-imminent headroom, leases, the recompute ledger).
 
 It is a harness, not a general-purpose router: one upstream, loopback listeners, and nothing a stock proxy would not need besides the contract above. Its cost is measured below.
 
@@ -13,6 +13,7 @@ It is a harness, not a general-purpose router: one upstream, loopback listeners,
 - **What it sets.** `X-Session-ID` (the resolved session), `X-Request-Id` (a fresh id, also returned to the client), the body `cache_salt` (the first 32 hex digits of SHA-256("leaseholder-cache-salt", NUL, tenant)), and the class's priority in the signals `upstream_priority` lists: `X-Vllm-Priority` by default (realtime 0, interactive 1, background 2, as vLLM's priority scheduling reads it), the same number as the body's `priority` (SGLang's), or `X-SMG-Priority` (`system`, `interactive` and `bulk`, for SMG's priority scheduler). Every proxied inference response carries `X-LH-Session-ID`.
 - **Sessions.** The first present source in [PROTOCOL.md](../../docs/PROTOCOL.md#sessions) order: a trusted tenant's `X-Session-ID`, `X-Claude-Code-Session-ID`, the body's `prompt_cache_key`. A valid session id is used as it is; any other value becomes `h-<first 32 hex of SHA-256(tenant, NUL, value)>`. With no source the gateway mints `m-<32 random hex>`.
 - **Classes.** A trusted tenant may ask for one with `X-LH-Class` (an unknown value is 400); otherwise the tenant's `default_class` applies. A class stricter than the tenant's `max_class` is clamped to it and counted.
+- **Admission.** Under an `[admission]` policy, a request whose session and class are resolved waits there until the policy admits it, and is refused when its queue is full or its wait reaches `queue_timeout_s` ([Admission](#admission)). Nothing polls: a waiting request learns of its admission on a channel. An admitted request holds its place until its response ends or its client leaves; a client that leaves while it waits gives its place up at once.
 - **Relay.** A pump task reads the upstream body into a bounded channel (`stream_buffer_frames`, 64 by default) that the client's response body drains. A full channel stops the pump from reading the upstream, so a slow client slows the engine's socket, not the gateway's memory. If the channel stays full for `stall_timeout_s`, the pump aborts the upstream request and the client's response ends with an error. When the client leaves, its response body is dropped, the pump sees the channel close and drops the upstream body at once, which closes the upstream connection; vLLM aborts a request whose client disconnects. A client that leaves before the response headers is handled the same way: hyper drops the handler, and with it the upstream request. A response cut short, by a stall or by the upstream, never ends cleanly, so the client cannot mistake it for a complete one.
 - **Usage.** Token usage is read from non-streaming JSON bodies and from SSE `data:` lines, for all three APIs (`prompt_tokens`/`input_tokens`, `completion_tokens`/`output_tokens`, `cached_tokens`). Only lines that carry a non-null `usage` or `finish_reason` are parsed. The stream itself is never rewritten.
 - **Lifecycle events.** `POST /v1/events` accepts one `lh_proto::LifecycleEvent` or a JSON array of them, from trusted tenants only (403 otherwise). A batch is validated in full before any of it is recorded; an unknown `type` is 400 with the event's index. Events are deduplicated by `(source, event_id)` within a window of `event_dedup_capacity` ids and `event_dedup_ttl_s`. New events go to an `EventSink`; v0's `LogSink` writes one log line per event. The answer is 202 `{"accepted": n, "duplicates": m}`.
@@ -20,7 +21,7 @@ It is a harness, not a general-purpose router: one upstream, loopback listeners,
 
 ## What it does not do
 
-- Admission, deferral, headroom, leases, prefetch or the ledger: these are `lh-core`'s, from W3.
+- Leaseholder's own admission (headroom timed by lifecycle events, deferral, a realtime class that is never shed), leases, prefetch or the ledger: these are `lh-core`'s, from W3. The admission policies today are baselines.
 - More than one upstream, retries, or load balancing. A session lives on the node that holds its KV.
 - TLS. Every listener binds loopback or a private socket, and the upstream is the loopback end of an SSH tunnel.
 - The Anthropic Messages API: agentic-api translates it and calls the gateway.
@@ -63,6 +64,28 @@ Each `[[listen]]` entry sets exactly one of `tcp = "127.0.0.1:18080"` or `unix =
 | `default_class` | `"interactive"` | The class of requests that do not choose one |
 | `max_class` | `default_class` | The strictest class the tenant may use |
 
+The `[admission]` table sets the admission policy. A key that belongs to other policies than the chosen one is an error, like an unknown key.
+
+| Key | Default | Policies | Meaning |
+|---|---|---|---|
+| `policy` | `"none"` | | `"none"` (every request goes upstream at once), `"static-cap"` or `"token-reservation"` |
+| `background_max_in_flight` | required | `static-cap` | Background requests in flight at most |
+| `pool_tokens` | 36400 | `token-reservation` | The KV pool in tokens; the default is the frozen box's |
+| `reserved_tokens` | required | `token-reservation` | Pool tokens background requests leave free; less than `pool_tokens` |
+| `queue_limit` | 1024 | all but `none` | Requests each class's queue holds; one more gets 429 |
+| `queue_timeout_s` | 60 | all but `none` | How long a request may wait before it gets 503 |
+
+## Admission
+
+The admission point is between resolving a request (tenant, sanitization, session, class) and the upstream request. `lh_core::admission` decides, from the order of events alone: a request's arrival, its response's first byte, its departure. The gateway does the waiting, its timeouts and the cancellation. A policy holds some classes; requests of the others go upstream at once. Within a class, waiting requests are admitted in arrival order, and none goes ahead of a waiting request of a stricter class.
+
+The policies are E2's baselines: the simple answers an operator would try and what routers ship, emulated here so that every arm runs on the same engine, clients and measurement. Each says what it reproduces and what it does not.
+
+- **`static-cap`** (E2 arm 6): at most `background_max_in_flight` background requests in flight; the rest wait. Realtime and interactive requests are not held. It is a background concurrency limit, as an operator would put one in front of the engine.
+- **`token-reservation`** (E2 arm 6, the equal-size static reservation): a background request is admitted while the estimated tokens of the background requests in flight, its own and `reserved_tokens` fit in `pool_tokens`, so that the reservation stays free for realtime and interactive requests, which are not held. A request too large to fit beside the reservation is admitted once no other background request is in flight, so it cannot hold up the queue for good.
+  - *The estimate.* There is no tokenizer. A request's prompt tokens are its session's last reported `prompt_tokens` plus the growth of the body since that request (an agent's next turn resends the conversation and adds to it), at 4 bytes per token. A body smaller than the session's last is another conversation (a subagent shares its parent's session) or a compacted one, and is estimated as for a session without a report: its whole body at 4 bytes per token. The body is the one sent upstream, after sanitization. The last reports of 4,096 sessions are kept, the earliest forgotten first.
+  - *What it leaves out.* The estimate counts a request's prompt, not the KV it holds as it decodes, and requests that share a prefix share its blocks in the engine. The sum is a proxy for the pool's use, not a measurement of it.
+
 ## Errors
 
 Errors the gateway generates use OpenAI's format, `{"error": {"message", "type", "code"}}`, and carry `X-Request-Id`. Responses from the engine pass through unchanged.
@@ -74,7 +97,9 @@ Errors the gateway generates use OpenAI's format, `{"error": {"message", "type",
 | 403 | `untrusted_tenant` | Lifecycle events from an untrusted tenant |
 | 404, 405 | `not_found`, `method_not_allowed` | Any other route or method |
 | 413 | `body_too_large` | A body over `max_body_bytes` |
+| 429 | `queue_full` | The request's class queue at the admission point is full (`queue_limit`); the `type` is `rate_limit_error` |
 | 502 | `upstream_unavailable` | The engine could not be reached, or closed the connection before answering |
+| 503 | `queue_timeout` | Not admitted within `queue_timeout_s` |
 | 504 | `upstream_timeout` | No response headers within `first_byte_timeout_s` |
 
 ## Metrics and logs
@@ -85,7 +110,7 @@ Errors the gateway generates use OpenAI's format, `{"error": {"message", "type",
 |---|---|---|
 | `lh_gateway_requests_total` | `tenant`, `route`, `class`, `status` | API requests. `tenant` is empty when unauthenticated, `class` for routes without one; status 499 means the client left before any response |
 | `lh_gateway_request_outcomes_total` | `class`, `outcome` | Proxied requests by how they ended: `completed` (relayed in full, whatever the status), `cancelled` (the client left first), `stalled`, `error` (the upstream failed) |
-| `lh_gateway_overhead_seconds` | `route` | The end of a request's body to the moment hyper writes the request to an upstream connection: parse, sanitization, resolution and connection checkout. The number behind the 2 ms SLO; buckets from 50 µs, with 2 ms as a bound |
+| `lh_gateway_overhead_seconds` | `route` | The end of a request's body to the moment hyper writes the request to an upstream connection: parse, sanitization, resolution, admission and connection checkout, without the time a request waits for admission. The number behind the 2 ms SLO; buckets from 50 µs, with 2 ms as a bound |
 | `lh_gateway_request_body_seconds` | `route` | Receipt of a request's headers to the end of its body: the client's upload, which a direct call to the engine waits for too |
 | `lh_gateway_first_byte_seconds` | `class` | Receipt to the first response body byte from the upstream |
 | `lh_gateway_duration_seconds` | `class` | Receipt to the end of the upstream response |
@@ -95,8 +120,12 @@ Errors the gateway generates use OpenAI's format, `{"error": {"message", "type",
 | `lh_gateway_upstream_errors_total` | `kind` | `connect`, `request`, `timeout`, `body` |
 | `lh_gateway_events_total` | `type`, `source`, `duplicate` | Lifecycle events received |
 | `lh_gateway_usage_tokens_total` | `class`, `kind` | `prompt`, `completion` and `cached` tokens from response usage |
+| `lh_gateway_admission_admitted_total` | `class` | Requests the admission point let go upstream, whether they waited or not, and those of classes the policy does not hold; zero under policy `none` |
+| `lh_gateway_admission_waiting` | `class` | Requests waiting at the admission point |
+| `lh_gateway_admission_wait_seconds` | `class` | Arrival at the admission point to admission |
+| `lh_gateway_admission_refused_total` | `class`, `reason` | Requests the admission point refused: `queue_full` (429) or `timeout` (503) |
 
-Each request writes one log line at its end (target `lh_gateway::request`, level `warn` for 5xx, `error` and `stalled`): `request_id`, `tenant`, `session`, `class`, `route`, `status`, `outcome`, `first_byte_ms`, `total_ms`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `finish_reason` and, for the gateway's own errors, `error`. Lifecycle events log under `lh_gateway::events`.
+Each request writes one log line at its end (target `lh_gateway::request`, level `warn` for 5xx, `error` and `stalled`): `request_id`, `tenant`, `session`, `class`, `route`, `status`, `outcome`, `admission_wait_ms` (under an admission policy), `first_byte_ms`, `total_ms`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `finish_reason` and, for the gateway's own errors, `error`. Lifecycle events log under `lh_gateway::events`.
 
 `GET /health` answers 200 while the process runs. `GET /ready` answers 200 if the engine's `/health` answered within the last second, asking it again otherwise, and 503 if it does not answer.
 
@@ -141,4 +170,4 @@ What the numbers say:
 
 ## Tests
 
-`cargo test -p lh-gateway` runs in under a second and needs only loopback. The integration tests (`tests/gateway/`) put the gateway between a raw HTTP/1.1 client and an in-process mock engine that records each request, streams SSE with set delays, and reports when its response body (or a pending handler) is dropped. They cover header and body sanitization, session order, hashing and minting, classes and clamping, per-tenant cache salts, 401/400/413/404/405, byte-exact SSE relay with usage, a client leaving mid-stream (the engine's body is dropped within 100 ms) and before the headers, a stalled reader (aborted after the stall timeout, ending in an error), 502 and 504, events, the metrics exposition, the Unix socket (stale file, mode, live-socket refusal, cleanup) and a graceful drain. The unit tests pin the configuration rules, the cache salts and hashed session ids, the constant-time key match at every position, the deduplication window and the SSE scanner under every split of a stream.
+`cargo test -p lh-gateway` runs in under a second and needs only loopback. The integration tests (`tests/gateway/`) put the gateway between a raw HTTP/1.1 client and an in-process mock engine that records each request, streams SSE with set delays, holds a request's answer until the test releases it, and reports when its response body (or a pending handler) is dropped. They cover header and body sanitization, each upstream priority signal, session order, hashing and minting, classes and clamping, per-tenant cache salts, 401/400/413/404/405, byte-exact SSE relay with usage, a client leaving mid-stream (the engine's body is dropped within 100 ms) and before the headers, a stalled reader (aborted after the stall timeout, ending in an error), 502 and 504, events, the metrics exposition, the Unix socket (stale file, mode, live-socket refusal, cleanup), a graceful drain, and the admission point: a static cap that holds while realtime passes, its first-in, first-out queue, 429 at the queue limit and 503 at the queue timeout, a waiting client that leaves and gives its place up, and token reservation priced from a session's last usage. The unit tests pin the configuration rules (each admission policy's own keys and defaults among them), the bounded session table of the token estimate, the cache salts and hashed session ids, the constant-time key match at every position, the deduplication window and the SSE scanner under every split of a stream.

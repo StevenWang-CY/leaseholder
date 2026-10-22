@@ -9,13 +9,17 @@
 //! - **session and class**: resolved per PROTOCOL.md and sent as `X-Session-ID` and a priority where the
 //!   upstream reads one (`X-Vllm-Priority`, the body's `priority` or `X-SMG-Priority`), with a per-tenant
 //!   `cache_salt`;
+//! - **admission**: an `lh_core::admission` policy decides when a request goes upstream, and the gateway does
+//!   the waiting and the cancellation;
 //! - **relay**: responses pass through byte for byte, with backpressure, client-disconnect cancellation and a
 //!   stall timeout;
 //! - **lifecycle events** at `POST /v1/events`, deduplicated, behind [`EventSink`];
 //! - **metrics** at `GET /metrics` and one structured log line per request.
 //!
-//! Admission, placement and leases arrive with `lh-core`; the gateway is the place they will run.
+//! The admission policies today are E2's baselines; Leaseholder's own admission, placement and leases arrive
+//! with `lh-core`, and the gateway is the place they will run.
 
+mod admission;
 mod auth;
 pub mod config;
 mod events;

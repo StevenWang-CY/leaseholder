@@ -400,6 +400,11 @@ async fn metrics_expose_every_series() {
         "lh_gateway_upstream_errors_total{kind=\"timeout\"} 0",
         "lh_gateway_events_total{type=\"turn_started\",source=\"client\",duplicate=\"false\"} 1",
         "lh_gateway_usage_tokens_total{class=\"background\",kind=\"prompt\"} 0",
+        // Policy none has no admission point; its series exist all the same.
+        "lh_gateway_admission_admitted_total{class=\"background\"} 0",
+        "lh_gateway_admission_waiting{class=\"realtime\"} 0",
+        "lh_gateway_admission_wait_seconds_count{class=\"interactive\"} 0",
+        "lh_gateway_admission_refused_total{class=\"background\",reason=\"timeout\"} 0",
     ] {
         assert!(
             text.lines().any(|line| line.starts_with(series)),
