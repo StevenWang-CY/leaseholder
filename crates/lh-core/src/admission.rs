@@ -28,8 +28,8 @@ use lh_proto::SloClass;
 /// A held request, numbered in arrival order.
 pub type RequestId = u64;
 
-/// Bytes of request body per prompt token, where nothing better is known. The AIPerf replay of the Claude
-/// Code traces sends 3.96 per token.
+/// Bytes of request body per prompt token, where nothing better is known. The W2 agent replay sends 3.9 to 4.0
+/// per token.
 pub const BYTES_PER_TOKEN: u64 = 4;
 
 /// An admission policy with its parameters.
@@ -367,7 +367,7 @@ pub struct SessionUsage {
 /// more added, so a body at least as large as its session's last is that request's prompt tokens plus the
 /// growth, at [`BYTES_PER_TOKEN`]. A smaller body is another conversation (a subagent shares its parent's
 /// session) or a compacted one, and it is estimated, like a session without a usage, as the whole body at that
-/// rate. At least one token.
+/// rate. At least one token. `examples/estimate_error.rs` measures the estimate on an AIPerf replay.
 pub fn estimate_tokens(body_bytes: u64, last: Option<SessionUsage>) -> u64 {
     let tokens = match last {
         Some(last) if body_bytes >= last.body_bytes => last
