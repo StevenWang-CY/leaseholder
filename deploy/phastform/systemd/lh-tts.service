@@ -18,6 +18,7 @@ Environment=WEB_PLAYER_PATH=%h/leaseholder/vendor/Kokoro-FastAPI/web
 ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
 ExecStart=%h/leaseholder/venvs/tts/bin/uvicorn api.src.main:app --host 127.0.0.1 --port 8880 --no-access-log
 ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8880/health 600
+# NUMA node 0 (cores 0-7) for the audio servers; node 1, local to the GPU, is the engine's.
 CPUAffinity=0-7
 NUMAPolicy=preferred
 NUMAMask=0

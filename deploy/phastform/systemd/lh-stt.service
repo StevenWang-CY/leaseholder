@@ -15,6 +15,7 @@ Environment=VLLM_USE_FLASHINFER_SAMPLER=0
 ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
 ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/stt.yaml
 ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8100/health 900
+# NUMA node 0 (cores 0-7) for the audio servers; node 1, local to the GPU, is the engine's.
 CPUAffinity=0-7
 NUMAPolicy=preferred
 NUMAMask=0

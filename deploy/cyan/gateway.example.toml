@@ -14,7 +14,8 @@ log_format = "json"
 [[listen]]
 tcp = "127.0.0.1:18080"
 
-# The voice plane's way in. The socket file is private to this user, so its requests need no key.
+# The voice plane's way in. The socket file is private to this user, so its requests need no key. The path is
+# the units' %t/lh/gateway.sock, with cyan's deploy user's uid (1007; `id -u` elsewhere).
 [[listen]]
 unix = "/run/user/1007/lh/gateway.sock"
 tenant = "voice"

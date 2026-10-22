@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # deploy.sh HOST: sync this repository to HOST:~/leaseholder/src and install HOST's units (deploy/<short-name>/).
-# Set LH_SSH to the ssh command for your hosts, e.g. LH_SSH="ssh -F $HOME/.config/penn/ssh_config".
+# Set LH_SSH to the ssh command for your hosts, e.g. LH_SSH="ssh -F $HOME/.ssh/penn_config".
 set -euo pipefail
-host=$1
+host=${1:?usage: deploy.sh HOST}
 name=${host%%.*}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 ssh=${LH_SSH:-ssh}

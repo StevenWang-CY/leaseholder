@@ -1,7 +1,8 @@
-# LiveKit server on cyan. It runs inside the voice-plane network namespace (lh-voicenet.service), where loopback
-# is the only interface; the rtc block below also pins every candidate to 127.0.0.1, as measured on 2026-10-22
-# (`--bind 127.0.0.1` alone still exposed the media ports). API keys come from LIVEKIT_KEYS in
-# ~/.config/leaseholder/livekit.env, which bootstrap.sh generates and which is never committed.
+# LiveKit server on cyan. It runs inside the voice-plane network namespace (lh-voicenet.service), which holds
+# loopback and a dummy interface for the WebRTC clients, with no route out; the rtc block below pins the server's
+# own candidates to 127.0.0.1, as measured on 2026-10-22 (`--bind 127.0.0.1` alone still exposed the media ports).
+# API keys come from LIVEKIT_KEYS in ~/.config/leaseholder/livekit.env, which bootstrap.sh generates and which is
+# never committed.
 port: 17880
 bind_addresses:
   - 127.0.0.1

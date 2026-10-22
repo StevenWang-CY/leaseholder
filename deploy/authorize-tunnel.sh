@@ -4,8 +4,8 @@
 # event replay (5558) and lh-node's event relay (5560). Writes one restricted authorized_keys entry on GPU_NODE,
 # replacing any earlier entry for the same key. Uses LH_SSH like deploy.sh.
 set -euo pipefail
-client=$1
-node=$2
+client=${1:?usage: authorize-tunnel.sh CLIENT GPU_NODE}
+node=${2:?usage: authorize-tunnel.sh CLIENT GPU_NODE}
 ssh=${LH_SSH:-ssh}
 key=$($ssh "$client" cat .ssh/lh_tunnel_ed25519.pub)
 permit=""
