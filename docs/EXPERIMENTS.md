@@ -5,7 +5,7 @@ Four questions decide whether Leaseholder earns its place in front of stock vLLM
 | # | Experiment | Question |
 |---|---|---|
 | E2 | **Voice under agent load** (the headline) | How much background goodput can one GPU harvest while its realtime tier holds a voice SLO, and when does lifecycle timing beat static reservation and engine priority? |
-| E1 | **Parking** | How much do lease-aware parking and prefetch save over LRU plus CPU offload, and how far is each policy from optimal? |
+| E1 | **Parking** | How much of the gap between LRU plus CPU offload and a clairvoyant reference does each level of lifecycle information close, on resume latency? |
 | E3 | **Ledger and contracts** | Can every recomputed token be attributed to a cause, and can Anthropic `cache_control` TTLs be honored? |
 | — | **Reliability drills** | Node loss, an engine killed mid-stream, CPU-tier exhaustion, control-plane restart: each produces a recovery time |
 
@@ -51,20 +51,22 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 
 ## E1: parking
 
+Parking KV during a tool call and prefetching it before the return is published (see [PRIOR-ART.md](PRIOR-ART.md)), so E1 is a measurement: how much of the gap between LRU plus CPU offload and a clairvoyant reference each level of lifecycle information closes (none, session history, an oracle), per regime, with resume latency as the objective.
+
 - **Workload.**
-  - Block-scaled Claude Code traces, replayed closed-loop with recorded think time; gaps are capped at 10–30 minutes.
+  - Block-scaled Claude Code traces, replayed as AIPerf's `agentic_replay` sends them, with recorded think time; gaps are capped at 10–30 minutes.
   - Session count is swept to reach KV pressure of 1–8×, with the CPU tier at 2×, 4× and 8× the GPU pool.
-- **Order.** Simulator first: `lh-sim` runs every arm, including Belady-OPT. The GPU runs the arms the simulator says matter.
+- **Order.** Simulator first: `lh-sim` runs every arm and the clairvoyant reference. The GPU runs the arms the simulator says matter.
 - **Arms.**
-  - GPU-only LRU; LRU + CPU tier; ARC + CPU tier;
+  - GPU-only LRU; LRU + CPU tier; S3-FIFO + CPU tier (these three are in `lh-sim` v0);
   - a fixed-TTL hold;
   - LRU + CPU with prefetch timed from session history; the same with prefetch timed by an oracle;
   - lease-aware CPU eviction;
   - active-session admission (against stock `max_num_active_seqs`);
-  - Belady-OPT (simulated only).
-- **Metrics.** Resume TTFT p50/p90/p99 by source tier; avoidable recompute; PCIe bytes; sessions within SLO; the ledger's cause breakdown.
-- **Plot.** A regime map of KV pressure against the pause/residency ratio. Each cell shows the gain over LRU + CPU and the remaining gap to OPT.
-- **Gate (G-sim).** If OPT's headroom over LRU + CPU is under about 10% in the realistic regime, E1 is published as a regime map with a negative result, and the `CachePolicy` plugin stays off.
+  - the clairvoyant reference (simulated only; in `lh-sim` v0): Belady's MIN in each tier, replayed on the LRU + CPU timeline. MIN is optimal only for one tier's hit count over unit-size blocks; with prefix hits across two tiers it is a reference, not a bound.
+- **Metrics.** Resume TTFT p50/p90/p99 by source tier, and stalls; avoidable recompute; PCIe bytes; sessions within SLO; the ledger's cause breakdown.
+- **Plot.** A regime map over KV pressure (live working set over the pool), π (median pause over restore time) and ρ (restore over recompute time at the median prompt). Each cell shows the share of the gap to the clairvoyant reference that each information level closes.
+- **Gate (G-sim).** If the clairvoyant reference's headroom over LRU + CPU is under about 10% in the realistic regime, E1 is published as a regime map with a negative result, and the `CachePolicy` plugin stays off.
 
 ## E3: ledger
 

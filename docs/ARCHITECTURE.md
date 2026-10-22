@@ -244,16 +244,16 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 
 ## 8. Simulator
 
-`lh-sim` decides, before any engine code is written, how much a retention policy can win over LRU plus CPU offload, and where.
-- **Traces.** It replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context) or 64× (16k), with outputs scaled the same way; miss-ratio curves show fidelity before and after scaling.
+`lh-sim` decides, before any engine code is written, how much a retention policy can win over LRU plus CPU offload, and where. Its [README](../crates/lh-sim/README.md) gives the model, the simplifications and the validation.
+- **Replay.** It replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context) or 64× (16k), as AIPerf's `agentic_replay` sends them: lanes start at seeded points of their traces, think times are capped, subagents run beside their parents, and recycled plays get a fresh cache-bust namespace. Its port of AIPerf's loader and lane plan matches AIPerf's own field for field on the full corpus.
+- **Engine model.** vLLM 0.32's prefix cache over 16-token blocks with exact prefix identities, namespaced per play and model: a pinned GPU pool freed tail first into an LRU queue, and the OffloadingConnector's write-through CPU tier, which extends GPU hits and stores output KV too. Requests wait in order when pinned blocks fill the pool. Time to first token comes from `lh-core`'s E0 cost model, without batching or queueing.
 - **Arms.**
-  - GPU-only LRU; LRU + CPU; ARC + CPU;
-  - a fixed-TTL hold;
-  - prefetch by session history; prefetch by oracle;
-  - lease-aware CPU eviction; active-session admission;
-  - Belady-OPT.
-- **Calibration.** The tier cost model is checked against 2–3 GPU operating points, with a target error of 10–15%.
-- **Code reuse.** The arms are `lh-core` policies, so simulator and production share code.
+  - in v0: GPU-only LRU; LRU + CPU; S3-FIFO + CPU;
+  - the clairvoyant reference, in v0: Belady's MIN in each tier, replayed on the LRU + CPU timeline. It is a reference, not a bound: MIN is optimal only for one tier's hit count over unit-size blocks, and here hits are prefixes served from two tiers;
+  - next: a fixed-TTL hold; prefetch by session history and by oracle; lease-aware CPU eviction; active-session admission.
+- **Outputs.** Per arm: prompt-token shares by source, with recompute split by cause; time to first token overall and for resumes; PCIe bytes, evictions and stalls; the regime coordinates (KV pressure, π, ρ). Miss-ratio curves of the GPU tier (Mattson stack distances for LRU, MIN at chosen capacities) at 32× and at the original token counts show what scaling keeps (reuse structure) and what it changes (timing).
+- **Calibration.** Driven by W0's measured request times, the engine model reproduces the measured GPU and CPU shares within half a point. Its own replay runs faster than the loaded box, because the cost model is the idle box's: it overstates GPU hits by 6 points and understates the latency tail. The target is 10–15% on resume TTFT at 2–3 GPU operating points, which needs a contention model.
+- **Code reuse.** The cost model and KV geometry are `lh-core`'s and shared with the gateway; the policies that also run in production (leases, prefetch timing) are to live in `lh-core` as well.
 
 ## 9. Observability
 
@@ -284,6 +284,7 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 |---|---|
 | `lh-proto` | Wire format pinned by examples; schemas kept current; ledger accounting identities |
 | `lh-core` | Unit and property tests for the lease invariants; deterministic simulation with seeded event sequences and an injected clock |
+| `lh-sim` | The AIPerf port against AIPerf's own plan; engine semantics on hand-made sequences; the clairvoyant tiers and MIN against exhaustive search; Mattson stack distances against a direct LRU simulation; every arm end to end on a 16-trace subset |
 | `lh-gateway` | Integration against a mock upstream (llm-d-inference-sim or a recorded server): mid-stream disconnect, backpressure, header sanitization, admission decisions, event idempotency |
 | Ledger | The injected-cause suite: at least 95% correct attribution, with the `unknown` share reported |
 | Engine plugins | CPU tests against vLLM's real offload manager (in CI); a live check on the GPU node |

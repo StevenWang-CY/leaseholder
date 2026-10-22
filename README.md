@@ -61,7 +61,9 @@ Week 0 of a 12-week plan.
 | `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison | **v0**. Replays the 32× corpus against the frozen box (688 requests, 0 errors) |
 | `leaseholder_voice`: LiveKit plugin factory, barge-in and header integration test | **v0**. The barge-in test passes on cyan: the LLM stream closes 0.58 s after onset when interrupting on speech, 2.19 s with stock handling |
 | `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest, metrics | **v0** ([crates/lh-gateway](crates/lh-gateway)). Measured in-process against a direct call: 0.04 ms added at p50 for one client, at most 0.82 ms at p99 with 64 concurrent streams |
-| `lh-core`, `lh-node`, `lh-sim` | W1 |
+| `lh-core`: the tier cost model and KV geometry | **v0** ([crates/lh-core](crates/lh-core)) |
+| `lh-sim`: the agent replay through a model of vLLM's two-tier KV cache, with stock arms, a clairvoyant reference and miss-ratio curves | **v0** ([crates/lh-sim](crates/lh-sim)). Driven by W0's measured request times, it reproduces the engine's GPU and CPU hit shares within half a point; the full corpus simulates in 6 s on one core |
+| `lh-node` | W1 |
 
 The experiments are planned in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The headline is E2: the voice SLO frontier against tuned stock vLLM while background agents harvest the GPU.
 
@@ -86,8 +88,10 @@ deploy/deploy.sh cyan.cis.upenn.edu
 ## Repository layout
 
 ```text
-crates/lh-proto/          wire types and their JSON Schemas (lh-core, lh-node, lh-sim join in W1)
+crates/lh-proto/          wire types and their JSON Schemas (lh-node joins in W1)
+crates/lh-core/           the tier cost model and KV geometry, shared by the simulator and the gateway
 crates/lh-gateway/        the gateway in front of vLLM, with its overhead benchmark
+crates/lh-sim/            the KV cache simulator: AIPerf's replay, vLLM's two tiers, policy arms
 python/leaseholder_vllm/  engine-side plugins for vLLM 0.32, with CPU tests and a live GPU check
 python/leaseholder_bench/ trace conversion, AIPerf plugins and configs, live-reply replay driver
 python/leaseholder_voice/ LiveKit Agents integration and its hermetic barge-in test
