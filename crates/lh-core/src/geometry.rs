@@ -23,6 +23,7 @@ impl KvGeometry {
     /// stays BF16.
     pub const QWEN3_4B_BF16: Self = Self::new(36, 8, 128, 2, 16);
 
+    /// The geometry of a model's KV cache, from its attention shape and the engine block size.
     pub const fn new(
         layers: u64,
         kv_heads: u64,
@@ -36,22 +37,14 @@ impl KvGeometry {
         }
     }
 
+    /// KV bytes of one engine block.
     pub const fn block_bytes(&self) -> u64 {
         self.bytes_per_token * self.block_tokens
     }
 
+    /// KV bytes of `tokens` tokens.
     pub const fn bytes_for_tokens(&self, tokens: u64) -> u64 {
         self.bytes_per_token * tokens
-    }
-
-    /// Blocks that hold `tokens`, counting a partial last block.
-    pub const fn blocks_for_tokens(&self, tokens: u64) -> u64 {
-        tokens.div_ceil(self.block_tokens)
-    }
-
-    /// Full blocks within `tokens`. Only full blocks are cached and reused.
-    pub const fn full_blocks(&self, tokens: u64) -> u64 {
-        tokens / self.block_tokens
     }
 
     /// Whole blocks that fit in `bytes`. vLLM sizes its CPU tier as `cpu_bytes_to_use` divided by the
@@ -103,19 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn block_arithmetic() {
-        let g = KvGeometry::QWEN3_4B_BF16;
-        assert_eq!(g.blocks_for_tokens(0), 0);
-        assert_eq!(g.blocks_for_tokens(1), 1);
-        assert_eq!(g.blocks_for_tokens(16), 1);
-        assert_eq!(g.blocks_for_tokens(17), 2);
-        assert_eq!(g.full_blocks(15), 0);
-        assert_eq!(g.full_blocks(16), 1);
-        assert_eq!(g.full_blocks(47), 2);
-    }
-
-    #[test]
-    fn frozen_box_capacities() {
+    fn the_frozen_box_has_2275_gpu_and_9102_cpu_blocks() {
         let g = KvGeometry::QWEN3_4B_BF16;
         let cap = TierCapacity::frozen_box(&g);
         assert_eq!(cap.gpu_blocks, 2_275);

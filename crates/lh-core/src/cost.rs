@@ -36,6 +36,7 @@ pub struct Linear {
 }
 
 impl Linear {
+    /// The latency at `tokens`, in milliseconds.
     pub fn at(&self, tokens: u64) -> f64 {
         self.ms + self.us_per_token * tokens as f64 / 1e3
     }
@@ -55,6 +56,7 @@ pub struct Quadratic {
 }
 
 impl Quadratic {
+    /// The latency at `tokens`, in milliseconds.
     pub fn at(&self, tokens: u64) -> f64 {
         let n = tokens as f64;
         self.ms + self.us_per_token * n / 1e3 + self.ns_per_token_squared * n * n / 1e6
@@ -79,6 +81,7 @@ pub struct PromptSources {
 }
 
 impl PromptSources {
+    /// The prompt length.
     pub const fn total(&self) -> u64 {
         self.gpu + self.cpu + self.computed
     }
@@ -97,12 +100,6 @@ pub struct TierCost {
     pub inter_token_ms: f64,
     /// The engine block in tokens. A computed tail no longer than this is priced as part of a hit.
     pub block_tokens: u64,
-}
-
-impl Default for TierCost {
-    fn default() -> Self {
-        Self::frozen_box()
-    }
 }
 
 impl TierCost {
