@@ -6,6 +6,10 @@ host: 127.0.0.1
 port: 8000
 max-model-len: 32768
 disable-uvicorn-access-log: true
+# Agents call tools: parse Qwen3's tool calls into OpenAI tool_calls (chat completions and Responses). Requests without
+# tools are unaffected.
+enable-auto-tool-choice: true
+tool-call-parser: hermes
 
 # The KV pool is fixed at 5 GiB (36,400 tokens), so the footprint depends neither on the profiler nor on the
 # audio servers. vLLM still requires utilization x total memory to be free at start: 10.83 GiB, with about
