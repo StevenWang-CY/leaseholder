@@ -60,7 +60,8 @@ Week 0 of a 12-week plan.
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0**. CPU-tested against vLLM's real offload manager; live-checked on the GPU |
 | `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison | **v0**. Replays the 32× corpus against the frozen box (688 requests, 0 errors) |
 | `leaseholder_voice`: LiveKit plugin factory, barge-in and header integration test | **v0**. The barge-in test passes on cyan: the LLM stream closes 0.58 s after onset when interrupting on speech, 2.19 s with stock handling |
-| `lh-core`, `lh-gateway`, `lh-node`, `lh-sim` | W1 |
+| `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest, metrics | **v0** ([crates/lh-gateway](crates/lh-gateway)). Measured in-process against a direct call: 0.04 ms added at p50 for one client, at most 0.82 ms at p99 with 64 concurrent streams |
+| `lh-core`, `lh-node`, `lh-sim` | W1 |
 
 The experiments are planned in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The headline is E2: the voice SLO frontier against tuned stock vLLM while background agents harvest the GPU.
 
@@ -85,7 +86,8 @@ deploy/deploy.sh cyan.cis.upenn.edu
 ## Repository layout
 
 ```text
-crates/lh-proto/          wire types and their JSON Schemas (lh-core, lh-gateway, lh-node, lh-sim join in W1)
+crates/lh-proto/          wire types and their JSON Schemas (lh-core, lh-node, lh-sim join in W1)
+crates/lh-gateway/        the gateway in front of vLLM, with its overhead benchmark
 python/leaseholder_vllm/  engine-side plugins for vLLM 0.32, with CPU tests and a live GPU check
 python/leaseholder_bench/ trace conversion, AIPerf plugins and configs, live-reply replay driver
 python/leaseholder_voice/ LiveKit Agents integration and its hermetic barge-in test

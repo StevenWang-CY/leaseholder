@@ -1,0 +1,35 @@
+# lh-gateway on cyan. Copy to ~/.config/leaseholder/gateway.toml (mode 600) and replace each placeholder with
+# the SHA-256 of a new key; the file holds digests only. To make a key and its digest:
+#   key=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n'); printf '%s' "$key" | sha256sum
+# Every key is described in crates/lh-gateway/README.md.
+
+# vLLM on Phastform, through lh-tunnel-phastform.
+upstream = "http://127.0.0.1:18000"
+log_format = "json"
+
+# The host network. Other users of cyan can reach loopback, so requests here need a key.
+[[listen]]
+tcp = "127.0.0.1:18080"
+
+# The voice plane's way in. The socket file is private to this user, so its requests need no key.
+[[listen]]
+unix = "/run/user/1007/lh/gateway.sock"
+tenant = "voice"
+
+# The LiveKit voice worker. It sends X-Session-ID (voice-<room SID>) and X-LH-Class: realtime.
+[tenants.voice]
+trusted = true
+default_class = "realtime"
+max_class = "realtime"
+
+# agentic-api, carrying Claude Code and Codex sessions.
+[tenants.agents]
+keys_sha256 = ["<sha256 of the agents key>"]
+trusted = true
+default_class = "background"
+max_class = "interactive"
+
+# Load generators (AIPerf replays). Untrusted: their X-Session-ID and X-LH-Class are ignored.
+[tenants.bench]
+keys_sha256 = ["<sha256 of the bench key>"]
+default_class = "interactive"
