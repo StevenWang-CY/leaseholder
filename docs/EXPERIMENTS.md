@@ -1,6 +1,6 @@
 # Experiments
 
-Four questions decide whether Leaseholder earns its place in front of stock vLLM. Each experiment compares against tuned stock vLLM, and against what engines and routers already ship, on the same frozen box (same model, precision, memory split and SLO), and every plot is regenerated from scripted runs. The headline is also reproduced on datacenter GPUs.
+Four questions decide whether Leaseholder earns its place in front of stock vLLM. Each experiment compares against tuned stock vLLM, and against what engines and routers already ship, on the same frozen box (same model, precision, memory split and SLO), and every plot is regenerated from scripted runs.
 
 | # | Experiment | Question |
 |---|---|---|
@@ -10,8 +10,8 @@ Four questions decide whether Leaseholder earns its place in front of stock vLLM
 | — | **Reliability drills** | Node loss, an engine killed mid-stream, CPU-tier exhaustion, control-plane restart: each produces a recovery time |
 
 E0 comes first. It re-measures the tier cost model on the frozen box and checks that `lh-sim` reproduces 2–3 GPU operating points within 10–15% on resume TTFT and recompute.
-- **Cost model: done in W1.** The table and fits are in [BENCHMARKS.md](BENCHMARKS.md), and `lh-core` carries them.
-- **Simulator: in progress.** Its engine model matches the W0 replay's GPU and CPU shares within half a point when driven by the measured request times. Its own replay still runs at the idle box's speed, so the TTFT check waits for a contention model (W2).
+- **Cost model: done in W1.** The table and fits are in [BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0), and `lh-core` carries them.
+- **Simulator: in progress.** Driven by the measured request times, its engine model matches the W0 replay's GPU and CPU shares ([validation](../crates/lh-sim/README.md#validation-against-w0)). Its own replay still runs at the idle box's speed, so the TTFT check waits for a contention model (W2).
 
 ## E2: voice under agent load
 
@@ -33,10 +33,10 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 | 9 | Leaseholder: headroom timed by lifecycle events and freed by parking, the critical-window prefill throttle, class-aware admission (never shed), the engine "make room" patch; each also alone | This project |
 | 10 | MPS with an active-thread split; audio off the GPU | Equal-hardware partitioning |
 
-**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (speech onset, end of turn, the preemptive-generation transcript); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The interrupt-on-speech setting closes the LLM stream 0.58 s after barge-in onset; the stock pause-then-interrupt keeps it open for about 2.2 s, a cost reported as wasted tokens.
+**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (speech onset, end of turn, the preemptive-generation transcript); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech closes it after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); the difference is reported as wasted tokens.
 
 **Metrics.**
-- Voice V2V p50/p95/p99 from waveforms, server-side and end-to-end (including endpointing).
+- Voice V2V p50, p95 and p99 from waveforms, server-side and end-to-end (including endpointing).
 - Barge-in to silence; audio gaps of 100 ms or more.
 - LLM time to first sentence and the stage waterfall, separating compute interference (step time) from KV admission blocking.
 - Abort latency and wasted tokens, including discarded preemptive generations.
@@ -49,7 +49,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 
 **Volume.** 500–1,000 turns per arm; at least five repeats in the discriminating scenario, reported per run.
 
-**Other hardware.** There is no datacenter GPU in this project. E2 runs on the frozen box, and a second RTX 5060 Ti in booked windows adds dedicate vs pool. What transfers is stated in hardware-free terms: each arm's behavior against KV pressure, π and ρ, and the engine logic (a waiting request cannot preempt running work under KV pressure on any GPU). `lh-sim` places L4 and H100 configurations on the same map from cost fits built from published specifications, labeled as modeled.
+**Other hardware.** E2 runs on the frozen box, and a second RTX 5060 Ti in booked windows adds dedicate vs pool. What transfers is stated in hardware-free terms: each arm's behavior against KV pressure, π and ρ, and the engine logic (a waiting request cannot preempt running work under KV pressure on any GPU). `lh-sim` places L4 and H100 configurations on the same map from cost fits built from published specifications, labeled as modeled.
 
 ## E1: parking
 
@@ -61,12 +61,13 @@ Parking KV during a tool call and prefetching it before the return is published 
 - **Order.** Simulator first: `lh-sim` runs every arm and the clairvoyant reference. The GPU runs the arms the simulator says matter.
 - **Arms.**
   - GPU-only LRU; LRU + CPU tier; S3-FIFO + CPU tier (these three are in `lh-sim` v0);
-  - a fixed-TTL hold;
+  - a fixed-TTL hold (Continuum);
   - LRU + CPU with prefetch timed from session history; the same with prefetch timed by an oracle;
+  - predictive upload (Tokencake), idleness ranking (MORI) and min-waste preserve, discard or swap (InferCept);
   - lease-aware CPU eviction;
   - active-session admission (against stock `max_num_active_seqs`);
   - the clairvoyant reference (simulated only; in `lh-sim` v0): Belady's MIN in each tier, replayed on the LRU + CPU timeline. MIN is optimal only for one tier's hit count over unit-size blocks; with prefix hits across two tiers it is a reference, not a bound.
-- **Metrics.** Resume TTFT p50/p90/p99 by source tier, and stalls; avoidable recompute; PCIe bytes; sessions within SLO; the ledger's cause breakdown.
+- **Metrics.** Resume TTFT p50, p90 and p99 by source tier, and stalls; avoidable recompute; PCIe bytes; sessions within SLO; the ledger's cause breakdown.
 - **Plot.** A regime map over KV pressure (live working set over the pool), π (median pause over restore time) and ρ (restore over recompute time at the median prompt). Each cell shows the share of the gap to the clairvoyant reference that each information level closes.
 - **Gate (G-sim).** If the clairvoyant reference's headroom over LRU + CPU is under about 10% in the realistic regime, E1 is published as a regime map with a negative result, and the `CachePolicy` plugin stays off.
 
@@ -76,7 +77,7 @@ Parking KV during a tool call and prefetching it before the return is published 
 |---|---|
 | Injected-cause suite | Triggers the key causes deliberately and requires at least 95% correct attribution, with the `unknown` share reported: a timestamp that breaks the prefix, a forced eviction, a preemption, an engine restart |
 | Recompute anatomy | The share of recomputed tokens by cause on E1 and E2 replays: cold first turns, prefix breaks (chat templates re-rendering tool-call JSON, context edits), subagent forks, eviction, preemption |
-| Cache contracts as an SLI | Anthropic `cache_control` TTLs (renewed on each use) become lease floors. The honor rate inside the TTL is reported as an SLI, measured under a deliberately small CPU tier where honoring can fail, with usage in Anthropic's fields and a cache read reported only for a real hit. Providers promise billing eligibility, not residency, so this is not a guarantee |
+| Cache contracts as an SLI | Anthropic `cache_control` TTLs (renewed on each use) become lease floors. The honor rate inside the TTL ([SLO.md](SLO.md#indicators-and-targets)) is measured under a deliberately small CPU tier where honoring can fail, with usage in Anthropic's fields and a cache read reported only for a real hit |
 | Real harness | Claude Code through agentic-api and Leaseholder, with ledger output |
 
 ## Reliability drills and the two-node window
@@ -93,7 +94,7 @@ CPU-tier exhaustion is a test: grants degrade to `floor = NONE`, violations are 
 
 ## How runs are made
 
-- **One frozen box** for every experiment ([deploy/phastform](../deploy/phastform)). Variants are engine drop-ins (see [RUNBOOK.md](../ops/RUNBOOK.md)). Runs are batched by engine configuration, because a restart costs minutes.
+- **One frozen box** for every experiment ([`deploy/phastform`](../deploy/phastform)). Variants are engine drop-ins ([RUNBOOK.md](../ops/RUNBOOK.md#engine-variants)). Runs are batched by engine configuration, because a restart costs minutes.
 - **Repeats.** Three repeats, at least five in E2's discriminating scenario, reported per run; warm-up trimmed; the prefix cache reset between load levels with `POST /reset_prefix_cache?reset_external=true`, once in-flight stores finish.
 - **Load generator health.** Every run checks that the load generator is not saturated. Admission rejections are reported separately. Agents are replayed closed-loop; open-loop arrivals come from multiple processes, to avoid coordinated omission.
 - **Run logs.** Each run directory holds the configuration, host and load, start and end times, raw samples and the plot inputs, and is archived on mustard.
