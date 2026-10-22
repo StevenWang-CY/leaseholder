@@ -46,14 +46,14 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 │  lh-node sidecar: KV-event relay, engine epoch, health                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-Gray: second RTX 5060 Ti, booked windows; same image; reproduction, failover drill, partitioned-GPU upper bound
+Gray: second RTX 5060 Ti, booked windows; same image; dedicate-vs-pool experiment, node-loss drill
 mustard: Prometheus · Grafana · datasets · run archive      yellow, red: simulator sweeps · Linux builds
 ```
 
 | Host | Role |
 |---|---|
 | **Phastform** | The always-on GPU node, running the frozen box (§5). vLLM is pinned to NUMA node 1, the audio servers to node 0 |
-| **Gray** | Second GPU node in booked windows, with the identical image. Reproduction on a second card, the node-loss drill, the partitioned-GPU upper bound. Nothing on the critical path depends on it |
+| **Gray** | Second GPU node in booked windows, with the identical image: the equal-hardware dedicate-vs-pool experiment and the node-loss drill. Nothing on the critical path depends on it |
 | **cyan** | Control host: the control plane, agentic-api, LiveKit and its worker, voice bots and AIPerf, each on its own cores. Every run checks that the load generator itself is not saturated |
 | **mustard** | Observability and datasets: Prometheus, Grafana, trace datasets, the run archive |
 | **yellow, red** | Simulator sweeps and Linux release builds |
@@ -97,7 +97,7 @@ Lease {
   session_id
   holder            = (node, engine_epoch)   // fenced: an epoch change voids the lease
   class             = realtime | interactive | background
-  floor             = CPU | NONE              // guaranteed until expires_at; GPU residency is always best-effort
+  floor             = CPU | NONE              // held until expires_at where capacity allows (refusals counted); GPU residency is best-effort
   expires_at                                  // contract term (e.g. Anthropic cache_control 5m / 1h); renewed on hit
   next_arrival                                // ETA or distribution, from lifecycle events, else session history
   resume_target_ms                            // from the class SLO
@@ -143,7 +143,7 @@ The control plane is a Rust workspace of about 3–4k lines, excluding tests. Th
 | `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions over an injected clock, with no I/O. `trait Policy { admit, place, on_event, on_complete }` |
 | `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane |
 | `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health |
-| `lh-sim` | A trace-driven KV simulator that runs the same `lh-core` code against the tier cost model, plus a Belady-OPT bound |
+| `lh-sim` | A trace-driven two-tier KV simulator that runs `lh-core`'s cost model and policies, with a clairvoyant reference (Belady's MIN per tier) |
 
 ### 4.2 Request path
 

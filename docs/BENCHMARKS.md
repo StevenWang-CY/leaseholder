@@ -135,7 +135,7 @@ This was W0 checklist item 5. The setup: AIPerf `agentic_replay` of the 32×-sca
 **Reading.**
 - Half of the evicted blocks (50.4%) had been idle no longer than the 90th-percentile reuse gap, so LRU evicts sessions that are coming back.
 - With the 4× write-through CPU tier, those misses cost a restore, not a recompute. The headroom on this configuration is GPU placement and prefetch timing, not CPU-tier retention.
-- The reuse-gap histogram counts only blocks that survived until reuse, so it is biased short. This is a signal, and the simulator's OPT bound is the measurement.
+- The reuse-gap histogram counts only blocks that survived until reuse, so it is biased short. This is a signal, and the simulator's clairvoyant reference is the measurement.
 
 ## Load generation
 
