@@ -4,14 +4,17 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
-use lh_core::{FROZEN_BOX_CPU_BYTES, FROZEN_BOX_POOL_TOKENS, KvGeometry, TierCapacity, TierCost};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use lh_core::{
+    FROZEN_BOX_CPU_BYTES, FROZEN_BOX_POOL_TOKENS, KvGeometry, StepCost, TierCapacity, TierCost,
+};
 use lh_sim::aiperf::{ConvKind, PlanOptions, reference};
 use lh_sim::corpus::Corpus;
 use lh_sim::engine::Engine;
-use lh_sim::replay::ReplayConfig;
+use lh_sim::replay::{ReplayConfig, Service};
 use lh_sim::replay_log;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
+use lh_sim::scheduler::StepBudget;
 use lh_sim::{metrics, mrc};
 use serde_json::json;
 
@@ -116,17 +119,41 @@ impl ReplayArgs {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum ServiceArg {
+    /// vLLM's step loop with the fitted step-time model.
+    Contention,
+    /// v0: E0's idle-box cost per request, with no queueing behind other requests.
+    Idle,
+}
+
 #[derive(Args)]
 struct CostArgs {
+    /// How the engine serves requests.
+    #[arg(long, value_enum, default_value_t = ServiceArg::Contention)]
+    service: ServiceArg,
     /// The E0 tier fits: the summary.json that `lh-bench tiers` writes. Default: the frozen box.
     #[arg(long)]
     costs: Option<PathBuf>,
-    /// Decode inter-token latency in ms. Default: 15.6 (the W0 replay's p50).
+    /// The step-time model, a JSON object with `StepCost`'s fields. Default: the frozen box's fit.
+    #[arg(long)]
+    step_costs: Option<PathBuf>,
+    /// Decode inter-token latency in ms, for the idle service. Default: 15.6 (the W0 replay's p50).
     #[arg(long)]
     itl_ms: Option<f64>,
 }
 
 impl CostArgs {
+    fn service(&self) -> Result<Service, String> {
+        Ok(match self.service {
+            ServiceArg::Idle => Service::Idle,
+            ServiceArg::Contention => Service::Contention {
+                budget: StepBudget::FROZEN_BOX,
+                steps: step_cost(self.step_costs.as_deref())?,
+            },
+        })
+    }
+
     fn cost(&self) -> Result<TierCost, String> {
         let mut cost = match &self.costs {
             Some(path) => {
@@ -141,6 +168,15 @@ impl CostArgs {
         }
         Ok(cost)
     }
+}
+
+/// The step-time model in `path`, or the frozen box's.
+fn step_cost(path: Option<&Path>) -> Result<StepCost, String> {
+    let Some(path) = path else {
+        return Ok(StepCost::frozen_box());
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[derive(Args)]
@@ -291,6 +327,7 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
 fn run(args: RunArgs) -> Result<(), String> {
     let mut cfg = RunConfig::frozen_box(args.replay.config());
     cfg.cost = args.cost.cost()?;
+    cfg.service = args.cost.service()?;
     cfg.reference = args.reference;
     let capacities = args
         .capacity
@@ -430,6 +467,7 @@ fn mrc(args: MrcArgs) -> Result<(), String> {
         return Err("mrc scales tokens itself; leave --token-scale at 1".into());
     }
     cfg.cost = args.cost.cost()?;
+    cfg.service = args.cost.service()?;
     let capacity = args.capacity.capacities(&cfg.geometry, 1)[0];
     let mut corpus = args.replay.corpus()?;
     let factor = match args.unscale {

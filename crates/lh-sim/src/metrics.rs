@@ -167,9 +167,9 @@ pub fn summarize(
         if r.turn > 0 {
             resume.push(ms);
         }
-        if r.admitted_ns > r.issued_ns {
+        if r.blocked_ns > 0 {
             s.stalls += 1;
-            s.stall_s += (r.admitted_ns - r.issued_ns) as f64 / 1e9;
+            s.stall_s += r.blocked_ns as f64 / 1e9;
         }
         prompts.push(r.prompt_tokens as f64);
         if let Some(d) = r.delay_ms {

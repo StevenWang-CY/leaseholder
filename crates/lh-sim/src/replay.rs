@@ -20,21 +20,44 @@
 //!   period are dropped from the results. When no request is in flight, pending scheduler timers are
 //!   pulled forward so the engine idles at most `system_idle_cap` seconds.
 //!
-//! The engine serves requests without mutual queueing: a request's time to first token is the cost
-//! model's for its hit pattern, then it decodes at a constant inter-token latency. It waits only for
-//! free GPU blocks.
+//! The engine serves requests in one of two ways ([`Service`]). Under contention, a request reaches
+//! vLLM's step loop ([`crate::scheduler`]) after its host time and shares every step with the
+//! requests running beside it. Idle (v0), its time to first token is E0's cost for its hit pattern
+//! after any wait for free blocks, then it decodes at a constant inter-token latency, with no
+//! queueing behind other requests.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
 use std::rc::Rc;
 
-use lh_core::{PromptSources, TierCost};
+use lh_core::{PromptSources, StepCost, TierCost};
 use serde::Serialize;
 
 use crate::aiperf::{ConvKind, ReplayPlan, snapshot};
 use crate::corpus::Corpus;
 use crate::engine::{Admission, Engine, EngineRequest};
 use crate::prefix::{BlockId, IdMap, IdSet, MAX_MODELS, MAX_PLAYS, NodeId, Tokens};
+use crate::scheduler::{Outcome, Scheduler, StepBudget};
+
+/// How the engine serves the requests it admits.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Service {
+    /// v0: E0's idle-box cost per request ([`TierCost`]), with no queueing behind other requests.
+    Idle,
+    /// vLLM's step loop with the step-time model.
+    Contention { budget: StepBudget, steps: StepCost },
+}
+
+impl Service {
+    /// The step loop on the frozen box: its 512/256 step budget and the fitted step-time model.
+    pub const fn frozen_box() -> Self {
+        Self::Contention {
+            budget: StepBudget::FROZEN_BOX,
+            steps: StepCost::frozen_box(),
+        }
+    }
+}
 
 /// How the replay is driven: the `phases` section of `configs/agentic_replay.yaml`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -100,9 +123,12 @@ pub struct RequestRecord {
     /// The think-time delay that preceded this turn, in ms.
     pub delay_ms: Option<f64>,
     pub issued_ns: u64,
+    /// When the engine took its blocks.
     pub admitted_ns: u64,
+    /// How long it waited for free blocks.
+    pub blocked_ns: u64,
     pub done_ns: u64,
-    /// Time to first token as the client sees it: waiting for blocks plus the modeled prefill.
+    /// Time to first token as the client sees it.
     pub ttft_ns: u64,
 }
 
@@ -197,7 +223,12 @@ enum Event {
         stream: u32,
         turn: u32,
     },
+    /// Idle service: a request's last token.
     Complete(u64),
+    /// Contention: a request reaches the scheduler after its host time.
+    Arrive(u64),
+    /// Contention: the step loop runs (a step ends, or a restore finishes on an idle engine).
+    Step,
     Recycle(usize),
 }
 
@@ -304,7 +335,7 @@ struct Play {
     overlap_spawned: Vec<u32>,
 }
 
-/// A request in the engine, or waiting for its blocks.
+/// A request on its way to the engine, in it, or waiting for its blocks.
 #[derive(Debug)]
 struct InFlight {
     stream: u32,
@@ -312,6 +343,9 @@ struct InFlight {
     warmup: bool,
     issued: u64,
     admitted: u64,
+    blocked: u64,
+    /// When its first token came out, under contention.
+    first_token: u64,
     prompt: Vec<BlockId>,
     prompt_tokens: u64,
     output_tokens: u64,
@@ -366,6 +400,12 @@ pub struct Replay<'a> {
     corpus: &'a mut Corpus,
     engine: Engine,
     cost: TierCost,
+    /// The step loop under contention; `None` for the idle service.
+    scheduler: Option<Scheduler>,
+    /// When the step loop runs next: a `Step` event due at another time is stale.
+    step_at: Option<u64>,
+    /// A reused buffer for the step loop's outcomes.
+    outcomes: Vec<Outcome>,
     now: u64,
     /// Insertion counter: breaks ties between events due at the same time.
     seq: u64,
@@ -412,13 +452,23 @@ impl<'a> Replay<'a> {
         corpus: &'a mut Corpus,
         engine: Engine,
         cost: TierCost,
+        service: Service,
         record: bool,
     ) -> Self {
+        let scheduler = match service {
+            Service::Idle => None,
+            Service::Contention { budget, steps } => {
+                Some(Scheduler::new(budget, steps, cost.clone()))
+            }
+        };
         Self {
             cfg,
             corpus,
             engine,
             cost,
+            scheduler,
+            step_at: None,
+            outcomes: Vec::new(),
             now: 0,
             seq: 0,
             shift: 0,
@@ -483,6 +533,9 @@ impl<'a> Replay<'a> {
                 } => self.submit(stream, turn, kind, delay_ms),
                 Event::Warm { stream, turn } => self.issue(stream, turn, true, None),
                 Event::Complete(id) => self.complete(id)?,
+                Event::Arrive(id) => self.arrive(id)?,
+                Event::Step if self.step_at == Some(at) => self.run_steps()?,
+                Event::Step => {}
                 Event::Recycle(lane) => self.recycle(lane)?,
             }
             if from_timers {
@@ -921,6 +974,11 @@ impl<'a> Replay<'a> {
         let id = self.next_request;
         self.next_request += 1;
         self.idle_since = None;
+        let req = EngineRequest {
+            prompt: prompt.clone(),
+            prompt_tokens,
+            output_tokens,
+        };
         self.in_flight.insert(
             id,
             InFlight {
@@ -929,7 +987,9 @@ impl<'a> Replay<'a> {
                 warmup,
                 issued: self.now,
                 admitted: 0,
-                prompt: prompt.clone(),
+                blocked: 0,
+                first_token: 0,
+                prompt,
                 prompt_tokens,
                 output_tokens,
                 delay_ms,
@@ -938,32 +998,90 @@ impl<'a> Replay<'a> {
                 timeline: None,
             },
         );
-        if let Some(adm) = self.engine.submit(
-            id,
-            EngineRequest {
-                prompt,
-                prompt_tokens,
-                output_tokens,
-            },
-        ) {
-            self.admitted(id, adm);
+        match &mut self.scheduler {
+            None => {
+                if let Some(adm) = self.engine.submit(id, req) {
+                    self.admitted(id, adm, 0);
+                }
+            }
+            Some(s) => {
+                if !self.engine.reject_oversized(&req) {
+                    let at = self.now + s.host_ns(prompt_tokens, self.now);
+                    self.push_fixed(at, Event::Arrive(id));
+                }
+            }
         }
         if !warmup && depth == 0 {
             self.on_root_issued(play_id, turn);
         }
     }
 
-    fn admitted(&mut self, id: u64, adm: Admission) {
+    /// Contention: request `id` reaches the scheduler, which runs at once if it is idle.
+    fn arrive(&mut self, id: u64) -> Result<(), String> {
+        let f = &self.in_flight[&id];
+        let req = EngineRequest {
+            prompt: f.prompt.clone(),
+            prompt_tokens: f.prompt_tokens,
+            output_tokens: f.output_tokens,
+        };
+        let s = self
+            .scheduler
+            .as_mut()
+            .expect("arrivals happen under contention");
+        s.arrive(id, req);
+        if s.busy() {
+            return Ok(());
+        }
+        self.run_steps()
+    }
+
+    /// Contention: runs the step loop now and applies what happened.
+    fn run_steps(&mut self) -> Result<(), String> {
+        let mut out = std::mem::take(&mut self.outcomes);
+        let next = self
+            .scheduler
+            .as_mut()
+            .expect("steps run under contention")
+            .run(self.now, &mut self.engine, &mut out);
+        for outcome in out.drain(..) {
+            match outcome {
+                Outcome::Admitted {
+                    id,
+                    admission,
+                    blocked_ns,
+                } => self.admitted(id, admission, blocked_ns),
+                Outcome::FirstToken(id) => {
+                    self.in_flight
+                        .get_mut(&id)
+                        .expect("a request with a first token is in flight")
+                        .first_token = self.now;
+                }
+                Outcome::Finished(id) => self.complete(id)?,
+            }
+        }
+        self.outcomes = out;
+        self.step_at = next;
+        if let Some(at) = next {
+            self.push_fixed(at, Event::Step);
+        }
+        Ok(())
+    }
+
+    fn admitted(&mut self, id: u64, adm: Admission, blocked: u64) {
         let now = self.now;
         let f = self
             .in_flight
             .get_mut(&id)
             .expect("admitted request is in flight");
         f.admitted = now;
+        f.blocked = blocked;
         f.admission = Some(adm);
         f.recomputed =
             recomputed_tokens(&mut self.seen, &f.prompt, adm, self.cfg.block_tokens as u64);
-        let done = now + self.cost.service(adm.sources, f.output_tokens).as_nanos() as u64;
+        let done = self
+            .scheduler
+            .is_none()
+            .then(|| now + self.cost.service(adm.sources, f.output_tokens).as_nanos() as u64);
         if let Some(tl) = &mut self.timeline {
             let stream = &self.streams[f.stream as usize];
             let play = &self.plays[stream.play as usize];
@@ -983,9 +1101,13 @@ impl<'a> Replay<'a> {
                 model: if self.cfg.model_namespaces { model } else { 0 },
             });
         }
-        self.push_fixed(done, Event::Complete(id));
+        if let Some(done) = done {
+            self.push_fixed(done, Event::Complete(id));
+        }
     }
 
+    /// Request `id` returned its last token. Under contention the scheduler has already finished it
+    /// in the engine.
     fn complete(&mut self, id: u64) -> Result<(), String> {
         let f = self
             .in_flight
@@ -994,8 +1116,12 @@ impl<'a> Replay<'a> {
         if let (Some(tl), Some(i)) = (&mut self.timeline, f.timeline) {
             tl.events.push(TimelineEvent::Finish(i));
         }
-        for (qid, adm) in self.engine.finish(id) {
-            self.admitted(qid, adm);
+        if self.scheduler.is_none() {
+            // The idle engine queues a request only while it waits for blocks.
+            for (qid, adm) in self.engine.finish(id) {
+                let blocked = self.now - self.in_flight[&qid].issued;
+                self.admitted(qid, adm, blocked);
+            }
         }
         let s = &self.streams[f.stream as usize];
         let plan = self.plays[s.play as usize].plan.clone();
@@ -1007,7 +1133,10 @@ impl<'a> Replay<'a> {
             if let (Some(tl), Some(i)) = (&mut self.timeline, f.timeline) {
                 tl.requests[i].record = Some(self.records.len());
             }
-            let ttft = f.admitted - f.issued + self.cost.ttft(adm.sources).as_nanos() as u64;
+            let ttft = match self.scheduler {
+                None => f.admitted - f.issued + self.cost.ttft(adm.sources).as_nanos() as u64,
+                Some(_) => f.first_token - f.issued,
+            };
             self.records.push(RequestRecord {
                 trace: self.plays[s.play as usize].trace,
                 conv: s.conv,
@@ -1021,6 +1150,7 @@ impl<'a> Replay<'a> {
                 delay_ms: f.delay_ms,
                 issued_ns: f.issued - self.profiling_start,
                 admitted_ns: f.admitted - self.profiling_start,
+                blocked_ns: f.blocked,
                 done_ns: self.now - self.profiling_start,
                 ttft_ns: ttft,
             });
@@ -1317,9 +1447,16 @@ mod tests {
             },
             None,
         );
-        Replay::new(cfg, &mut corpus, engine, TierCost::frozen_box(), false)
-            .run()
-            .unwrap()
+        Replay::new(
+            cfg,
+            &mut corpus,
+            engine,
+            TierCost::frozen_box(),
+            Service::Idle,
+            false,
+        )
+        .run()
+        .unwrap()
     }
 
     /// Lanes that start at their traces' first requests and play each trace once, with nothing

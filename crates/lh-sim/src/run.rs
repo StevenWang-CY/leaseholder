@@ -33,7 +33,9 @@ use crate::engine::oracle::Oracle;
 use crate::engine::{CpuPolicyKind, Engine, EngineConfig, EngineRequest, GpuPolicyKind};
 use crate::metrics::{self, Summary};
 use crate::prefix::IdSet;
-use crate::replay::{self, Replay, ReplayConfig, ReplayOutput, RequestRecord, TimelineEvent};
+use crate::replay::{
+    self, Replay, ReplayConfig, ReplayOutput, RequestRecord, Service, TimelineEvent,
+};
 
 /// A cache-policy arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -90,18 +92,20 @@ impl FromStr for Arm {
 pub struct RunConfig {
     pub replay: ReplayConfig,
     pub cost: TierCost,
+    pub service: Service,
     pub geometry: KvGeometry,
     /// The arm whose timeline the clairvoyant reference replays.
     pub reference: Arm,
 }
 
 impl RunConfig {
-    /// The W0 replay on the frozen box: [`ReplayConfig::default`], the E0 costs, Qwen3-4B KV, and
-    /// the clairvoyant reference on the `lru-cpu` timeline.
+    /// The W0 replay on the frozen box: [`ReplayConfig::default`], the E0 costs, the step loop
+    /// under contention, Qwen3-4B KV, and the clairvoyant reference on the `lru-cpu` timeline.
     pub fn frozen_box(replay: ReplayConfig) -> Self {
         Self {
             replay,
             cost: TierCost::frozen_box(),
+            service: Service::frozen_box(),
             geometry: KvGeometry::QWEN3_4B_BF16,
             reference: Arm::LruCpu,
         }
@@ -186,6 +190,7 @@ pub fn run_arm(
         corpus,
         engine,
         cfg.cost.clone(),
+        cfg.service.clone(),
         timeline,
     )
     .run()?;
@@ -248,10 +253,22 @@ pub fn clairvoyant(
                     cfg.replay.block_tokens as u64,
                 );
                 if let Some(rec) = r.record.map(|k| &mut records[k]) {
+                    rec.ttft_ns = match &cfg.service {
+                        Service::Idle => {
+                            rec.blocked_ns + cfg.cost.ttft(adm.sources).as_nanos() as u64
+                        }
+                        // The reference's queueing stays; the request's own service is re-priced.
+                        Service::Contention { budget, steps } => {
+                            let alone = |s| {
+                                let ms =
+                                    steps.alone_ttft_ms(&cfg.cost, s, budget.max_batched_tokens);
+                                (ms * 1e6).round() as u64
+                            };
+                            (rec.ttft_ns + alone(adm.sources)).saturating_sub(alone(rec.sources))
+                        }
+                    };
                     rec.sources = adm.sources;
                     rec.recomputed = recomputed;
-                    rec.ttft_ns = rec.admitted_ns - rec.issued_ns
-                        + cfg.cost.ttft(adm.sources).as_nanos() as u64;
                 }
             }
             TimelineEvent::Finish(i) => {
