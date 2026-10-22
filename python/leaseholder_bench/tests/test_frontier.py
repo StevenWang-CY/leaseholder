@@ -271,7 +271,7 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
     table = (out / "frontier.md").read_text()
     assert "## Arm 2" in table and "## Arm 10" in table
     assert "| a2-s8: a2-s8 label | • | 16 | 3,000 | 3.00 | 1,600 | 2,000 | 2,500 |" in table
-    assert "| 140 / 8,000 | 4 | — / 3 / — |" in table
+    assert "| 0 of 50 | 140 / 8,000 | 4 | — / 3 / — |" in table
     assert main(["e2", "report", str(dirs[2]), "--out", str(out)]) == 1
 
 

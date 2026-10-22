@@ -339,7 +339,7 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     ]
     header = (
         "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "
-        "| Agent TTFT p50 / p99 | Preemptions | Shed / refused / resubmitted |"
+        "| Failed turns | Agent TTFT p50 / p99 | Preemptions | Shed / refused / resubmitted |"
     )
     arms = sorted({r["arm"] for r in rows}, key=_arm_order)
     for arm in arms:
@@ -348,7 +348,7 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
             f"## Arm {arm}",
             "",
             header,
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
         for r in (r for r in rows if r["arm"] == arm):
             counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
@@ -357,7 +357,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
                 f"| {r['point']}: {r['label']} | {'•' if r['frontier'] else ''} | {r['sessions']} "
                 f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
                 f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
-                f"| {ttft} | {_cell(r['engine_preemptions'])} | {counts} |"
+                f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} "
+                f"| {_cell(r['engine_preemptions'])} | {counts} |"
             )
     return "\n".join(lines) + "\n"
 
