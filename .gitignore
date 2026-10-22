@@ -1,0 +1,23 @@
+# Rust
+/target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local runs and data
+/runs/
+/data/
+*.parquet
+*.log
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
