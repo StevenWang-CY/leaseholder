@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
 
+/// One lifecycle event of one session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LifecycleEvent {
     /// Idempotency key, 1 to 128 characters, unique per emitter. A repeated id is acknowledged and ignored.

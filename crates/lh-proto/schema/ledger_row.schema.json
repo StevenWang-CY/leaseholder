@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LedgerRow",
+  "description": "The ledger row of one upstream request.",
   "type": "object",
   "properties": {
     "cached_device_tokens": {
@@ -137,6 +138,7 @@
   ],
   "$defs": {
     "Outcome": {
+      "description": "How the upstream request ended.",
       "type": "string",
       "enum": [
         "completed",

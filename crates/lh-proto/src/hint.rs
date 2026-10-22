@@ -12,6 +12,7 @@ use crate::{SessionId, SloClass};
 /// The key under `kv_transfer_params` that holds the hint.
 pub const KV_TRANSFER_PARAMS_KEY: &str = "leaseholder";
 
+/// The lease hint on one engine request, at `kv_transfer_params.leaseholder`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EngineLeaseHint {
     pub session_id: SessionId,
@@ -28,6 +29,7 @@ pub struct EngineLeaseHint {
     pub op: Option<HintOp>,
 }
 
+/// An operation on the session's floor beyond renewing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HintOp {

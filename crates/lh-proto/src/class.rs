@@ -1,3 +1,5 @@
+//! SLO classes: which clock a request runs on, and the engine priority each maps to.
+
 use std::fmt;
 use std::str::FromStr;
 
@@ -32,6 +34,7 @@ pub enum SloClass {
 }
 
 impl SloClass {
+    /// Every class, strictest first.
     pub const ALL: [Self; 3] = [Self::Realtime, Self::Interactive, Self::Background];
 
     /// The vLLM request priority for this class. vLLM schedules lower values first.
@@ -43,6 +46,7 @@ impl SloClass {
         }
     }
 
+    /// The wire name, also the `x-lh-class` header value and a metric label.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Realtime => "realtime",
@@ -70,6 +74,7 @@ impl FromStr for SloClass {
     }
 }
 
+/// An `x-lh-class` value that names no class.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnknownClass(pub String);
 

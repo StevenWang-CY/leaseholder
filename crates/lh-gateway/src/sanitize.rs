@@ -7,9 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
-use lh_proto::class::UnknownClass;
 use lh_proto::headers;
-use lh_proto::{SessionId, SloClass};
+use lh_proto::{SessionId, SloClass, UnknownClass};
 use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};

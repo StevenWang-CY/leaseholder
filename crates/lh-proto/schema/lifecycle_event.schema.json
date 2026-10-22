@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LifecycleEvent",
-  "description": "What happened, with the fields of that event type.",
+  "description": "One lifecycle event of one session.",
   "type": "object",
   "properties": {
     "at_ms": {

@@ -1,3 +1,5 @@
+//! Session ids: the routing and accounting key of one conversation.
+
 use std::borrow::Cow;
 use std::fmt;
 
@@ -16,8 +18,10 @@ use serde::{Deserialize, Serialize};
 pub struct SessionId(String);
 
 impl SessionId {
+    /// The longest accepted session id, in bytes.
     pub const MAX_LEN: usize = 128;
 
+    /// Accepts `id` if it is 1 to [`Self::MAX_LEN`] characters from `[A-Za-z0-9._:-]`.
     pub fn new(id: impl Into<String>) -> Result<Self, SessionIdError> {
         let id = id.into();
         if id.is_empty() || id.len() > Self::MAX_LEN {
@@ -29,6 +33,7 @@ impl SessionId {
         Ok(Self(id))
     }
 
+    /// The id as it travels in headers.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -74,6 +79,7 @@ impl JsonSchema for SessionId {
     }
 }
 
+/// Why a string is not a session id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionIdError {
     /// The id is empty or longer than [`SessionId::MAX_LEN`] bytes.

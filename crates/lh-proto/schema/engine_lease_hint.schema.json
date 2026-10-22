@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "EngineLeaseHint",
+  "description": "The lease hint on one engine request, at `kv_transfer_params.leaseholder`.",
   "type": "object",
   "properties": {
     "class": {
@@ -40,6 +41,7 @@
   ],
   "$defs": {
     "HintOp": {
+      "description": "An operation on the session's floor beyond renewing it.",
       "oneOf": [
         {
           "description": "Drop the session's floor at once (the session closed); its KV falls back to LRU.",

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{SessionId, SloClass};
 
+/// The ledger row of one upstream request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LedgerRow {
     pub request_id: String,
@@ -60,6 +61,7 @@ pub struct LedgerRow {
     pub total_ms: Option<f64>,
 }
 
+/// How the upstream request ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
@@ -76,6 +78,7 @@ pub struct RecomputeSpan {
     pub cause: RecomputeCause,
 }
 
+/// Why a span of prompt tokens was recomputed; on the wire, `cause` selects the variant.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cause", rename_all = "snake_case")]
 pub enum RecomputeCause {
