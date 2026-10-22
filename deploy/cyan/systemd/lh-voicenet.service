@@ -1,5 +1,5 @@
 [Unit]
-Description=Leaseholder voice-plane network namespace on cyan (loopback only)
+Description=Leaseholder voice-plane network namespace on cyan (no route out)
 Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
 
 [Service]

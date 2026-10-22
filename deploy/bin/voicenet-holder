@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
-# voicenet-holder PIDFILE: create an unprivileged user and network namespace whose only interface is loopback,
-# write the holder's pid to PIDFILE, and keep the namespace alive. The voice plane (LiveKit server, voice worker,
-# bots) runs inside it: libwebrtc gathers ICE candidates on every non-loopback interface, so on a host with a
-# public address that is the only way to keep media sockets off the network.
+# voicenet-holder PIDFILE: create an unprivileged user and network namespace for the voice plane, write the
+# holder's pid to PIDFILE, and keep the namespace alive. The voice plane (LiveKit server, voice worker, bots) runs
+# inside it: libwebrtc gathers ICE candidates on every non-loopback interface, so on a host with a public address
+# this is the only way to keep media sockets off the network.
+#
+# Besides loopback the namespace holds one dummy interface. libwebrtc ignores loopback adapters, so with lo alone a
+# client gathers no candidate and media never connects; the dummy gives clients an address to bind. It has no
+# default route and no IPv6 link-local address, so nothing leaves the namespace.
 set -euo pipefail
-exec unshare --user --map-root-user --net -- sh -c 'ip link set lo up && echo $$ >"$1" && exec sleep infinity' sh "$1"
+exec unshare --user --map-root-user --net -- sh -c '
+  ip link set lo up &&
+  ip link add lh0 type dummy &&
+  ip link set lh0 addrgenmode none &&
+  ip addr add 10.255.0.1/32 dev lh0 &&
+  ip link set lh0 up &&
+  echo $$ >"$1" &&
+  exec sleep infinity' sh "$1"

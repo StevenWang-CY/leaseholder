@@ -29,7 +29,7 @@ Leaseholder is a session-aware serving control plane. It lets **one commodity GP
 
 ```text
 ┌──────────────────────────────── cyan: control host, 48 threads, CPU only ───────────────────────────────┐
-│  host network (loopback only)                      │  voice plane: network namespace with only lo     │
+│  host network (loopback only)                      │  voice plane: network namespace, no route out    │
 │  Leaseholder control plane (Rust)                  │  LiveKit server · LiveKit Agents voice worker    │
 │  agentic-api (Claude Code / Codex via base_url)    │  measurement bots (livekit-rtc)                  │
 │  AIPerf agent replay (pinned cores)                │  reach out only through Unix sockets             │
@@ -61,7 +61,7 @@ mustard: Prometheus · Grafana · datasets · run archive      yellow, red: simu
   - Every service binds loopback.
   - Hosts reach each other only through SSH local forwards, run as `systemd --user` units.
   - The tunnel key may forward only the listed loopback ports.
-- **The voice plane.** It runs in a network namespace whose only interface is loopback. libwebrtc clients bind ICE sockets on every other interface, and a server-side `rtc` block cannot stop that.
+- **The voice plane.** It runs in a network namespace with no route out: loopback plus one dummy interface (10.255.0.1/32) for libwebrtc to bind, which ignores loopback adapters. libwebrtc clients bind ICE sockets on every other interface, and a server-side `rtc` block cannot stop that.
 - **Sanitized inputs.** The control plane strips the client inputs that vLLM trusts (`X-Vllm-Priority`, `X-Session-ID`, `X-data-parallel-rank`, and the matching body fields) and sets its own.
 - **Cache isolation.** Each tenant's `cache_salt` is derived from its API key.
 

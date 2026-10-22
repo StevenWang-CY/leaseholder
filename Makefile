@@ -33,7 +33,7 @@ test-rust:
 
 # The offload manager is plain Python, so the plugin tests load it from a vLLM source checkout: no GPU or torch.
 $(VLLM_SRC):
-	git clone -q --depth 1 --branch $(VLLM_REF) --filter=blob:none --sparse https://github.com/vllm-project/vllm $@
+	git -c advice.detachedHead=false clone -q --depth 1 --branch $(VLLM_REF) --filter=blob:none --sparse https://github.com/vllm-project/vllm $@
 	git -C $@ sparse-checkout set vllm
 
 test-vllm: $(VLLM_SRC)

@@ -51,7 +51,7 @@ Week 0 of a 12-week plan.
 | Component | State |
 |---|---|
 | Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Running** ([deploy/phastform](deploy/phastform)) |
-| Control host: restricted SSH tunnels, LiveKit in a loopback-only network namespace | **Running** ([deploy/cyan](deploy/cyan)) |
+| Control host: restricted SSH tunnels, LiveKit in a network namespace with no route out | **Running** ([deploy/cyan](deploy/cyan)) |
 | `lh-proto`: lifecycle events, headers, engine lease hint, ledger rows, with JSON Schemas | **v0** ([crates/lh-proto](crates/lh-proto)) |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0**. CPU-tested against vLLM's real offload manager; live-checked on the GPU |
 | `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay | v0 |
