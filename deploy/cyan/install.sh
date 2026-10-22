@@ -7,5 +7,5 @@ units=$HOME/.config/systemd/user
 mkdir -p "$units"
 ln -sf "$here"/systemd/* "$units/"
 systemctl --user daemon-reload
-systemctl --user enable -q lh-voicenet.service lh-livekit.service lh-tunnel-phastform.service
+systemctl --user enable -q lh-voicenet.service lh-livekit.service lh-tunnel-phastform.service lh-voice-worker.service
 loginctl show-user "$(id -un)" --property=Linger

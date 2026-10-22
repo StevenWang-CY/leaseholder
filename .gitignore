@@ -16,6 +16,7 @@ dist/
 /data/
 *.parquet
 *.log
+!/benchmarks/results/**/*.log
 
 # Editors, OS and agent worktrees
 .DS_Store
