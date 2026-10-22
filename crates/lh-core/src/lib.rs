@@ -1,9 +1,12 @@
-//! The deterministic policy core shared by the simulator and, later, the gateway.
+//! The deterministic policy core shared by the simulator and the gateway.
 //!
-//! Pure code: no I/O and no clock. Callers pass token counts and get durations back.
+//! Pure code: no I/O and no clock. Callers pass token counts and events, and get durations and decisions back.
+//! - [`admission`]: whether a request goes upstream now, waits or is refused (the E2 baselines the gateway
+//!   emulates);
 //! - [`cost`]: what serving a prompt costs from each tier (the E0 model), and decode time;
 //! - [`geometry`]: KV bytes per token, the engine block, and tier capacities in blocks.
 
+pub mod admission;
 pub mod cost;
 pub mod geometry;
 

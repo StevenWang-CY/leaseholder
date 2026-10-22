@@ -1,6 +1,6 @@
 [package]
 name = "lh-core"
-description = "Leaseholder's deterministic policy core: the tier cost model and KV geometry"
+description = "Leaseholder's deterministic policy core: admission, the tier cost model and KV geometry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+lh-proto.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
