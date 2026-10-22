@@ -242,18 +242,24 @@ struct LogArgs {
     csv: Option<PathBuf>,
 }
 
+// The options of scripts/aiperf_reference.py, under run's names.
 #[derive(Args)]
 struct PlanArgs {
     /// A directory of <trace id>.json or a JSONL file.
     traces: PathBuf,
+    /// Lanes to plan (the script's `--concurrency`).
     #[arg(long, default_value_t = 16)]
     concurrency: usize,
+    /// AIPerf's `randomSeed` (`--seed`).
     #[arg(long, default_value_t = 11)]
     seed: u64,
+    /// `interTurnDelayCapSeconds` (`--cap`). Unlike `run`'s, 0 caps every delay at 0, as AIPerf does.
     #[arg(long, default_value_t = 120.0)]
     think_cap: f64,
+    /// `trajectoryStartMinRatio` (`--min-ratio`).
     #[arg(long, default_value_t = 0.0)]
     start_min: f64,
+    /// `trajectoryStartMaxRatio` (`--max-ratio`).
     #[arg(long, default_value_t = 1.0)]
     start_max: f64,
     /// Plan only the first N traces.
