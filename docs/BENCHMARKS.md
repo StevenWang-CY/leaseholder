@@ -94,6 +94,22 @@ Earlier probe (2026-10-21/22, 8-character first sentence): 415 ms idle and 876 m
   - 0.58 s with `resume_false_interruption=False`, which interrupts after 0.5 s of speech.
   - In stock mode the reply keeps streaming on the GPU for the whole barge-in.
 
+## The API layer: agentic-api in front of the engine
+
+Claude Code and Codex reach the engine through [agentic-api](https://github.com/vllm-project/agentic-api), so its cost is part of every agent turn. agentic-api's own `response_provider` benchmark compares its WebSocket, HTTP/SSE and JSON paths with direct vLLM, all five arms at once against the frozen box with tool calling on (agentic-api a7dc7b5, 2026-10-22). Per-turn latency for a 4-round tool loop, p50 in ms:
+
+| Sessions per arm | agentic-api HTTP/SSE | vLLM HTTP/SSE | Paired median difference |
+|---|---|---|---|
+| 1 | 3,173 | 3,176 | 0 ms |
+| 5 | 4,489 | 4,482 | +3 ms |
+| 10 | 6,102 | 6,072 | +1 ms |
+
+- **Latency.** The gateway's latency cost is below the noise at up to 50 concurrent tool loops; the inference server dominates.
+- **Resources.** It used about 5.5 ms of CPU per Responses round and 44–54 MiB of memory.
+- **Request size.** Clients send 3.6–3.8 KB per turn through it against 8.4 KB direct, because it holds the conversation state.
+
+The method, all five arms, correctness and the history-rehydration runs are in [benchmarks/results/2026-10-22-agentic-api-http-baseline](../benchmarks/results/2026-10-22-agentic-api-http-baseline/).
+
 ## Engine plugins
 
 `LeasePolicy` at a full-size tier of 18,204 chunks (40 GiB of Qwen3-4B BF16 KV), against vLLM's real offload manager on CPU:
