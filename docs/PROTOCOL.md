@@ -1,0 +1,121 @@
+# Protocol
+
+Everything that crosses a process boundary in Leaseholder is defined once, in [`crates/lh-proto`](../crates/lh-proto). This document explains those types. The JSON Schemas in [`crates/lh-proto/schema/`](../crates/lh-proto/schema/) are generated from the Rust code and are the reference for other languages; [`testdata/events.jsonl`](../crates/lh-proto/testdata/events.jsonl) pins the event format with one example of every type.
+
+Regenerate the schemas after changing a type (a test fails until you do):
+
+```sh
+cargo run -p lh-proto --bin lh-proto-schema
+```
+
+## Sessions
+
+A session is one conversation, scoped to a tenant. Its id is the routing key, the accounting key and the OTel `gen_ai.conversation.id`. The control plane resolves it in this order:
+
+1. `X-Session-ID` from a trusted caller (agentic-api, the voice worker);
+2. `X-Claude-Code-Session-ID`;
+3. the OpenAI `prompt_cache_key`;
+4. the LiveKit room and participant, as `room:participant`;
+5. a minted id.
+
+The resolved id is returned on every response in `X-LH-Session-ID`. Session ids are 1–128 characters from `[A-Za-z0-9._:-]`, so they are safe in headers; the control plane hashes any other source into that form.
+
+## Headers
+
+| Header | Direction | Meaning |
+|---|---|---|
+| `X-Session-ID` | caller → control plane → engine | The session id. Accepted only from trusted callers. vLLM reads it too and records it in GPU-tier KV events |
+| `X-Claude-Code-Session-ID` | caller → control plane | Claude Code's own session header |
+| `X-LH-Class` | caller → control plane | SLO class: `realtime`, `interactive` (the default) or `background` |
+| `X-LH-Synthetic` | control plane → engine | Marks prefetch warm-ups. They are excluded from SLIs, usage and the ledger |
+| `X-LH-Session-ID` | control plane → caller | The session id the control plane resolved or minted |
+| `X-Vllm-Priority` | control plane → engine | vLLM priority, set from the class: realtime 0, interactive 1, background 2 (lower runs first) |
+
+**Inputs the control plane owns.** vLLM trusts several inputs for scheduling and accounting, so the control plane removes them from every client request and sets its own:
+
+| Kind | Names |
+|---|---|
+| Headers | `X-Vllm-Priority`, `X-Session-ID` (from untrusted callers), `X-data-parallel-rank` |
+| Body fields | `session_id`, `priority`, `kv_transfer_params`, `cache_salt`, `request_id`, `vllm_xargs` |
+
+vLLM 0.32 reads the body `session_id` before the header, and `vllm_xargs.session_id` after it. Each tenant's `cache_salt` is derived from its API key.
+
+## Lifecycle events
+
+Events tell the control plane when a session will next need its KV.
+- **Delivery.** Emitters `POST` them to `/v1/events`, one JSON object per event. The control plane also infers `turn_started` and `turn_finished` from the traffic it proxies.
+- **Idempotency.** Events are idempotent by `event_id`: a repeat is acknowledged and ignored.
+- **Unknowns.** Unknown fields are ignored; an unknown `type` is rejected.
+
+```json
+{"event_id": "vw-4", "session_id": "room-7:caller", "at_ms": 1792650014940,
+ "source": "voice-worker", "type": "interrupted", "played_ms": 1840}
+```
+
+**Common fields.**
+
+| Field | Meaning |
+|---|---|
+| `event_id` | Idempotency key, unique per emitter |
+| `session_id` | The session |
+| `at_ms` | The emitter's clock, in Unix epoch ms. Ordering uses the control plane's receipt time |
+| `source` | `inferred`, `agentic-api`, `voice-worker` or `client` |
+| `type` | The event type, below |
+
+| `type` | Extra fields | Emitted by | Effect on the lease |
+|---|---|---|---|
+| `turn_started` | — | inferred | `ACTIVE` |
+| `turn_finished` | `stop_reason` (`stop`, `length`, `tool_calls`, `cancelled`, `error`), `prompt_tokens`, `completion_tokens` | inferred | `tool_calls` → `TOOL_WAIT`, with the next arrival estimated from session history. Otherwise `HUMAN_WAIT` |
+| `tool_wait_started` | `tool`, `eta_ms` (both optional) | agentic-api | An exact ETA, so prefetch can be timed exactly |
+| `tool_wait_ended` | `tool` (optional) | agentic-api | The next turn is imminent |
+| `user_speech_started` | — | voice worker (VAD onset) | `USER_SPEAKING`: speech-onset prefetch and turn-imminent headroom start |
+| `user_turn_ended` | — | voice worker (end-of-turn decision) | The realtime request follows within milliseconds |
+| `playback_started` | — | voice worker | `PLAYBACK` |
+| `playback_ended` | `played_ms` | voice worker | Back to waiting for the user |
+| `interrupted` | `played_ms` | voice worker (barge-in) | Cancel the in-flight stream; truncate the context to what the user heard |
+| `session_closed` | — | any | `CLOSED`: the session's KV becomes ordinary cache |
+
+## Engine lease hint
+
+The control plane attaches the hint to each engine request as `kv_transfer_params.leaseholder`. It is the whole contract with the engine-side plugins in [`python/leaseholder_vllm`](../python/leaseholder_vllm):
+
+```json
+{"kv_transfer_params": {"leaseholder": {"session_id": "s-1", "class": "realtime", "ttl_s": 300, "expect_return_s": 2.5}}}
+```
+
+| Field | Meaning |
+|---|---|
+| `session_id` | The session. When absent, `LeaseConnector` fills it from the request's `X-Session-ID` |
+| `class` | The SLO class. It orders eviction among leased chunks: background goes first, realtime last |
+| `ttl_s` | How long the KV should stay at least in host RAM, renewed by every request. This is the contract term, e.g. 300 for a 5-minute Anthropic `cache_control` TTL; 0 means plain LRU |
+| `expect_return_s` | The expected return after a tool pause. It caps the floor at that return plus a 2 s grace |
+| `op` | `release` drops the floor at once, when the session closes |
+
+With `LeaseConnector`, each response carries a hit receipt in the same place: `{"leaseholder": {"gpu_hit_tokens": N, "cpu_hit_tokens": M}}`. These are the prompt tokens served from the GPU prefix cache and those restored from the CPU tier.
+
+## Ledger rows
+
+There is one row per upstream request, written as Parquet and queried with DuckDB; per-cause counters go to Prometheus.
+
+| Group | Fields |
+|---|---|
+| Identity | `request_id`, `session_id`, `class`, `node`, `engine_epoch`, `config`, `synthetic`, `outcome` (`completed`, `cancelled`, `error`) |
+| Tokens | `prompt_tokens`, `completion_tokens`, `expected_reusable_tokens`, `cached_device_tokens`, `cached_host_tokens`, `recomputed_tokens`, `recompute` (spans) |
+| Timing | `received_at_ms`; and, when reported, `queue_ms`, `prefill_ms`, `restore_ms`, `first_token_ms`, `first_sentence_ms` (realtime), `total_ms` |
+
+**Accounting identities** (checked by `LedgerRow::check`):
+- `cached_device_tokens + cached_host_tokens ≤ prompt_tokens`.
+- `expected_reusable_tokens` is what the session already paid for: the longest common token prefix with its previous prompt plus output. For a first turn it is the prefix shared with other sessions. It never exceeds `prompt_tokens`.
+- `recomputed_tokens` is the part of that prefix that was computed again. It never exceeds `expected_reusable_tokens`.
+- The `recompute` spans attribute every recomputed token to one cause and sum to `recomputed_tokens` exactly.
+
+| Cause | Meaning |
+|---|---|
+| `cold_first_turn` | A first turn whose shared prefix was not cached |
+| `prefix_break` | The prompt diverged from what the session sent before. Carries `position`, and `message` and `field` when known |
+| `evicted_gpu_and_cpu` | Evicted from both tiers |
+| `lease_expired` | The lease ran out before the session returned |
+| `holder_miss` | Routed to a node that does not hold the KV |
+| `preempted` | The engine preempted and recomputed the request |
+| `epoch_change` | The engine restarted, so its caches were empty |
+| `unknown` | No cause could be determined, for example after a KV-event gap. Reported as its own share |
