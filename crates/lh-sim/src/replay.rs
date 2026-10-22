@@ -367,9 +367,14 @@ pub struct Replay<'a> {
     engine: Engine,
     cost: TierCost,
     now: u64,
+    /// Insertion counter: breaks ties between events due at the same time.
     seq: u64,
+    /// How far the idle cap has pulled `timers` forward: a timer stored at `at` fires at `at - shift`.
     shift: u64,
+    /// The scheduler's timers (spread warmup, first dispatches, think times, recycling), which the idle
+    /// cap pulls forward.
     timers: BinaryHeap<Entry>,
+    /// Events the idle cap leaves in place: request completions and children's first turns.
     fixed: BinaryHeap<Entry>,
     phase: Phase,
     profiling_start: u64,
@@ -378,18 +383,25 @@ pub struct Replay<'a> {
     plays: Vec<Play>,
     streams: Vec<Stream>,
     lanes: Vec<Lane>,
+    /// Draws so far from the sequential trace sampler.
     sampler: usize,
     in_flight: IdMap<InFlight>,
     warmup_outstanding: usize,
+    /// The start of the current idle gap (nothing in flight since the last return), for the idle cap.
     idle_since: Option<u64>,
     next_request: u64,
     records: Vec<RequestRecord>,
     timeline: Option<Timeline>,
+    /// Every block an admitted prompt has had, for attributing recompute.
     seen: IdSet,
+    /// The blocks of the live streams' latest prompts, each with the number of streams holding it.
     working_set: IdMap<u32>,
+    /// Where `ws_integral` has reached.
     ws_last_change: u64,
+    /// The working set's size integrated over the profiling window, in blocks × ns.
     ws_integral: f64,
     stats: ReplayStats,
+    /// A reused buffer for prefix-tree paths.
     scratch: Vec<NodeId>,
 }
 
