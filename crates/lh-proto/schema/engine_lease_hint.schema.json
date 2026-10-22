@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EngineLeaseHint",
+  "type": "object",
+  "properties": {
+    "class": {
+      "$ref": "#/$defs/SloClass"
+    },
+    "expect_return_s": {
+      "description": "Expected seconds until the session's next request (a tool pause). Caps the floor at that return plus a\nshort grace period.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double"
+    },
+    "op": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HintOp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "$ref": "#/$defs/SessionId"
+    },
+    "ttl_s": {
+      "description": "Seconds the session's KV should stay at least in host RAM, renewed by every request: the contract term\n(300 for a 5-minute Anthropic `cache_control` TTL). 0 means no floor, which is plain LRU.",
+      "type": "number",
+      "format": "double",
+      "default": 0.0
+    }
+  },
+  "required": [
+    "session_id",
+    "class"
+  ],
+  "$defs": {
+    "HintOp": {
+      "oneOf": [
+        {
+          "description": "Drop the session's floor at once (the session closed); its KV falls back to LRU.",
+          "type": "string",
+          "const": "release"
+        }
+      ]
+    },
+    "SessionId": {
+      "description": "One conversation, scoped to a tenant: 1 to 128 characters from [A-Za-z0-9._:-].",
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "SloClass": {
+      "description": "The SLO class of a request: which clock it runs on. Classes order from strictest to most lenient.",
+      "oneOf": [
+        {
+          "description": "Voice turns. Never rejected: admission makes room, then degrades the reply.",
+          "type": "string",
+          "const": "realtime"
+        },
+        {
+          "description": "Agent loops with a person waiting. Predicted-TTFT admission; queued with a deadline.",
+          "type": "string",
+          "const": "interactive"
+        },
+        {
+          "description": "Batch agents, trace replays, memory consolidation. Best effort with a minimum share; deferred or demoted\nwhenever realtime needs room.",
+          "type": "string",
+          "const": "background"
+        }
+      ]
+    }
+  }
+}

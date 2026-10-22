@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LifecycleEvent",
+  "description": "What happened, with the fields of that event type.",
+  "type": "object",
+  "properties": {
+    "at_ms": {
+      "description": "When the emitter observed the event, in Unix epoch milliseconds. The control plane also stamps its own\nmonotonic receipt time and orders events by that.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "event_id": {
+      "description": "Idempotency key, 1 to 128 characters, unique per emitter. A repeated id is acknowledged and ignored.",
+      "type": "string"
+    },
+    "session_id": {
+      "$ref": "#/$defs/SessionId"
+    },
+    "source": {
+      "$ref": "#/$defs/EventSource"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "A request for the session reached the control plane.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "turn_started"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "A response finished. A `tool_calls` stop moves the lease to tool wait, with an ETA from session history.",
+      "type": "object",
+      "properties": {
+        "completion_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "prompt_tokens": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 0,
+          "minimum": 0
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/StopReason"
+        },
+        "type": {
+          "type": "string",
+          "const": "turn_finished"
+        }
+      },
+      "required": [
+        "type",
+        "stop_reason"
+      ]
+    },
+    {
+      "description": "A server-side tool started. `eta_ms`, when known, lets prefetch be timed exactly.",
+      "type": "object",
+      "properties": {
+        "eta_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_wait_started"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The tool returned; the next turn follows.",
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "tool_wait_ended"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "Voice activity onset. Speech-onset prefetch and turn-imminent headroom start now.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "user_speech_started"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The end-of-turn detector decided the user has finished; the realtime request follows within\nmilliseconds.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "user_turn_ended"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The agent started speaking.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "playback_started"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The agent finished speaking.",
+      "type": "object",
+      "properties": {
+        "played_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "playback_ended"
+        }
+      },
+      "required": [
+        "type",
+        "played_ms"
+      ]
+    },
+    {
+      "description": "The user barged in. Cancel the in-flight stream and truncate the context to what the user heard.",
+      "type": "object",
+      "properties": {
+        "played_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "interrupted"
+        }
+      },
+      "required": [
+        "type",
+        "played_ms"
+      ]
+    },
+    {
+      "description": "The session ended; its KV becomes ordinary cache.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "session_closed"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  ],
+  "required": [
+    "event_id",
+    "session_id",
+    "at_ms",
+    "source"
+  ],
+  "$defs": {
+    "EventSource": {
+      "description": "Who emitted an event.",
+      "oneOf": [
+        {
+          "description": "Inferred by the control plane from proxied traffic (for example, a response ending in tool calls).",
+          "type": "string",
+          "const": "inferred"
+        },
+        {
+          "description": "agentic-api's lifecycle sink: exact server-side tool timing.",
+          "type": "string",
+          "const": "agentic-api"
+        },
+        {
+          "description": "The LiveKit voice worker: voice activity, end of turn, playback, barge-in.",
+          "type": "string",
+          "const": "voice-worker"
+        },
+        {
+          "description": "Any other trusted client.",
+          "type": "string",
+          "const": "client"
+        }
+      ]
+    },
+    "SessionId": {
+      "description": "One conversation, scoped to a tenant: 1 to 128 characters from [A-Za-z0-9._:-].",
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "StopReason": {
+      "description": "Why a response stopped, normalized across the OpenAI and Anthropic APIs.",
+      "oneOf": [
+        {
+          "description": "Natural end: OpenAI `stop` or `content_filter`; Anthropic `end_turn`, `stop_sequence` or `refusal`.",
+          "type": "string",
+          "const": "stop"
+        },
+        {
+          "description": "Token limit: OpenAI `length`; Anthropic `max_tokens`.",
+          "type": "string",
+          "const": "length"
+        },
+        {
+          "description": "The model called tools: OpenAI `tool_calls` or `function_call`; Anthropic `tool_use`.",
+          "type": "string",
+          "const": "tool_calls"
+        },
+        {
+          "description": "The client or the control plane aborted the stream.",
+          "type": "string",
+          "const": "cancelled"
+        },
+        {
+          "description": "The upstream failed.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    }
+  }
+}
