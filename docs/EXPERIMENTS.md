@@ -11,7 +11,7 @@ Four questions decide whether Leaseholder earns its place in front of stock vLLM
 
 E0 comes first. It re-measures the tier cost model on the frozen box and checks that `lh-sim` reproduces 2–3 GPU operating points within 10–15% on resume TTFT and recompute.
 - **Cost model: done in W1.** The table and fits are in [BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0), and `lh-core` carries them.
-- **Simulator: in progress.** Driven by the measured request times, its engine model matches the W0 replay's GPU and CPU shares ([validation](../crates/lh-sim/README.md#validation-against-w0)). Its own replay still runs at the idle box's speed, so the TTFT check waits for a contention model (W2).
+- **Simulator: in progress.** Driven by the measured request times, its engine model matches the W0 replay's GPU and CPU shares ([`lh-sim` README](../crates/lh-sim/README.md#validation-against-w0)). Its own replay still runs at the idle box's speed, so the TTFT check waits for a contention model (W2).
 
 ## E2: voice under agent load
 
@@ -33,7 +33,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 | 9 | Leaseholder: headroom timed by lifecycle events and freed by parking, the critical-window prefill throttle, class-aware admission (never shed), the engine "make room" patch; each also alone | This project |
 | 10 | MPS with an active-thread split; audio off the GPU | Equal-hardware partitioning |
 
-**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (speech onset, end of turn, the preemptive-generation transcript); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech closes it after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); the difference is reported as wasted tokens.
+**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (speech onset, end of turn, the preemptive-generation transcript); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech cuts the reply after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); the difference is reported as wasted tokens.
 
 **Metrics.**
 - Voice V2V p50, p95 and p99 from waveforms, server-side and end-to-end (including endpointing).
