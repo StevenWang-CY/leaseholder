@@ -11,6 +11,9 @@ from pathlib import Path
 
 from leaseholder_bench.load import LoadSpec, parse_lengths
 from leaseholder_bench.protocol import SessionTagger, SloClass, load_class_map
+from leaseholder_bench.replay import DEFAULT_MODEL, DEFAULT_URL
+
+Commands = argparse._SubParsersAction  # what add_subparsers returns
 
 
 def _scale(args: argparse.Namespace) -> int:
@@ -29,6 +32,27 @@ def _scale(args: argparse.Namespace) -> int:
             f"warning: {len(ids) - summary.traces} listed trace ids were not found", file=sys.stderr
         )
     return 0
+
+
+def _add_scale_traces(commands: Commands) -> None:
+    scale = commands.add_parser(
+        "scale-traces",
+        help="shrink Weka traces by a factor of tokens per hash block",
+        description="Shrink every request of a Weka trace corpus by the same factor, keeping "
+        "hash ids, sessions, subagents and think times. Writes one <trace id>.json per trace.",
+    )
+    scale.add_argument("src", type=Path, help="Weka traces: a .jsonl file or a directory of *.json")
+    scale.add_argument("out_dir", type=Path, help="directory for the scaled traces")
+    scale.add_argument(
+        "--factor",
+        type=int,
+        default=32,
+        help="tokens-per-block shrink factor: 32 fits a 32k context, 64 a 16k one "
+        "(default %(default)s)",
+    )
+    scale.add_argument("--ids", type=Path, help="keep only the trace ids listed in this file")
+    scale.add_argument("--limit", type=int, help="stop after this many traces")
+    scale.set_defaults(func=_scale)
 
 
 def _replay(args: argparse.Namespace) -> int:
@@ -57,103 +81,7 @@ def _replay(args: argparse.Namespace) -> int:
     return 0 if any(stat.ok for stat in replayer.stats) else 1
 
 
-def _mock(args: argparse.Namespace) -> int:
-    from leaseholder_bench.mock_server import serve
-
-    options = {
-        "model": args.model,
-        "ttft_ms": args.ttft_ms,
-        "itl_ms": args.itl_ms,
-        "max_tokens": args.max_tokens,
-    }
-    if args.log is None:
-        serve(args.port, None, **options)
-        return 0
-    args.log.parent.mkdir(parents=True, exist_ok=True)
-    with args.log.open("ab") as log:
-        serve(args.port, log, **options)
-    return 0
-
-
-def _kv_metrics(args: argparse.Namespace) -> int:
-    from leaseholder_bench.kv_metrics import compare, fetch
-
-    if args.action == "snapshot":
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(fetch(args.url))
-        return 0
-    print(compare(args.before.read_text(), args.after.read_text()))
-    return 0
-
-
-def _tiers(args: argparse.Namespace) -> int:
-    from leaseholder_bench.tiers import TiersConfig, render, run_tiers
-
-    config = TiersConfig(
-        url=args.url,
-        model=args.model,
-        lengths=args.lengths,
-        reps=args.reps,
-        background=args.background,
-        decode_tokens=args.decode_tokens,
-        priority=None if args.no_priority else args.priority,
-        seed=args.seed,
-    )
-    summary = asyncio.run(run_tiers(config, args.out))
-    print(render(summary))
-    return 0 if not summary["invalid"] else 3
-
-
-def _voice_turn(args: argparse.Namespace) -> int:
-    from leaseholder_bench.voice_turn import VoiceTurnConfig, render, run_voice_turns
-
-    config = VoiceTurnConfig(
-        stt_url=args.stt_url,
-        llm_url=args.llm_url,
-        tts_url=args.tts_url,
-        stt_model=args.stt_model,
-        llm_model=args.llm_model,
-        tts_model=args.tts_model,
-        voice=args.voice,
-        audio=args.audio,
-        reps=args.reps,
-        warm=args.warm,
-        concurrency=args.concurrency,
-        max_tokens=args.max_tokens,
-        slo_class=args.slo_class,
-        send_priority=not args.no_priority,
-        background=args.background,
-        decode_tokens=args.decode_tokens,
-    )
-    print(render(asyncio.run(run_voice_turns(config, args.out))))
-    return 0
-
-
-def build_parser() -> argparse.ArgumentParser:
-    from leaseholder_bench.replay import DEFAULT_MODEL, DEFAULT_URL
-
-    parser = argparse.ArgumentParser(prog="lh-bench", description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    scale = commands.add_parser(
-        "scale-traces",
-        help="shrink Weka traces by a factor of tokens per hash block",
-        description="Shrink every request of a Weka trace corpus by the same factor, keeping "
-        "hash ids, sessions, subagents and think times. Writes one <trace id>.json per trace.",
-    )
-    scale.add_argument("src", type=Path, help="Weka traces: a .jsonl file or a directory of *.json")
-    scale.add_argument("out_dir", type=Path, help="directory for the scaled traces")
-    scale.add_argument(
-        "--factor",
-        type=int,
-        default=32,
-        help="tokens-per-block shrink factor: 32 fits a 32k context, 64 a 16k one "
-        "(default %(default)s)",
-    )
-    scale.add_argument("--ids", type=Path, help="keep only the trace ids listed in this file")
-    scale.add_argument("--limit", type=int, help="stop after this many traces")
-    scale.set_defaults(func=_scale)
-
+def _add_replay(commands: Commands) -> None:
     replay = commands.add_parser(
         "replay",
         help="replay scaled traces, feeding each live reply into the next turn",
@@ -224,6 +152,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.set_defaults(func=_replay)
 
+
+def _mock(args: argparse.Namespace) -> int:
+    from leaseholder_bench.mock_server import serve
+
+    options = {
+        "model": args.model,
+        "ttft_ms": args.ttft_ms,
+        "itl_ms": args.itl_ms,
+        "max_tokens": args.max_tokens,
+    }
+    if args.log is None:
+        serve(args.port, None, **options)
+        return 0
+    args.log.parent.mkdir(parents=True, exist_ok=True)
+    with args.log.open("ab") as log:
+        serve(args.port, log, **options)
+    return 0
+
+
+def _add_mock_server(commands: Commands) -> None:
     mock = commands.add_parser(
         "mock-server",
         help="run a recording OpenAI-compatible mock on 127.0.0.1",
@@ -251,6 +199,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mock.set_defaults(func=_mock)
 
+
+def _kv_metrics(args: argparse.Namespace) -> int:
+    from leaseholder_bench.kv_metrics import compare, fetch
+
+    if args.action == "snapshot":
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(fetch(args.url))
+        return 0
+    print(compare(args.before.read_text(), args.after.read_text()))
+    return 0
+
+
+def _add_kv_metrics(commands: Commands) -> None:
     kv = commands.add_parser(
         "kv-metrics",
         help="snapshot vLLM's /metrics, or compare KV block lifecycle histograms across a run",
@@ -267,6 +228,26 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("after", type=Path)
     kv.set_defaults(func=_kv_metrics)
 
+
+def _tiers(args: argparse.Namespace) -> int:
+    from leaseholder_bench.tiers import TiersConfig, render, run_tiers
+
+    config = TiersConfig(
+        url=args.url,
+        model=args.model,
+        lengths=args.lengths,
+        reps=args.reps,
+        background=args.background,
+        decode_tokens=args.decode_tokens,
+        priority=None if args.no_priority else args.priority,
+        seed=args.seed,
+    )
+    summary = asyncio.run(run_tiers(config, args.out))
+    print(render(summary))
+    return 0 if not summary["invalid"] else 3
+
+
+def _add_tiers(commands: Commands) -> None:
     tiers = commands.add_parser(
         "tiers",
         help="measure the time to first token from the GPU pool, the CPU tier and recompute (E0)",
@@ -306,6 +287,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_load_arguments(tiers)
     tiers.set_defaults(func=_tiers)
 
+
+def _voice_turn(args: argparse.Namespace) -> int:
+    from leaseholder_bench.voice_turn import VoiceTurnConfig, render, run_voice_turns
+
+    config = VoiceTurnConfig(
+        stt_url=args.stt_url,
+        llm_url=args.llm_url,
+        tts_url=args.tts_url,
+        stt_model=args.stt_model,
+        llm_model=args.llm_model,
+        tts_model=args.tts_model,
+        voice=args.voice,
+        audio=args.audio,
+        reps=args.reps,
+        warm=args.warm,
+        concurrency=args.concurrency,
+        max_tokens=args.max_tokens,
+        slo_class=args.slo_class,
+        send_priority=not args.no_priority,
+        background=args.background,
+        decode_tokens=args.decode_tokens,
+    )
+    print(render(asyncio.run(run_voice_turns(config, args.out))))
+    return 0
+
+
+def _add_voice_turn(commands: Commands) -> None:
     turn = commands.add_parser(
         "voice-turn",
         help="time server-side voice turns: STT, LLM first sentence, TTS first audio",
@@ -362,7 +370,6 @@ def build_parser() -> argparse.ArgumentParser:
     turn.add_argument("--out", type=Path, required=True, help="run directory")
     _add_load_arguments(turn)
     turn.set_defaults(func=_voice_turn)
-    return parser
 
 
 def _add_load_arguments(parser: argparse.ArgumentParser) -> None:
@@ -384,6 +391,21 @@ def _add_load_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="omit the vLLM priority field (needed against a server without priority scheduling)",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="lh-bench", description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    for add in (
+        _add_scale_traces,
+        _add_replay,
+        _add_mock_server,
+        _add_kv_metrics,
+        _add_tiers,
+        _add_voice_turn,
+    ):
+        add(commands)
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
