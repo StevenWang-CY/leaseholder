@@ -9,6 +9,8 @@ Type=exec
 EnvironmentFile=%h/.config/leaseholder/livekit.env
 ExecStart=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/bin/livekit-server --config %h/leaseholder/src/deploy/cyan/livekit.yaml
 ExecStartPost=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:17880/ 30
+# Cores 32-47 belong to the voice plane; the control plane and load generators use the others.
+CPUAffinity=32-47
 Restart=on-failure
 RestartSec=5
 
