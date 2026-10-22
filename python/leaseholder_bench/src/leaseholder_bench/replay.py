@@ -151,7 +151,10 @@ class Session:
         new = hash_ids[chain.covered :]
         if new:
             chain.segments.append(Segment({"role": "user", "content": self.text(new)}, len(new)))
-        chain.last, chain.covered = hash_ids, len(hash_ids)
+            chain.covered = len(hash_ids)
+        # Otherwise the last reply stands for more blocks than this request adds. ``covered`` keeps
+        # the excess, so the next request's new blocks start after it instead of resending it.
+        chain.last = hash_ids
         return [segment.message for segment in chain.segments]
 
     def add_reply(self, chain: Chain, reply: str, out_tokens: int) -> None:

@@ -122,6 +122,16 @@ def test_priority_and_ignore_eos_can_be_left_out():
     assert "ignore_eos" not in server.seen[0]["body"]
 
 
+def test_a_reply_longer_than_the_next_extension_is_not_sent_twice():
+    # The first reply stands for 3 blocks, but the next request adds only 1. The request after
+    # that starts its new blocks after the reply's whole share, so its prompt matches the trace.
+    server = FakeServer()
+    t = trace("t", [request(0, H[:10], 6), request(1, H[:11], 2), request(2, H[:20], 1)])
+    play(t, server)
+    third = server.messages(2)
+    assert sum(len(words(m)) for m in third[1:]) == 2 * 20  # the trace's `in`, session line aside
+
+
 def test_compaction_keeps_the_messages_inside_the_shared_prefix():
     server = FakeServer()
     keeps_reply = [*H[:14], 70, 71]  # cuts inside the second user message, after the reply
