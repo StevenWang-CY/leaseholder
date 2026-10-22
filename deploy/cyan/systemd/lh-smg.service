@@ -1,0 +1,24 @@
+[Unit]
+Description=Leaseholder E2 arm 8b: SMG 1.13.0's priority scheduler in front of the engine, on 127.0.0.1:18090
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+After=lh-tunnel-phastform.service
+
+# Not enabled at boot: lh-bench e2 run starts it for an arm with router = "smg", whose [gateway] table points the
+# gateway's upstream here, and stops it for every other arm.
+[Service]
+Type=exec
+# SMG as shipped, with its priority scheduler on, in front of the engine through the tunnel. Its pooled upstream
+# connections close after 55 s idle, before the engine's 60 s keep-alive, as the gateway's do, and its metrics listen
+# on loopback (its default is every interface). The gateway sets X-SMG-Priority from each request's class, so the
+# classes it names are admitted up to system. There is no --max-concurrent-requests: it sizes the scheduler's pool
+# only until a worker is known, and at 8 SMG's built-in class reservations (system 32, interactive 128) do not fit,
+# so its priority scheduler would not start ("falling back to legacy admission").
+ExecStart=%h/leaseholder/venvs/smg/bin/smg launch --host 127.0.0.1 --port 18090 \
+  --worker-urls http://127.0.0.1:18000 --backend openai --upstream-pool-idle-timeout-secs 55 \
+  --prometheus-host 127.0.0.1 --prometheus-port 18091 \
+  --priority-scheduler-enabled --priority-scheduler-default-max-class system
+ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:18090/health 60
+# Cores 0-7 belong to the control plane, with lh-gateway.
+CPUAffinity=0-7
+Restart=on-failure
+RestartSec=5

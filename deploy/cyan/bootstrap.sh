@@ -4,6 +4,7 @@
 #   bin/livekit-server                  LiveKit server 1.13.10
 #   venvs/voice                         lh-voice-worker and lh-voice, from python/leaseholder_voice/uv.lock
 #   venvs/bench                         lh-bench and the AIPerf plugins, from python/leaseholder_bench/uv.lock
+#   venvs/smg                           SMG 1.13.0 for E2's arm 8b (lh-smg.service), from requirements/smg.txt
 #   ~/.config/leaseholder/livekit.env   API key pair for the local LiveKit server and the voice worker
 #   ~/.ssh/lh_tunnel_ed25519            the tunnel key; authorize it on each GPU node with deploy/authorize-tunnel.sh
 set -euo pipefail
@@ -27,6 +28,8 @@ venv() { # venv NAME PACKAGE
 }
 venv voice leaseholder_voice
 venv bench leaseholder_bench
+[[ -x $root/venvs/smg/bin/python ]] || "$uv" venv -q --python 3.12 "$root/venvs/smg"
+"$uv" pip sync -q --python "$root/venvs/smg/bin/python" "$src/deploy/cyan/requirements/smg.txt"
 
 # The worker's models ship in its wheels (the v1-mini end-of-turn model in livekit-local-inference, Silero's ONNX
 # file in its plugin), so there is nothing to download. Check that they load offline, as lh-voice-worker.service
@@ -53,3 +56,4 @@ version() { "$root/venvs/$1/bin/python" -c 'import importlib.metadata as m, sys;
 echo "bootstrap: $("$root/bin/livekit-server" --version)"
 echo "bootstrap: voice $(version voice livekit-agents); its models load offline"
 echo "bootstrap: bench $(version bench aiperf)"
+echo "bootstrap: smg $(version smg smg)"
