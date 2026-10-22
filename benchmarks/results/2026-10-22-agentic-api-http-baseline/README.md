@@ -22,4 +22,4 @@ agentic-api's own `response_provider` benchmark, run against the frozen box. Arm
 
 **History rehydration** (depths 1, 5, 10, 25). Every arm fails the recall at turn 2 with this 4B model: success is 100%, 40%, 20% and 8%, the same on every arm. It confirms equal behavior but needs a larger model to say anything about depth.
 
-This directory keeps each run's `summary.md` (and the history `depth_summary.md`), the campaign log, the script and the usage analysis. The per-turn `turns.csv` and `run.json` files (8 MB) are kept with the run archive.
+This directory keeps each run's `summary.md` (and the history `depth_summary.md`), the campaign log, the script, and the usage analysis with its samples: `python gateway_usage.py .` prints the gateway resource numbers above. The per-turn `turns.csv` and `run.json` files (8 MB) are kept with the run archive.
