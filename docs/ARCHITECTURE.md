@@ -293,15 +293,17 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 
 ## 12. Prior art
 
-See [PRIOR-ART.md](PRIOR-ART.md). In short:
-- leases and TTL holds: llm-d-router #2273, AIBrix #2814, Continuum, SGLang;
-- active-session admission: ThunderAgent, vllm-project/router Progress-TTL, llm-d;
-- CPU-tier prefetch: Tokencake, MORI, vLLM #58198;
-- turn priority and session affinity: llm-d.
+See [PRIOR-ART.md](PRIOR-ART.md). Most mechanisms used here are published or shipping, so they are baselines or prior work, not claims:
+- co-serving a latency class beside best-effort work: ConServe, HyGen, BROS, Niyama, Valve; class headroom: Llumnix;
+- priority classes, budgets, aging and in-flight eviction: llm-d v1.0 flow control, SMG, Dynamo;
+- engine priority preemption: vLLM among running requests, SGLang at the request cap;
+- parking KV during a tool call and prefetching it before the return: Tokencake, KVFlow, CacheScout, MORI, vLLM #57103 and #58198;
+- TTL holds and active-session admission: Continuum, vLLM #37003, llm-d-router #2273, ThunderAgent, vllm-project/router Progress-TTL;
+- starting the LLM before the turn ends: LiveKit preemptive generation, Endpoint Anticipation.
 
-Leaseholder's contribution is a combination on one commodity GPU:
-- one lifecycle-event schema shared by agents and voice;
-- a never-shed realtime class with turn-imminent headroom, measured against tuned stock vLLM;
-- a cache contract honored with a stated guarantee;
-- a validated recompute ledger;
-- simulator bounds against Belady-OPT.
+Leaseholder claims three parts:
+- headroom timed by lifecycle events (speech onset, end of turn), counted in KV tokens and freed by parking background sessions rather than killing them;
+- an engine fix: a waiting high-priority request preempts running work when the KV cache is full, keeping the victim's KV (open in vLLM as #40004; a draft in SGLang, #45686);
+- a recompute ledger validated by injected causes.
+
+The experiments measure a workload pair that published systems have not measured together, a cascaded voice pipeline beside long-context agents on one GPU, and when lifecycle timing beats static reservation and engine priority, and when it does not.

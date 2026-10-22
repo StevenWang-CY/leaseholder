@@ -96,14 +96,25 @@ docs/                     architecture, protocol, SLOs, experiments, benchmarks,
 
 ## Why not llm-d, Dynamo or vllm-project/router?
 
-- **Scope.** Those are fleet routers built around Kubernetes and endpoint scoring. Leaseholder targets single-node timing policies on shared hosts without Kubernetes, and makes no attempt to beat them at routing.
-- **Overlap.** Its parts overlap known work: leases (llm-d-router #2273), active-session admission (ThunderAgent, Progress-TTL), CPU-tier prefetch (vLLM #58198) and turn priority (llm-d), which is a baseline here.
-- **What it adds** is a combination, measured on one commodity GPU:
-  - one lifecycle-event schema shared by agents and voice;
-  - a never-shed realtime class with turn-imminent headroom;
-  - Anthropic cache TTLs honored with a stated guarantee;
+- **Most mechanisms already ship.**
+  - llm-d v1.0 has flow control with priority bands, holdback ceilings, SLO-deadline ordering and in-flight eviction of sheddable requests.
+  - SMG, a Rust gateway, reserves slots per priority class and preempts lower classes before their first byte.
+  - Dynamo queues by priority but does not reserve capacity.
+  - vllm-project/router admits agent Programs with a logical KV TTL.
+  - In the engines, vLLM and SGLang preempt by priority, but neither lets a waiting request preempt running work when the KV cache is full.
+
+  Leaseholder claims none of these. llm-d flow control (emulated), SMG and both engines' priority preemption are baselines it is measured against.
+- **What it adds:**
+  - KV headroom for the next voice turn, held from speech onset or end of turn and freed by parking background sessions in host RAM instead of killing them;
+  - an engine fix that lets a waiting request preempt running work when the KV cache is full, keeping the victim's KV (open in vLLM as #40004; a draft in SGLang, #45686);
   - a recompute ledger validated by injected causes;
-  - simulator bounds against Belady-OPT.
+  - measurements of when lifecycle timing beats static reservation and engine priority, and when it does not.
+- **The gateway is a harness.** `lh-gateway` is a small Rust proxy that carries the `lh-core` policy for experiments on one GPU without Kubernetes; it does not compete with fleet routers. The policy is to be proposed where production runs:
+  - the engine fix, as a vLLM scheduler PR under #40004;
+  - the agent-side lease and prefetch policy, in vllm-project/router on RFCs #427 (engine-confirmed retention) and #428 (prefetch before a tool returns);
+  - the lifecycle-event sink and cache-control pass-through, in agentic-api (#364, #330).
+
+  None of these is merged yet.
 
 See [docs/PRIOR-ART.md](docs/PRIOR-ART.md) for sources and status.
 
