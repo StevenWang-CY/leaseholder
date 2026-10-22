@@ -83,7 +83,8 @@ Errors the gateway generates use OpenAI's format, `{"error": {"message", "type",
 |---|---|---|
 | `lh_gateway_requests_total` | `tenant`, `route`, `class`, `status` | API requests. `tenant` is empty when unauthenticated, `class` for routes without one; status 499 means the client left before any response |
 | `lh_gateway_request_outcomes_total` | `class`, `outcome` | Proxied requests by how they ended: `completed` (relayed in full, whatever the status), `cancelled` (the client left first), `stalled`, `error` (the upstream failed) |
-| `lh_gateway_overhead_seconds` | `route` | Receipt of a request to the moment hyper writes it to an upstream connection: body read, parse, sanitization, resolution and connection checkout. The number behind the 2 ms SLO; buckets from 50 µs, with 2 ms as a bound |
+| `lh_gateway_overhead_seconds` | `route` | The end of a request's body to the moment hyper writes the request to an upstream connection: parse, sanitization, resolution and connection checkout. The number behind the 2 ms SLO; buckets from 50 µs, with 2 ms as a bound |
+| `lh_gateway_request_body_seconds` | `route` | Receipt of a request's headers to the end of its body: the client's upload, which a direct call to the engine waits for too |
 | `lh_gateway_first_byte_seconds` | `class` | Receipt to the first response body byte from the upstream |
 | `lh_gateway_duration_seconds` | `class` | Receipt to the end of the upstream response |
 | `lh_gateway_streams_active` | `class` | Responses being relayed |
@@ -101,7 +102,7 @@ Each request writes one log line at its end (target `lh_gateway::request`, level
 
 - **Upstream client: hyper-util's pooled client rather than reqwest.** The request is already an `http::Request` with a sanitized `HeaderMap`, so it goes upstream without conversion, and the response body is hyper's `Incoming`, read frame by frame. reqwest wraps the same client and would add a URL parse, header conversions and redirect handling per request, none of which a fixed loopback upstream needs. Idle upstream connections close after 4 s, before vLLM's 5 s keep-alive timeout closes them under a request.
 - **Request ids** are a random 64-bit prefix chosen at start and a counter. They need to be unique, not unpredictable (a client cannot set them), and they cost no system call. Minted session ids use 128 random bits.
-- **The overhead metric ends at the first poll of the upstream request body,** which hyper does on a checked-out connection as it writes the request, so connection checkout is included.
+- **The overhead metric starts when the request body is complete and ends at the first poll of the upstream request body,** which hyper does on a checked-out connection as it writes the request, so connection checkout is included. The body's arrival is timed separately (`lh_gateway_request_body_seconds`): a client that sends its body some time after its headers would otherwise have its own delay counted as the gateway's.
 
 ## Overhead
 

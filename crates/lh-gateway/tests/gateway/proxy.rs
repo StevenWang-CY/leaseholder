@@ -332,6 +332,7 @@ async fn metrics_expose_every_series() {
         "lh_gateway_requests_total{tenant=\"\",route=\"/v1/chat/completions\",class=\"\",status=\"401\"} 1",
         "lh_gateway_request_outcomes_total{class=\"background\",outcome=\"completed\"} 1",
         "lh_gateway_overhead_seconds_bucket{le=\"0.002\",route=\"/v1/chat/completions\"}",
+        "lh_gateway_request_body_seconds_count{route=\"/v1/chat/completions\"} 1",
         "lh_gateway_first_byte_seconds_count{class=\"background\"} 1",
         "lh_gateway_duration_seconds_count{class=\"background\"} 1",
         "lh_gateway_streams_active{class=\"background\"} 0",

@@ -162,6 +162,7 @@ pub(crate) struct Metrics {
     requests: Family<RequestLabels, Counter>,
     outcomes: Family<OutcomeLabels, Counter>,
     overhead: Histograms<RouteLabels>,
+    request_body: Histograms<RouteLabels>,
     first_byte: Histograms<ClassLabels>,
     duration: Histograms<ClassLabels>,
     streams_active: Family<ClassLabels, Gauge>,
@@ -179,6 +180,7 @@ impl Metrics {
             requests: Family::default(),
             outcomes: Family::default(),
             overhead: Family::new_with_constructor(|| Histogram::new(OVERHEAD_BUCKETS)),
+            request_body: Family::new_with_constructor(|| Histogram::new(OVERHEAD_BUCKETS)),
             first_byte: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
             duration: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
             streams_active: Family::default(),
@@ -202,6 +204,7 @@ impl Metrics {
         for route in [Route::ChatCompletions, Route::Completions, Route::Responses] {
             let route = route.as_str();
             create(&metrics.overhead, RouteLabels { route });
+            create(&metrics.request_body, RouteLabels { route });
         }
         for kind in UpstreamError::ALL.map(UpstreamError::as_str) {
             create(&metrics.upstream_errors, KindLabels { kind });
@@ -230,10 +233,17 @@ impl Metrics {
         );
         r.register_with_unit(
             "overhead",
-            "Time from receiving a request to writing it to the upstream: body read, parse, sanitize, resolve, \
-             connection checkout",
+            "Time from the end of a request's body to writing the request to the upstream: parse, sanitize, \
+             resolve, connection checkout",
             Unit::Seconds,
             self.overhead.clone(),
+        );
+        r.register_with_unit(
+            "request_body",
+            "Time from receiving a request's headers to the end of its body: the client's upload, which a \
+             direct call to the engine waits for too",
+            Unit::Seconds,
+            self.request_body.clone(),
         );
         r.register_with_unit(
             "first_byte",
@@ -309,6 +319,16 @@ impl Metrics {
             outcome: outcome.as_str(),
         };
         self.outcomes.get_or_create(&labels).inc();
+    }
+
+    /// How long a request's body took to arrive after its headers.
+    pub fn request_body(&self, route: Route, elapsed: Duration) {
+        let labels = RouteLabels {
+            route: route.as_str(),
+        };
+        self.request_body
+            .get_or_create(&labels)
+            .observe(elapsed.as_secs_f64());
     }
 
     /// The overhead histogram of a route, observed when the upstream request is written.
