@@ -1,8 +1,8 @@
 //! Lifecycle events: what tells the control plane when a session will next need its KV.
 //!
 //! One schema serves every workload. A tool return and a user's speech onset are two triggers of the same
-//! prefetch-and-headroom mechanism. Events arrive at `POST /v1/events`, idempotent by `event_id`, or the
-//! control plane infers them from the traffic it proxies.
+//! prefetch-and-headroom mechanism. Events arrive at `POST /v1/events`, idempotent by `(source, event_id)`,
+//! or the control plane infers them from the traffic it proxies.
 //!
 //! On the wire an event is one flat JSON object; `type` selects the variant and its fields:
 //!
