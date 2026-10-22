@@ -1,6 +1,6 @@
 # Service levels
 
-Leaseholder serves three classes on one GPU. Each class has its own clock, admission rule and primary indicator.
+Leaseholder serves three classes on one GPU, the tiers API providers sell as priority, standard and flex. Each class has its own clock, admission rule and primary indicator.
 
 | Class | Typical traffic | Resume target | Primary indicator | Admission |
 |---|---|---|---|---|
@@ -8,22 +8,25 @@ Leaseholder serves three classes on one GPU. Each class has its own clock, admis
 | `interactive` | Agent loops with a person waiting | Warm-turn TTFT p95 ≤ 250 ms at ≤ 16k tokens | Warm and resumed TTFT, by source tier | Predicted-TTFT admission; queued with a deadline |
 | `background` | Batch agents, trace replays, memory consolidation | Best effort | Goodput (tokens/s), with a minimum share and aging | Deferred or demoted whenever realtime needs room |
 
-## Indicators and v0 targets
+## Indicators and targets
 
-| Indicator | Definition | v0 target |
+The voice targets are calibrated against voice alone on the frozen box (W1, 2026-10-22, [BENCHMARKS.md](BENCHMARKS.md)). Turn-taking settings are fixed across every arm. Experiments end a turn a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), which contributes about 1 s of the end-to-end figure. So the end-to-end target is stated as the degradation that agent load may add.
+
+| Indicator | Definition | Target |
 |---|---|---|
-| Voice V2V | End of the user's speech to the bot's first audio, measured from waveforms at the bot | p50 ≤ 900 ms, p95 ≤ 1,200 ms, p99 ≤ 1,800 ms. Recalibrated against voice alone in W2 |
+| Server-side voice turn | The utterance sent to STT, until the first byte of TTS audio (`lh-bench voice-turn`): the part serving controls | p95 ≤ 800 ms (voice alone: 588 ms p50, 665 ms p90) |
+| Voice V2V | End of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing | p95 at most 250 ms above voice alone (voice alone: 1,614 ms p50, 1,760 ms p95, 1,889 ms p99) |
 | Barge-in to silence | The user starts speaking during bot speech, until bot audio falls below threshold | p95 ≤ 250 ms beyond the configured minimum interruption duration |
 | Audio continuity | Share of bot utterances with any gap of 100 ms or more | ≤ 1% |
 | LLM time to first sentence | Realtime request to the end of the first sentence | Reported; this stage dominates V2V under load |
 | Resume TTFT | Interactive, by source tier (GPU, CPU, recompute) | Warm p95 ≤ 250 ms at ≤ 16k tokens |
 | Harvested background goodput | Background agent tokens/s while the voice SLO holds | Reported; the x-axis of the E2 frontier |
-| Contract violations | Prefix misses inside a cache TTL, outside the listed exceptions (node failure, model or config change, prefix mismatch) | 0 |
+| Cache-contract honor rate | Hits inside a `cache_control` TTL (renewed on each use) among requests that should hit, outside the listed exceptions (node failure, model or config change, prefix mismatch) | Reported, with every miss counted; providers promise billing eligibility, not residency |
 | Control-plane overhead | Latency added per request and per streamed chunk | p99 ≤ 2 ms per request |
 
 Synthetic requests (prefetch warm-ups, marked `X-LH-Synthetic`) are excluded from every indicator.
 
 ## Alerts
 
-- Multi-window burn rate on voice V2V p95 and on contract violations.
+- Multi-window burn rate on voice V2V p95 and on the cache-contract honor rate.
 - KV-event sequence gaps, engine epoch changes and tunnel loss. Each one invalidates leases or ledger attribution until it is resolved.

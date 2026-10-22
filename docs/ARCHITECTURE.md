@@ -184,9 +184,9 @@ Anthropic `cache_control` breakpoints and `ttl` (`5m`, `1h`) become lease floors
 
 | Term | Meaning |
 |---|---|
-| Guarantee | Inside the TTL, the prefix up to the breakpoint stays at least in host RAM. GPU residency is best-effort |
+| Intent | Inside the TTL (renewed on each use), the prefix up to the breakpoint stays at least in host RAM; GPU residency is best-effort. Providers promise billing eligibility, not residency, so this is an objective, not a guarantee |
 | Exceptions | Node failure; model or config change; prefix mismatch |
-| Violations | Every other miss inside the TTL. The count is an SLI with target 0 |
+| Honor rate | The share of hits inside the TTL, outside the exceptions: an SLI, reported with every miss counted. A cache read is reported only for a real hit |
 
 OpenAI `prompt_cache_options` is deferred.
 

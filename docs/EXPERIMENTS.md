@@ -23,7 +23,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 | 1 | Voice alone | The floor |
 | 2 | Stock defaults (FCFS, 2,048-token chunks) | Out of the box |
 | 3 | Stock + priority scheduling, voice high | The first thing an operator tries |
-| 4 | Arm 3 + `--long-prefill-token-threshold` ∈ {256, 512, 1024} × `--max-num-batched-tokens` ∈ {512, 1024}; `prefill_schedule_interval` ∈ {2, 4} | Tuned engine |
+| 4 | Arm 3 + `--long-prefill-token-threshold` ∈ {256, 512, 1024} × `--max-num-batched-tokens` ∈ {512, 1024}; `prefill_schedule_interval` ∈ {2, 4} on a build with #54627 (v0.32.0 applies it only to the data-parallel MoE engine) | Tuned engine |
 | 5 | Arm 4 + `watermark` ∈ {0.05, 0.1, 0.2} and `max_num_queued_tokens` | vLLM's own headroom and TTFT knobs |
 | 6 | Arm 5 + an equal-size static reservation; separately, a static background-concurrency cap | The simple operator answers |
 | 7 | vLLM with #54530 applied; SGLang priority preemption on the same model | What the engines ship or are shipping |
