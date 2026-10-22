@@ -16,6 +16,7 @@ the tier cost model (E0) and server-side voice turns.
 | `lh-bench tiers` | `tiers.py` | E0: time to first token from the GPU pool, the CPU tier and recompute, verified per sample by vLLM's prefix-cache counters; optional background load |
 | `lh-bench voice-turn` | `voice_turn.py` | One server-side voice turn timed per stage (STT, LLM first sentence, TTS first audio); optional background load |
 | `lh-bench kv-metrics` | `kv_metrics.py` | KV block lifecycle histograms compared across a run |
+| `lh-bench e2` | `e2.py`, `frontier.py` | E2 points: one measured from its arm file on cyan (`run`), and the frontier across points (`report`) |
 | background load | `load.py` | `prefill:<tokens>x<n>` (cold prefills) or `decode:<tokens>x<n>` (long decodes) beside a probe |
 
 Python 3.12, pinned to `aiperf==0.13.0`. Installing the package registers both AIPerf plugins
@@ -76,7 +77,7 @@ plugin (AIPerf builds the endpoint itself, in every worker) and by `lh-bench rep
 |---|---|---|
 | `LH_BENCH_CLASS` | `background` | Class of every session |
 | `LH_BENCH_CLASS_MAP` | unset | JSON file `{trace id: class}`; overrides the default per trace |
-| `LH_BENCH_SEND_PRIORITY` | `true` | Set `false` against a vLLM server without `--scheduling-policy priority`: vLLM 0.32 rejects any priority other than 0 there |
+| `LH_BENCH_SEND_PRIORITY` | `true` | `false` sends no `priority`, as a plain client would. vLLM 0.32 acts on it only under `--scheduling-policy priority`; its FCFS scheduler ignores it |
 
 AIPerf also sends its own `X-Correlation-ID` and `X-Session-Affinity`, which identify each agent
 rather than the tree. Keep `AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID` off: when on, AIPerf
@@ -121,7 +122,9 @@ Source `configs/aiperf.env` first. It disables AIPerf's dataset cache, which oth
 second, memory-mapped copy of each dataset under `~/.cache/aiperf` (it filled green's disk once),
 keeps the session-id override off, and raises the dataset timeouts that the full corpus (about
 300 s to load and 17-22 GB of RAM) exceeds. AIPerf takes these settings only from the
-environment.
+environment. The cache would not shorten a run anyway: AIPerf 0.13.0 caches only its own trace
+types, and `weka_trace_scaled` is not one, so every run builds its dataset (about 4 minutes on
+cyan).
 
 Things to know:
 
@@ -132,7 +135,7 @@ Things to know:
 - **Grace period.** AIPerf waits the whole grace period whenever session trees are still open,
   which in `agentic_replay` is nearly always.
 - **vLLM flags.** Cached-token counts need `--enable-prompt-tokens-details`; the `priority` field
-  needs `--scheduling-policy priority` (or `LH_BENCH_SEND_PRIORITY=false`).
+  takes effect only with `--scheduling-policy priority`.
 - AIPerf replays a synthesized assistant history, never the model's reply. See below.
 
 ## Live-reply driver
@@ -239,6 +242,76 @@ evicted blocks idle no longer than the reuse-gap p90 (6.33s): 50.4%
 
 When evicted blocks were idle for less time than blocks typically wait between reuses, LRU is evicting KV that would have been reused. Reuse gaps are recorded only for blocks that survived until reuse, so the comparison is a signal, not a bound.
 
+## E2 points
+
+`lh-bench e2 run ARM.toml --out DIR` measures one point of E2 on cyan: the measurement calls beside the AIPerf agentic replay, through the gateway, on the engine the GPU node runs. [`benchmarks/e2`](../../benchmarks/e2/README.md) holds the arm files and `campaign.sh`, which measures a list of them from a workstation and switches the GPU node's engine between them.
+
+```bash
+lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/a1-voice.toml --out ~/leaseholder/runs/e2/w2/a1-voice
+lh-bench e2 engine a2-stock-s16.toml     # the engine an arm needs, as variant.sh use takes it
+lh-bench e2 report ~/leaseholder/runs/e2/w2/{a1-voice,a2-stock-s16} --out ~/leaseholder/runs/e2/first
+lh-bench e2 reset                        # cyan's units as gateway.toml and the worker's defaults have them
+```
+
+A point runs in this order:
+1. **The engine.** Its `/server_info` (on vLLM it needs `VLLM_SERVER_DEV_MODE=1`, which `lh-engine.service` sets) gives the server, its version, the KV pool and its settings. The arm's `[engine]` flags, and on vLLM the frozen box's policy, step cap and long-prefill threshold wherever the flags say nothing else, must match them, or the point fails before anything starts and names the `variant.sh use` command that fixes it. A flag whose setting the engine does not report is recorded as unchecked.
+2. **cyan's units.** SMG runs only for `router = "smg"`. With a `[gateway]` table the gateway runs on `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in, mode 600) through the `e2-gateway` drop-in, and without one on `gateway.toml`. The voice worker's preemptive generation is switched with the `no-preemptive-generation` drop-in. Only a unit whose configuration changes restarts, and the worker must register again within 90 s. The worker must end turns with fixed endpointing (`vad-turns`), or nothing runs.
+3. **A cold start.** The engine's prefix cache, and vLLM's CPU tier, are emptied.
+4. **The replay.** With agent sessions, AIPerf starts on cores 16–23 and the calls wait for its profiling phase plus the warm-up.
+5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them.
+6. **The end.** AIPerf gets SIGINT, cancels its requests and writes its exports, and `summary.json` is written.
+
+**The arm file.** Unknown keys and wrong types are errors. The point is named after the file.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `arm` | required | E2's arm, which names the point's frontier: 1 to 10, then a letter for a sub-arm (`"7a"`) or a suffix for a factor (`"4-no-preemptive"`) |
+| `label` | required | What the point is, for the report |
+| `router` | none | `"smg"` starts `lh-smg` (arm 8b); the `[gateway]` table points the gateway at it |
+| `[voice] callers`, `turns` | 2, 25 | Concurrent calls, and turns per call |
+| `[voice] barge_in` | 0.25 | Share of turns on which the caller interrupts the reply |
+| `[voice] seed` | 0 | The callers' seed |
+| `[voice] preemptive_generation` | `true` | LiveKit's preemptive generation in the voice worker (`LH_PREEMPTIVE_GENERATION`) |
+| `[agents] sessions` | 0 | Session trees AIPerf keeps live; 0 is voice alone |
+| `[agents] target` | `"gateway"` | `"gateway"`, as the `agents` tenant with `LH_GATEWAY_AGENTS_KEY` from `~/.config/leaseholder/gateway-keys.env`, or `"engine"`, straight through the tunnel |
+| `[agents] think_cap` | 120 | Cap on each recorded think time, in seconds |
+| `[agents] warmup` | 60 | Seconds of profiling before the calls start |
+| `[agents] data` | `"weka-x32"` | The corpus, a `scale-traces` directory under `~/leaseholder/data` |
+| `[agents] seed` | 11 | AIPerf's seed |
+| `[agents] send_priority` | `true` | The plugin's body `priority`. The gateway strips it, so it reaches only an engine targeted directly |
+| `[gateway]` | none | Merged into `gateway.toml` as it is, tables key by key: `upstream`, `upstream_priority`, `[gateway.admission]` and any other key of [`lh-gateway`'s configuration](../../crates/lh-gateway/README.md) |
+| `[engine] variant` | `"frozen"` | A directory of [`deploy/phastform/variants`](../../deploy/phastform/variants/README.md), or `frozen` |
+| `[engine] flags` | `[]` | Engine flags, each a plain word, added to its command line |
+
+**The run directory.**
+
+| File | Contents |
+|---|---|
+| `arm.toml` | The arm file as run |
+| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; versions (the deployed commit from `~/leaseholder/src/DEPLOYED`, `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked); what cyan ran (which units restarted, the gateway's configuration without key digests); the window; AIPerf's exit status |
+| `run.log` | Each step, timestamped |
+| `engine.json` | The engine's whole configuration from `/server_info`, without credentials |
+| `aiperf.log`, `aiperf/` | AIPerf's output and artifacts: `profile_export.jsonl` holds one record per request |
+| `bots.log`, `bots/` | The callers' output and run directory (`turns.jsonl`, `summary.json`) |
+| `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom` |
+| `summary.json` | The point's E2 metrics |
+
+A component that fails fails the point: `run.json` keeps `failed` and the error, and a tool's error gives its exit status and the last lines of its log. AIPerf and the callers run in process groups of their own and are stopped through them, with SIGINT and then SIGKILL for whatever is left, also when the point fails or `lh-bench e2 run` gets SIGINT or SIGTERM. Closing the SSH session that started it does not stop a point. A complete point is never overwritten; an incomplete one is moved aside to `DIR.incomplete-<UTC time>`, and a directory that holds anything else is refused. One `e2 run` or `e2 reset` runs at a time; the lock file, `~/leaseholder/runs/.lh-bench-e2.lock`, holds its pid.
+
+**`summary.json`.** Every metric covers the calls. A metric the gateway or the engine does not export is null, never zero, and a counter that went down (its process restarted during the calls) fails the point.
+
+| Key | Contents |
+|---|---|
+| `window_s` | Length of the calls |
+| `voice` | From the callers: turns, errors, `v2v_ms` and `barge_in_to_silence_ms` (n, p50, p95, p99) and barge-ins |
+| `background` | Null for voice alone. From AIPerf's records of the agent requests that ended during the calls: requests, errors (failed and cancelled requests count as lost), requests/s, prompt, completion and total tokens/s from the server's usage counts, and `ttft_ms` |
+| `gateway` | `realtime_first_byte_ms` from its histogram; what its admission point shed, refused and resubmitted, and the prompt tokens of the attempts it dropped; `background_tokens_per_s`, its own count from response usage; and every counter that moved |
+| `engine` | vLLM's preemptions, prompt tokens by source (local compute, GPU-pool and CPU-tier hits) and queue-limit rejections |
+
+The background goodput comes from AIPerf's records rather than from the gateway's request outcomes, whose `completed` counts a response relayed in full whatever its status: it cannot tell a request the engine refused from one it served. The gateway's token rate stays beside it as a check.
+
+**The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
+
 ## Mock server
 
 `lh-bench mock-server --port P --log FILE` binds 127.0.0.1 only and streams chat completions.
@@ -307,4 +380,8 @@ AIPerf's own reconstruction with a tokenizer-free prompt generator), the plugin'
 body as AIPerf's transport sends them, the wire names and class-to-priority mapping against
 `lh-proto`, the YAML template, the probes against in-process fake servers, and the driver against
 an in-process server: live replies, compaction cuts, side chains, subagent joins, think-time caps
-and failures.
+and failures. `tests/test_e2.py` runs whole E2 points against a fake gateway and engine on
+loopback, a recording `systemctl` and stand-ins for AIPerf and the callers that run as real
+processes (`tests/fakes/`): the sequence, the units each arm restarts, the engine check, failures
+at each step with every process stopped, the point directory's rules and the committed arm files.
+`tests/test_frontier.py` covers the summary over the window and the Pareto marking.
