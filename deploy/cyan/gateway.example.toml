@@ -9,6 +9,9 @@ upstream = "http://127.0.0.1:18000"
 # seconds apart reuse a warm connection; let go of one 5 s before the engine would.
 upstream_idle_timeout_s = 55
 log_format = "json"
+# How the class's priority reaches the upstream: X-Vllm-Priority (the default, for vLLM's priority scheduling),
+# the body's `priority` (SGLang) or X-SMG-Priority (SMG). vLLM's FCFS scheduling needs the empty list.
+# upstream_priority = ["vllm-header"]
 
 # The host network. Other users of cyan can reach loopback, so requests here need a key.
 [[listen]]

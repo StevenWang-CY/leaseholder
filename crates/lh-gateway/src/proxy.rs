@@ -118,12 +118,14 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
     // would.
     let read = Instant::now();
     shared.metrics.request_body(route, read - ex.received);
-    let body = match rewrite_body(&body, &tenant.cache_salt, &shared.metrics) {
+    let signals = shared.upstream_priority;
+    let priority = signals.body.then(|| class.engine_priority());
+    let body = match rewrite_body(&body, &tenant.cache_salt, priority, &shared.metrics) {
         Ok(body) => body,
         Err(err) => return ex.error(StatusCode::BAD_REQUEST, "invalid_json", err.to_string()),
     };
     let session = resolve_session(&tenant.name, &inputs, body.prompt_cache_key.as_deref());
-    set_engine_headers(&mut parts.headers, &session, class, &ex.id);
+    set_engine_headers(&mut parts.headers, &session, class, &ex.id, signals);
     parts
         .headers
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

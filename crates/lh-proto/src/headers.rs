@@ -26,6 +26,10 @@ pub const RESOLVED_SESSION_ID: &str = "x-lh-session-id";
 /// vLLM request priority. The control plane sets it from the class.
 pub const VLLM_PRIORITY: &str = "x-vllm-priority";
 
+/// The request class of SMG's priority scheduler: `system`, `interactive`, `default` or `bulk`. The control
+/// plane sets it from the class when SMG is its upstream.
+pub const SMG_PRIORITY: &str = "x-smg-priority";
+
 /// vLLM data-parallel rank routing.
 pub const DATA_PARALLEL_RANK: &str = "x-data-parallel-rank";
 
@@ -33,9 +37,10 @@ pub const DATA_PARALLEL_RANK: &str = "x-data-parallel-rank";
 /// to the engine and returns it to the caller.
 pub const REQUEST_ID: &str = "x-request-id";
 
-/// Headers vLLM trusts for scheduling and accounting. The control plane removes them from every client request
-/// and sets its own.
-pub const ENGINE_CONTROL_HEADERS: [&str; 3] = [SESSION_ID, VLLM_PRIORITY, DATA_PARALLEL_RANK];
+/// Headers the engine, or a router in front of it, trusts for scheduling and accounting. The control plane
+/// removes them from every client request and sets its own.
+pub const ENGINE_CONTROL_HEADERS: [&str; 4] =
+    [SESSION_ID, VLLM_PRIORITY, SMG_PRIORITY, DATA_PARALLEL_RANK];
 
 /// Body fields with the same role. vLLM 0.32 reads `session_id` before the header (and `vllm_xargs.session_id`
 /// after it), takes `priority` for scheduling, `kv_transfer_params` for the offload policy, `cache_salt` for

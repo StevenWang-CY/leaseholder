@@ -20,7 +20,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::auth::Tenants;
-use crate::config::{Config, ListenAddr};
+use crate::config::{Config, ListenAddr, PrioritySignals};
 use crate::events::{self, EventSink, Events};
 use crate::exchange::Exchange;
 use crate::metrics::{Metrics, Route};
@@ -34,6 +34,7 @@ const READY_WINDOW: Duration = Duration::from_secs(1);
 pub(crate) struct Shared {
     pub tenants: Tenants,
     pub upstream: Upstream,
+    pub upstream_priority: PrioritySignals,
     pub metrics: Arc<Metrics>,
     pub events: Events,
     pub max_body_bytes: usize,
@@ -97,6 +98,7 @@ impl Server {
         let shared = Shared {
             tenants,
             upstream: Upstream::new(config.upstream, config.upstream_idle_timeout),
+            upstream_priority: config.upstream_priority,
             metrics: Arc::new(Metrics::new()),
             events: Events::new(config.event_dedup_capacity, config.event_dedup_ttl, sink),
             max_body_bytes: config.max_body_bytes,

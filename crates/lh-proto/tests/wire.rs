@@ -128,8 +128,12 @@ fn the_engine_hint_matches_what_the_cache_policy_reads() {
 
 #[test]
 fn client_controlled_engine_inputs_are_listed() {
-    assert!(headers::ENGINE_CONTROL_HEADERS.contains(&"x-vllm-priority"));
-    assert!(headers::ENGINE_CONTROL_HEADERS.contains(&headers::SESSION_ID));
+    for header in ["x-vllm-priority", "x-smg-priority", headers::SESSION_ID] {
+        assert!(
+            headers::ENGINE_CONTROL_HEADERS.contains(&header),
+            "{header}"
+        );
+    }
     for field in ["session_id", "priority", "kv_transfer_params", "cache_salt"] {
         assert!(
             headers::ENGINE_CONTROL_BODY_FIELDS.contains(&field),

@@ -3,10 +3,12 @@
 //! It carries Leaseholder's request contract and nothing a stock proxy would not need:
 //! - **auth**: tenants from API-key digests (constant-time match), or from the listener for a private Unix
 //!   socket;
-//! - **sanitization**: the headers and body fields vLLM trusts for scheduling and accounting
-//!   (`lh_proto::headers`) are removed from client requests, and the gateway sets its own;
-//! - **session and class**: resolved per PROTOCOL.md and sent as `X-Session-ID` and `X-Vllm-Priority`, with a
-//!   per-tenant `cache_salt`;
+//! - **sanitization**: the headers and body fields the engine, or a router in front of it, trusts for
+//!   scheduling and accounting (`lh_proto::headers`) are removed from client requests, and the gateway sets its
+//!   own;
+//! - **session and class**: resolved per PROTOCOL.md and sent as `X-Session-ID` and a priority where the
+//!   upstream reads one (`X-Vllm-Priority`, the body's `priority` or `X-SMG-Priority`), with a per-tenant
+//!   `cache_salt`;
 //! - **relay**: responses pass through byte for byte, with backpressure, client-disconnect cancellation and a
 //!   stall timeout;
 //! - **lifecycle events** at `POST /v1/events`, deduplicated, behind [`EventSink`];

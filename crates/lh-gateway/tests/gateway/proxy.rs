@@ -16,6 +16,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
     let headers = [
         BENCH_AUTH,
         ("x-vllm-priority", "-100"),
+        ("x-smg-priority", "system"),
         ("x-session-id", "someone-else"),
         ("x-data-parallel-rank", "3"),
         ("x-request-id", "theirs"),
@@ -42,6 +43,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
     assert_eq!(seen.header("x-trace"), Some("kept"));
     for removed in [
         "authorization",
+        "x-smg-priority",
         "x-data-parallel-rank",
         "x-lh-class",
         "x-lh-synthetic",
@@ -57,6 +59,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
     let metrics = gw.metrics().await;
     for field in [
         "x-vllm-priority",
+        "x-smg-priority",
         "x-session-id",
         "x-data-parallel-rank",
         "x-request-id",
@@ -142,6 +145,60 @@ async fn trusted_tenants_choose_session_and_class_within_their_limits() {
     assert_eq!(seen.header("x-vllm-priority"), Some("0"));
     assert_eq!(seen.header("x-session-id"), Some("voice-RM_a1B2c3"));
     assert_eq!(seen.json()["cache_salt"], VOICE_SALT);
+}
+
+#[tokio::test]
+async fn the_class_priority_goes_upstream_in_each_configured_signal() {
+    let mock = Mock::start(Script::Json("{}")).await;
+    // Each configuration with whether it sends X-Vllm-Priority, X-SMG-Priority and the body's priority.
+    let cases = [
+        ("", [true, false, false]),
+        ("upstream_priority = []", [false, false, false]),
+        ("upstream_priority = [\"smg-header\"]", [false, true, false]),
+        ("upstream_priority = [\"body\"]", [false, false, true]),
+        (
+            "upstream_priority = [\"vllm-header\", \"smg-header\", \"body\"]",
+            [true, true, true],
+        ),
+    ];
+    // The client's own priorities never reach the upstream.
+    let theirs = [("x-vllm-priority", "-9"), ("x-smg-priority", "system")];
+    let body = r#"{"model":"qwen","priority":-9}"#;
+    for (top, [vllm, smg, in_body]) in cases {
+        let gw = Gateway::start(mock.addr, top).await;
+        let interactive = [
+            AGENTS_AUTH,
+            ("x-lh-class", "interactive"),
+            theirs[0],
+            theirs[1],
+        ];
+        let background = [AGENTS_AUTH, theirs[0], theirs[1]];
+        for (target, headers) in [
+            (&gw.unix, &theirs[..]),
+            (&gw.tcp, &interactive),
+            (&gw.tcp, &background),
+        ] {
+            let reply = call(target, "POST", "/v1/chat/completions", headers, body).await;
+            assert_eq!(reply.status, 200);
+        }
+        let seen = mock.requests();
+        let classes = [(0, "system"), (1, "interactive"), (2, "bulk")];
+        for (request, (priority, class)) in seen[seen.len() - 3..].iter().zip(classes) {
+            let priority = priority.to_string();
+            assert_eq!(
+                request.header("x-vllm-priority"),
+                vllm.then_some(priority.as_str()),
+                "{top:?}"
+            );
+            assert_eq!(
+                request.header("x-smg-priority"),
+                smg.then_some(class),
+                "{top:?}"
+            );
+            let body_priority = request.json().get("priority").map(|p| p.to_string());
+            assert_eq!(body_priority, in_body.then_some(priority), "{top:?}");
+        }
+    }
 }
 
 #[tokio::test]

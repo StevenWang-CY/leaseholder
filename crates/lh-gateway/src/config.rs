@@ -19,6 +19,8 @@ pub struct Config {
     /// How long an idle upstream connection is kept for reuse. It must be shorter than the engine's own
     /// keep-alive, or a request can be sent on a connection the engine is closing.
     pub upstream_idle_timeout: Duration,
+    /// How a request's class reaches the upstream as a priority.
+    pub upstream_priority: PrioritySignals,
     pub listeners: Vec<Listen>,
     pub tenants: Vec<Tenant>,
     /// Largest accepted request body; larger requests get 413.
@@ -65,6 +67,28 @@ pub struct Tenant {
     pub default_class: SloClass,
     /// The strictest class the tenant may use; a stricter request is clamped to it.
     pub max_class: SloClass,
+}
+
+/// `upstream_priority`: where the class's priority goes in each upstream request. Engines and routers read it
+/// in different places, and vLLM's FCFS scheduling rejects any priority but 0, so each is a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrioritySignals {
+    /// `X-Vllm-Priority`, the class's engine priority (realtime 0, interactive 1, background 2), which vLLM's
+    /// priority scheduling reads.
+    pub vllm_header: bool,
+    /// The same number as the body's `priority`, which SGLang's priority scheduling reads.
+    pub body: bool,
+    /// `X-SMG-Priority`: `system`, `interactive` or `bulk`, which SMG's priority scheduler reads.
+    pub smg_header: bool,
+}
+
+/// One entry of `upstream_priority`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PrioritySignal {
+    VllmHeader,
+    Body,
+    SmgHeader,
 }
 
 /// `log_format`: human-readable lines, or one JSON object per line.
@@ -123,6 +147,7 @@ impl std::error::Error for ConfigError {
 struct RawConfig {
     upstream: String,
     upstream_idle_timeout_s: f64,
+    upstream_priority: Vec<PrioritySignal>,
     listen: Vec<RawListen>,
     tenants: BTreeMap<String, RawTenant>,
     max_body_bytes: usize,
@@ -142,6 +167,7 @@ impl Default for RawConfig {
             upstream: String::new(),
             // vLLM closes idle connections after VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s by default.
             upstream_idle_timeout_s: 4.0,
+            upstream_priority: vec![PrioritySignal::VllmHeader],
             listen: Vec::new(),
             tenants: BTreeMap::new(),
             max_body_bytes: 32 << 20,
@@ -197,6 +223,7 @@ impl Config {
 impl RawConfig {
     fn validate(self) -> Result<Config, String> {
         let upstream = parse_upstream(&self.upstream)?;
+        let upstream_priority = priority_signals(&self.upstream_priority)?;
 
         let mut tenants = Vec::with_capacity(self.tenants.len());
         let mut digests = HashSet::new();
@@ -276,6 +303,7 @@ impl RawConfig {
                 "upstream_idle_timeout_s",
                 self.upstream_idle_timeout_s,
             )?,
+            upstream_priority,
             listeners,
             tenants,
             max_body_bytes: self.max_body_bytes,
@@ -343,6 +371,21 @@ fn parse_upstream(raw: &str) -> Result<Authority, String> {
     }
 }
 
+fn priority_signals(listed: &[PrioritySignal]) -> Result<PrioritySignals, String> {
+    let mut signals = PrioritySignals::default();
+    for signal in listed {
+        let (set, name) = match signal {
+            PrioritySignal::VllmHeader => (&mut signals.vllm_header, "vllm-header"),
+            PrioritySignal::Body => (&mut signals.body, "body"),
+            PrioritySignal::SmgHeader => (&mut signals.smg_header, "smg-header"),
+        };
+        if std::mem::replace(set, true) {
+            return Err(format!("upstream_priority lists {name} twice"));
+        }
+    }
+    Ok(signals)
+}
+
 fn parse_digest(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -381,6 +424,11 @@ mod tests {
         let config = config("", &format!("[tenants.agents]\nkeys_sha256 = [\"{KEY}\"]")).unwrap();
         assert_eq!(config.upstream.as_str(), "127.0.0.1:18000");
         assert_eq!(config.upstream_idle_timeout, Duration::from_secs(4));
+        let vllm = PrioritySignals {
+            vllm_header: true,
+            ..PrioritySignals::default()
+        };
+        assert_eq!(config.upstream_priority, vllm);
         assert_eq!(
             (config.max_body_bytes, config.stream_buffer_frames),
             (32 << 20, 64)
@@ -424,6 +472,12 @@ mod tests {
             ),
             ("stall_timeout = 5", &a, "unknown field"),
             (
+                "upstream_priority = [\"body\", \"body\"]",
+                &a,
+                "lists body twice",
+            ),
+            ("upstream_priority = [\"sglang\"]", &a, "unknown variant"),
+            (
                 "stall_timeout_s = 0",
                 &a,
                 "stall_timeout_s must be a positive",
@@ -447,6 +501,26 @@ mod tests {
         );
         let err = Config::from_toml(&https).unwrap_err().to_string();
         assert!(err.contains("http://host:port"), "{err}");
+    }
+
+    #[test]
+    fn upstream_priority_is_a_set_of_signals() {
+        let a = format!("[tenants.a]\nkeys_sha256 = [\"{KEY}\"]");
+        let none = config("upstream_priority = []", &a).unwrap();
+        assert_eq!(none.upstream_priority, PrioritySignals::default());
+        let all = config(
+            "upstream_priority = [\"smg-header\", \"body\", \"vllm-header\"]",
+            &a,
+        )
+        .unwrap();
+        assert_eq!(
+            all.upstream_priority,
+            PrioritySignals {
+                vllm_header: true,
+                body: true,
+                smg_header: true
+            }
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! sets for the engine. The names come from `lh_proto::headers`.
 
 use std::fmt;
+use std::io::Write as _;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,10 +15,12 @@ use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use crate::auth::Tenant;
+use crate::config::PrioritySignals;
 use crate::metrics::Metrics;
 
 pub(crate) static SESSION_ID: HeaderName = HeaderName::from_static(headers::SESSION_ID);
 pub(crate) static VLLM_PRIORITY: HeaderName = HeaderName::from_static(headers::VLLM_PRIORITY);
+pub(crate) static SMG_PRIORITY: HeaderName = HeaderName::from_static(headers::SMG_PRIORITY);
 pub(crate) static REQUEST_ID: HeaderName = HeaderName::from_static(headers::REQUEST_ID);
 pub(crate) static RESOLVED_SESSION_ID: HeaderName =
     HeaderName::from_static(headers::RESOLVED_SESSION_ID);
@@ -199,19 +202,38 @@ fn new_id(prefix: &str, hex: &str) -> SessionId {
         .expect("a prefix and hex digits form a valid session id")
 }
 
-/// Sets the engine inputs the gateway owns: the session, the vLLM priority of the class and the request id.
+/// Sets the engine inputs the gateway owns: the session, the request id, and the class's priority in the
+/// headers `signals` names.
 pub(crate) fn set_engine_headers(
     headers: &mut HeaderMap,
     session: &SessionId,
     class: SloClass,
     request_id: &HeaderValue,
+    signals: PrioritySignals,
 ) {
     headers.insert(SESSION_ID.clone(), session_header(session));
-    headers.insert(
-        VLLM_PRIORITY.clone(),
-        HeaderValue::from(class.engine_priority()),
-    );
+    if signals.vllm_header {
+        headers.insert(
+            VLLM_PRIORITY.clone(),
+            HeaderValue::from(class.engine_priority()),
+        );
+    }
+    if signals.smg_header {
+        headers.insert(
+            SMG_PRIORITY.clone(),
+            HeaderValue::from_static(smg_class(class)),
+        );
+    }
     headers.insert(REQUEST_ID.clone(), request_id.clone());
+}
+
+/// The SMG class of an SLO class. SMG's fourth class, `default`, is what it gives a request without one.
+fn smg_class(class: SloClass) -> &'static str {
+    match class {
+        SloClass::Realtime => "system",
+        SloClass::Interactive => "interactive",
+        SloClass::Background => "bulk",
+    }
 }
 
 pub(crate) fn session_header(session: &SessionId) -> HeaderValue {
@@ -235,7 +257,8 @@ impl fmt::Display for InvalidBody {
     }
 }
 
-/// Removes the engine-control fields from a JSON object body and sets the tenant's `cache_salt`.
+/// Removes the engine-control fields from a JSON object body and sets the tenant's `cache_salt`, and the
+/// gateway's own `priority` if it is given one.
 ///
 /// Only the top level is parsed: values stay raw slices of the input and are copied through unchanged, so the
 /// cost is one validating scan and one copy whatever the body's size. Keys are compared after JSON unescaping,
@@ -243,6 +266,7 @@ impl fmt::Display for InvalidBody {
 pub(crate) fn rewrite_body(
     body: &[u8],
     cache_salt: &str,
+    priority: Option<i32>,
     metrics: &Metrics,
 ) -> Result<Body, InvalidBody> {
     let TopLevel(fields) = serde_json::from_slice(body).map_err(InvalidBody)?;
@@ -264,6 +288,9 @@ pub(crate) fn rewrite_body(
         json.push(b':');
         json.extend_from_slice(value.get().as_bytes());
         json.push(b',');
+    }
+    if let Some(priority) = priority {
+        write!(json, "\"priority\":{priority},").expect("writing to a Vec cannot fail");
     }
     json.extend_from_slice(b"\"cache_salt\":");
     serde_json::to_writer(&mut json, cache_salt).expect("writing to a Vec cannot fail");
@@ -424,7 +451,7 @@ mod tests {
         let body = br#"{"model":"m","pri\u006frity":-9,"messages":[{"role":"user","content":"hi \"priority\""}],
             "session_id":"x","kv_transfer_params":{"a":1},"cache_salt":"theirs","request_id":"r",
             "vllm_xargs":{"session_id":"y"},"prompt_cache_key":"pck-1","stream":true}"#;
-        let out = rewrite_body(body, "0123", &metrics).unwrap();
+        let out = rewrite_body(body, "0123", None, &metrics).unwrap();
         let value: Value = serde_json::from_slice(&out.json).unwrap();
         assert_eq!(
             value,
@@ -435,6 +462,11 @@ mod tests {
         for field in headers::ENGINE_CONTROL_BODY_FIELDS {
             assert_eq!(metrics.sanitized_count(field), 1, "{field}");
         }
+        // For an upstream that reads the priority from the body, the gateway's replaces the client's.
+        let out = rewrite_body(body, "0123", Some(2), &metrics).unwrap();
+        let value: Value = serde_json::from_slice(&out.json).unwrap();
+        assert_eq!(value["priority"], 2);
+        assert_eq!(metrics.sanitized_count("priority"), 2);
     }
 
     #[test]
@@ -448,10 +480,12 @@ mod tests {
             b"{} {}",
             b"{\"a\":1,}",
         ] {
-            assert!(rewrite_body(body, "s", &metrics).is_err(), "{body:?}");
+            assert!(rewrite_body(body, "s", None, &metrics).is_err(), "{body:?}");
         }
-        let out = rewrite_body(b" { } ", "s", &metrics).unwrap();
+        let out = rewrite_body(b" { } ", "s", None, &metrics).unwrap();
         assert_eq!(&out.json[..], br#"{"cache_salt":"s"}"#);
+        let out = rewrite_body(b"{}", "s", Some(0), &metrics).unwrap();
+        assert_eq!(&out.json[..], br#"{"priority":0,"cache_salt":"s"}"#);
     }
 
     #[test]
@@ -459,6 +493,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         for (name, value) in [
             ("x-vllm-priority", "-100"),
+            ("x-smg-priority", "system"),
             ("x-data-parallel-rank", "1"),
             ("x-session-id", "s-1"),
             ("x-request-id", "theirs"),
@@ -494,6 +529,7 @@ mod tests {
         assert_eq!(headers.keys().collect::<Vec<_>>(), ["x-keep"]);
         for field in [
             "x-vllm-priority",
+            "x-smg-priority",
             "x-data-parallel-rank",
             "x-session-id",
             "x-request-id",
@@ -502,6 +538,34 @@ mod tests {
             OTHER_LH_HEADER,
         ] {
             assert_eq!(untrusted.sanitized_count(field), 1, "{field}");
+        }
+    }
+
+    #[test]
+    fn the_class_priority_goes_in_the_configured_headers() {
+        let session = SessionId::new("s-1").unwrap();
+        let id = HeaderValue::from_static("r-1");
+        let priorities = |class, signals| {
+            let mut headers = HeaderMap::new();
+            set_engine_headers(&mut headers, &session, class, &id, signals);
+            let value = |name| headers.get(name).map(|v| v.to_str().unwrap().to_owned());
+            (value("x-vllm-priority"), value("x-smg-priority"))
+        };
+        let both = PrioritySignals {
+            vllm_header: true,
+            smg_header: true,
+            ..PrioritySignals::default()
+        };
+        for (class, vllm, smg) in [
+            (SloClass::Realtime, "0", "system"),
+            (SloClass::Interactive, "1", "interactive"),
+            (SloClass::Background, "2", "bulk"),
+        ] {
+            assert_eq!(
+                priorities(class, both),
+                (Some(vllm.into()), Some(smg.into()))
+            );
+            assert_eq!(priorities(class, PrioritySignals::default()), (None, None));
         }
     }
 
