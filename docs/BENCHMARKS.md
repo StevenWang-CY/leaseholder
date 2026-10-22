@@ -4,8 +4,6 @@ What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) i
 
 ## The frozen box
 
-Every experiment runs on this one configuration ([ARCHITECTURE.md §5](ARCHITECTURE.md#5-data-plane-the-frozen-box)).
-
 | | Value |
 |---|---|
 | GPU KV pool | 36,400 tokens, fixed at 5 GiB (32k context) |
