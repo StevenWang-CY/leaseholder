@@ -17,7 +17,7 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 
 ## The voice agent
 
-`lh-voice-worker start` registers the agent `leaseholder-voice` with the LiveKit server and serves each dispatched room with one `AgentSession`. It runs in the voice-plane namespace on cyan as `lh-voice-worker.service`, configured by the environment:
+`lh-voice-worker start` registers the agent `leaseholder-voice` with the LiveKit server and serves each dispatched room with one `AgentSession`. It runs in the voice-plane namespace on cyan as `lh-voice-worker.service`, from `~/leaseholder/venvs/voice`, which `deploy/cyan/bootstrap.sh` builds from `uv.lock`. The environment configures it:
 
 | Variable | Meaning |
 |---|---|
@@ -207,9 +207,9 @@ disconnect.
   mode. The worker runs the local `v1-mini` model (or `"vad"` with `LH_TURN_DETECTION=vad`)
   and pins `"vad"` interruptions; the test pins `"vad"` for both. Nothing is downloaded:
   the `v1-mini` weights ship in the `livekit-local-inference` wheel and Silero's in its
-  plugin's, so the worker starts with `HF_HUB_OFFLINE=1` and an empty Hugging Face cache.
-  (`download-files` serves the older text turn-detector plugin, which the package does not
-  install.)
+  plugin's, so the worker starts with `HF_HUB_OFFLINE=1` and an empty Hugging Face cache
+  (`deploy/cyan/bootstrap.sh` checks that both load offline). `download-files` serves the
+  older text turn-detector plugin, which the package does not install.
 - `record` follows the server's recording setting. The worker and the test pass
   `record=False`.
 - When the user leaves, the job stays in the room until LiveKit's departure timeout,

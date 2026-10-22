@@ -20,10 +20,11 @@ the tier cost model (E0) and server-side voice turns.
 
 Python 3.12, pinned to `aiperf==0.13.0`. Installing the package registers both AIPerf plugins
 through the `aiperf.plugins` entry point; `aiperf plugins endpoint` lists `leaseholder_chat`.
+On cyan, `deploy/cyan/bootstrap.sh` builds `~/leaseholder/venvs/bench` from `uv.lock`; for
+development:
 
 ```bash
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e "python/leaseholder_bench[test]"
+uv sync --python 3.12 --extra test      # in python/leaseholder_bench: its own .venv, from uv.lock
 ```
 
 ## Trace scaling
@@ -250,9 +251,7 @@ the same recorder in process.
 ## Quickstart (cyan)
 
 ```bash
-# Environment (uv on cyan: ~/lk-probe/bin/uv)
-uv venv --python 3.12 ~/leaseholder/venvs/bench
-uv pip install --python ~/leaseholder/venvs/bench/bin/python -e "$HOME/leaseholder/src/python/leaseholder_bench[test]"
+# Environment: the venv that deploy/cyan/bootstrap.sh builds
 export PATH=$HOME/leaseholder/venvs/bench/bin:$PATH
 
 # Data
