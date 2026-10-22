@@ -13,7 +13,7 @@ This page is for engineers asking "how is this different from X?". Leaseholder s
 2. **The engine "make room" fix.** A waiting high-priority request may preempt running work when the KV cache is full, keeping or offloading the victim's KV. Neither vLLM nor SGLang does this today.
 3. **The validated recompute ledger.** Every recomputed prompt token is attributed to a cause, and the attribution is checked by injecting causes.
 
-**Baselines and references, not claims.** Priority classes, budgets, aging and queue TTLs; in-flight eviction; engine priority preemption; static and class-blind headroom; co-serving a latency class beside best-effort work; parking with prefetch before a tool returns; TTL holds and leases; program-level admission; turn anticipation; the gap between LRU and Belady on prefix caches. Each is cited below.
+Everything else is a baseline or a reference: [At a glance](#at-a-glance) lists each mechanism and where it exists, and [What we do not claim](#what-we-do-not-claim) gathers them.
 
 In the tables, **Relation** says how an item bears on Leaseholder:
 - **baseline**: E1 or E2 must be compared against it;
@@ -235,6 +235,6 @@ One lifecycle-event schema for both workloads is an engineering choice with litt
   - starting the LLM before the turn ends (LiveKit preemptive generation, Endpoint Anticipation, PredGen);
   - a gap between LRU and Belady on prefix caches ("When Fancy Eviction Fails", LPC).
 - **A cache residency guarantee.** Providers promise billing eligibility, not residency, and Leaseholder reports an honor rate instead.
-- **A better router.** `lh-gateway` is a small harness that carries the `lh-core` policy for experiments on one GPU without Kubernetes. The policy is to be proposed upstream: a vLLM scheduler PR, the agent-side lease and prefetch policy on vllm-project/router RFCs #427 and #428, and the lifecycle-event sink in agentic-api.
-- **Results that transfer to datacenter GPUs without a run there.** Measurements on one 16 GB consumer GPU with a 4B model and traces block-scaled 32× are stated in dimensionless terms (KV pressure, pause over restore time, restore over recompute time) until a datacenter run anchors them.
-- **Priority.** Nothing here claims to be first or the only one. This page is a positioning statement, and each comparison rests on the sources cited.
+- **A better router.** `lh-gateway` is a small harness for experiments on one GPU without Kubernetes, and the `lh-core` policy is to run inside it from W3. The policy is to be proposed upstream: a vLLM scheduler PR, the agent-side lease and prefetch policy on vllm-project/router RFCs #427 and #428, and the lifecycle-event sink in agentic-api.
+- **Measured results on datacenter GPUs.** Measurements on one 16 GB consumer GPU with a 4B model and traces block-scaled 32× are stated in dimensionless terms (KV pressure, pause over restore time, restore over recompute time), and `lh-sim` places datacenter configurations on that map from modeled cost fits, labeled as modeled.
+- **Precedence.** Nothing here claims to be first or the only one. This page is a positioning statement, and each comparison rests on the sources cited.
