@@ -1,0 +1,18 @@
+# LiveKit server on cyan. It runs inside the voice-plane network namespace (lh-voicenet.service), where loopback
+# is the only interface; the rtc block below also pins every candidate to 127.0.0.1, as measured on 2026-10-22
+# (`--bind 127.0.0.1` alone still exposed the media ports). API keys come from LIVEKIT_KEYS in
+# ~/.config/leaseholder/livekit.env, which bootstrap.sh generates and which is never committed.
+port: 17880
+bind_addresses:
+  - 127.0.0.1
+rtc:
+  tcp_port: 0
+  udp_port: 17882
+  use_external_ip: false
+  enable_loopback_candidate: true
+  node_ip: 127.0.0.1
+  ips:
+    includes:
+      - 127.0.0.1/32
+logging:
+  level: info

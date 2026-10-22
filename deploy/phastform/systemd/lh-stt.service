@@ -1,0 +1,25 @@
+[Unit]
+Description=Leaseholder STT: vLLM 0.32, whisper-large-v3-turbo on 127.0.0.1:8100
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+PartOf=leaseholder.target
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=exec
+WorkingDirectory=%h/leaseholder
+Environment=PATH=%h/leaseholder/venvs/engine/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HF_HUB_OFFLINE=1
+# The FlashInfer sampler would JIT-compile at warm-up; Whisper does not need it.
+Environment=VLLM_USE_FLASHINFER_SAMPLER=0
+ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
+ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/stt.yaml
+ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8100/health 900
+CPUAffinity=0-7
+NUMAPolicy=preferred
+NUMAMask=0
+KillSignal=SIGINT
+TimeoutStartSec=1000
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=15

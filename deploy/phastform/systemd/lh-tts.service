@@ -1,0 +1,28 @@
+[Unit]
+Description=Leaseholder TTS: Kokoro-82M on Kokoro-FastAPI 0.9.1 at 127.0.0.1:8880
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+PartOf=leaseholder.target
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=exec
+WorkingDirectory=%h/leaseholder/vendor/Kokoro-FastAPI
+# The same environment as the upstream start-gpu.sh, without its install step (its default extra ships cu126
+# wheels, which have no sm_120 kernels; bootstrap.sh installs the gpu-cu128 extra instead).
+Environment=USE_GPU=true
+Environment=PYTHONPATH=%h/leaseholder/vendor/Kokoro-FastAPI:%h/leaseholder/vendor/Kokoro-FastAPI/api
+Environment=MODEL_DIR=src/models
+Environment=VOICES_DIR=src/voices/v1_0
+Environment=WEB_PLAYER_PATH=%h/leaseholder/vendor/Kokoro-FastAPI/web
+ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
+ExecStart=%h/leaseholder/venvs/tts/bin/uvicorn api.src.main:app --host 127.0.0.1 --port 8880 --no-access-log
+ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8880/health 600
+CPUAffinity=0-7
+NUMAPolicy=preferred
+NUMAMask=0
+KillSignal=SIGINT
+TimeoutStartSec=700
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10

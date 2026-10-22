@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# wait-healthy URL [TIMEOUT_S]: block until URL answers 2xx. Units run it as ExecStartPost, so a unit counts as
+# started only once its server is ready, and units ordered after it start only then.
+set -euo pipefail
+url=$1
+timeout=${2:-600}
+deadline=$((SECONDS + timeout))
+until curl -fs -m 2 -o /dev/null "$url"; do
+  if ((SECONDS >= deadline)); then
+    echo "wait-healthy: $url not healthy after ${timeout}s" >&2
+    exit 1
+  fi
+  sleep 2
+done
+echo "wait-healthy: $url healthy after ${SECONDS}s"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# gpu-guard: refuse to start a GPU service while another user's process holds the GPU. The GPU nodes are shared
+# hosts; starting beside someone else's job risks an OOM for both.
+set -euo pipefail
+me=$(id -un)
+for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | tr -d ' '); do
+  owner=$(ps -o user= -p "$pid" | tr -d ' ' || true)
+  if [[ -n $owner && $owner != "$me" ]]; then
+    echo "gpu-guard: the GPU is in use by $owner (pid $pid); not starting" >&2
+    exit 1
+  fi
+done

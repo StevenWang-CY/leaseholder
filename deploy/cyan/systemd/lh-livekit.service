@@ -1,0 +1,16 @@
+[Unit]
+Description=Leaseholder LiveKit server in the voice-plane namespace on cyan (127.0.0.1:17880)
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+BindsTo=lh-voicenet.service
+After=lh-voicenet.service
+
+[Service]
+Type=exec
+EnvironmentFile=%h/.config/leaseholder/livekit.env
+ExecStart=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/bin/livekit-server --config %h/leaseholder/src/deploy/cyan/livekit.yaml
+ExecStartPost=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:17880/ 30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

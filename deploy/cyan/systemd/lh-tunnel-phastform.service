@@ -1,0 +1,23 @@
+[Unit]
+Description=Leaseholder SSH tunnel from cyan to Phastform's loopback services
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+
+[Service]
+Type=exec
+# TCP forwards serve the host network (control plane, load generators, smoke tests); Unix-socket forwards serve
+# the voice-plane namespace, which has no route out. Phastform authorizes this key for these ports only.
+ExecStartPre=/usr/bin/mkdir -p %t/lh
+ExecStart=/usr/bin/ssh -N -T -i %h/.ssh/lh_tunnel_ed25519 \
+  -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o StreamLocalBindUnlink=yes \
+  -L 127.0.0.1:18000:127.0.0.1:8000 -L 127.0.0.1:18100:127.0.0.1:8100 -L 127.0.0.1:18880:127.0.0.1:8880 \
+  -L 127.0.0.1:15558:127.0.0.1:5558 \
+  -L %t/lh/phastform-engine.sock:127.0.0.1:8000 -L %t/lh/phastform-stt.sock:127.0.0.1:8100 \
+  -L %t/lh/phastform-tts.sock:127.0.0.1:8880 \
+  wangcy07@phastform.cis.upenn.edu
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

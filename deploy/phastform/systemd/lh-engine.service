@@ -1,0 +1,35 @@
+[Unit]
+Description=Leaseholder LLM engine: vLLM 0.32, Qwen3-4B-Instruct-2507-FP8 on 127.0.0.1:8000
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+PartOf=leaseholder.target
+# Start after the audio servers so vLLM's free-memory check sees them resident.
+After=lh-stt.service lh-tts.service
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=exec
+WorkingDirectory=%h/leaseholder
+# DeepGEMM's FP8 kernels JIT-compile with nvcc >= 13.0. FlashInfer's JIT also needs curand headers, which the
+# CUDA 13.0 toolkit on this host lacks; bootstrap.sh links the venv's copies into cache/curand_include.
+Environment=CUDA_HOME=/usr/local/cuda-13.0
+Environment=PATH=%h/leaseholder/venvs/engine/bin:/usr/local/cuda-13.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=FLASHINFER_EXTRA_CUDAFLAGS=-I%h/leaseholder/cache/curand_include
+Environment=FLASHINFER_EXTRA_CFLAGS=-I%h/leaseholder/cache/curand_include
+Environment=FLASHINFER_WORKSPACE_BASE=%h/leaseholder/cache/flashinfer
+Environment=HF_HUB_OFFLINE=1
+# Dev mode exposes /reset_prefix_cache, which experiments use between load levels. The server binds loopback only.
+Environment=VLLM_SERVER_DEV_MODE=1
+ExecStartPre=%h/leaseholder/src/deploy/bin/gpu-guard
+ExecStart=%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/deploy/phastform/engine.yaml
+ExecStartPost=%h/leaseholder/src/deploy/bin/wait-healthy http://127.0.0.1:8000/health 1200
+# NUMA node 1 is local to the GPU. "preferred" spills to node 0 when node 1 is short: the measured cost of a remote
+# CPU tier is under 1% of pinned bandwidth.
+CPUAffinity=8-15
+NUMAPolicy=preferred
+NUMAMask=1
+KillSignal=SIGINT
+TimeoutStartSec=1300
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=15

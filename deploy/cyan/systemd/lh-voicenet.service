@@ -1,0 +1,16 @@
+[Unit]
+Description=Leaseholder voice-plane network namespace on cyan (loopback only)
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+
+[Service]
+Type=exec
+ExecStartPre=/usr/bin/mkdir -p %t/lh
+ExecStart=%h/leaseholder/src/deploy/bin/voicenet-holder %t/lh/voicenet.pid
+# Started means the pid file exists, so units that enter the namespace never race its creation.
+ExecStartPost=/usr/bin/timeout 10 /bin/sh -c 'until [ -s "$0" ]; do sleep 0.1; done' %t/lh/voicenet.pid
+ExecStopPost=/usr/bin/rm -f %t/lh/voicenet.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

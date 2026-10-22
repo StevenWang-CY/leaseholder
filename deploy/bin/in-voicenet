@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# in-voicenet CMD...: run CMD inside the voice-plane network namespace held by lh-voicenet.service.
+# Inside, the only network is loopback; the tunnels and the control plane are reached through Unix sockets
+# in $XDG_RUNTIME_DIR/lh/.
+set -euo pipefail
+pid=$(cat "${XDG_RUNTIME_DIR:?}/lh/voicenet.pid")
+exec nsenter --target "$pid" --user --net --preserve-credentials -- "$@"

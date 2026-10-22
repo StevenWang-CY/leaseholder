@@ -1,0 +1,42 @@
+# Frozen-box LLM engine on Phastform: vLLM 0.32.0 on one RTX 5060 Ti 16 GB, beside the STT and TTS servers.
+# lh-engine.service runs `vllm serve --config <this file>`. Every experiment shares these values; a sweep
+# overrides single flags on the command line (vLLM gives the command line precedence over this file).
+model: Qwen/Qwen3-4B-Instruct-2507-FP8
+host: 127.0.0.1
+port: 8000
+max-model-len: 32768
+disable-uvicorn-access-log: true
+
+# The KV pool is fixed at 5 GiB (36,400 tokens), so the footprint depends neither on the profiler nor on the
+# audio servers. vLLM still requires utilization x total memory to be free at start: 10.83 GiB, with about
+# 12 GiB free once STT and TTS are resident.
+kv-cache-memory: 5368709120
+gpu-memory-utilization: 0.70
+enable-prefix-caching: true
+
+# Priority orders only the waiting queue. The step cap bounds how long running decodes wait behind a prefill.
+scheduling-policy: priority
+max-num-batched-tokens: 512
+long-prefill-token-threshold: 256
+
+# Observability: per-request cached tokens, sampled KV residency histograms, and KV cache events for lh-node.
+# vLLM binds wildcard and ipc event endpoints but *connects* to a specific TCP address, so lh-node binds the SUB
+# side on 127.0.0.1:5557 and the engine connects to it; the replay endpoint (ROUTER) is bound by the engine.
+enable-prompt-tokens-details: true
+kv-cache-metrics: true
+kv-cache-metrics-sample: 0.05
+kv-events-config:
+  enable_kv_cache_events: true
+  publisher: zmq
+  endpoint: tcp://127.0.0.1:5557
+  replay_endpoint: tcp://127.0.0.1:5558
+  topic: kv
+
+# Host tier: vLLM's native CPU offload, write-through (generated tokens are stored as well), sized at 20 GiB,
+# four times the GPU pool. E1 sweeps 2x, 4x and 8x.
+kv-transfer-config:
+  kv_connector: OffloadingConnector
+  kv_role: kv_both
+  kv_connector_extra_config:
+    cpu_bytes_to_use: 21474836480
+    offload_prompt_only: false

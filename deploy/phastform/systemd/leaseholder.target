@@ -1,0 +1,7 @@
+[Unit]
+Description=Leaseholder frozen box on Phastform: STT, TTS and the LLM engine on one GPU
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+Wants=lh-stt.service lh-tts.service lh-engine.service
+
+[Install]
+WantedBy=default.target
