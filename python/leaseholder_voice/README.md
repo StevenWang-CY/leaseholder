@@ -143,7 +143,7 @@ disconnect.
 - libwebrtc (livekit-rtc 1.1.20) gathers ICE host candidates on every non-loopback
   interface, whatever the server's rtc block says. On cyan's host network, one process
   with two connected rooms held 9 UDP sockets and 7 passive ICE-TCP `LISTEN` sockets on
-  158.130.4.176.
+  the host's public address.
 - With only `lo` in a namespace, libwebrtc gathers no candidate at all: it ignores
   loopback adapters. `Room.connect` then fails with `wait_pc_connection timed out`.
 - A dummy interface with a /32 address fixes it. Media flowed within 0.75 s, and the

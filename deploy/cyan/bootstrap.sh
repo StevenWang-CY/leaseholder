@@ -26,4 +26,6 @@ fi
 
 [[ -f $HOME/.ssh/lh_tunnel_ed25519 ]] ||
   ssh-keygen -q -t ed25519 -N '' -C "lh-tunnel@$(hostname -s)" -f "$HOME/.ssh/lh_tunnel_ed25519"
+[[ -f $HOME/.config/leaseholder/tunnel-phastform.env ]] ||
+  echo "bootstrap: write LH_TUNNEL_TARGET=<user>@<gpu node> to ~/.config/leaseholder/tunnel-phastform.env" >&2
 echo "bootstrap: $("$root/bin/livekit-server" --version)"

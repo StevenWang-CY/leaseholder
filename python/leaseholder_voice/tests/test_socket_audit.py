@@ -19,8 +19,8 @@ tcp LISTEN 0 128 127.0.0.1:51683 0.0.0.0:* users:(("livekit-server",pid=3079590,
 
 # On the host network, before the namespace: the client's ICE sockets on the public IP.
 EXPOSED = """\
-udp UNCONN 0 0 158.130.4.176:39948 0.0.0.0:* users:(("python",pid=3078797,fd=30))
-tcp LISTEN 0 5 158.130.4.176:38155 0.0.0.0:* users:(("python",pid=3078797,fd=37))
+udp UNCONN 0 0 203.0.113.7:39948 0.0.0.0:* users:(("python",pid=3078797,fd=30))
+tcp LISTEN 0 5 203.0.113.7:38155 0.0.0.0:* users:(("python",pid=3078797,fd=37))
 tcp LISTEN 0 4096 127.0.0.1:44731 0.0.0.0:* users:(("livekit-server",pid=3078845,fd=6))
 tcp LISTEN 0 128 *:7881 *:* users:(("livekit-server",pid=3078845,fd=6))
 """
@@ -52,8 +52,8 @@ def test_public_and_wildcard_binds_fail() -> None:
         parse_ss(EXPOSED), loopback_only={3078845}, internal_address="10.255.0.1"
     )
     assert [line.split()[4] for line in problems] == [
-        "158.130.4.176:39948",
-        "158.130.4.176:38155",
+        "203.0.113.7:39948",
+        "203.0.113.7:38155",
         "*:7881",
     ]
 

@@ -12,7 +12,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 From a workstation with SSH access to the hosts:
 
 ```sh
-export LH_SSH="ssh -F $HOME/.config/fullstackarena/penn_ssh_config"   # your SSH command for the hosts
+export LH_SSH="ssh -F $HOME/.ssh/penn_config"   # your SSH command for the hosts
 deploy/deploy.sh phastform.cis.upenn.edu       # sync the repo to ~/leaseholder/src and install the units
 deploy/deploy.sh cyan.cis.upenn.edu
 ```
@@ -21,7 +21,7 @@ deploy/deploy.sh cyan.cis.upenn.edu
 1. Enable lingering: `loginctl enable-linger $USER`.
 2. Run its bootstrap:
    - Phastform: `deploy/phastform/bootstrap.sh` builds `~/leaseholder/venvs/{engine,tts}` from the lock files, plus the Kokoro checkout and the JIT caches.
-   - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key.
+   - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key. Write the tunnel's SSH target to `~/.config/leaseholder/tunnel-phastform.env` as `LH_TUNNEL_TARGET=<user>@<gpu node>`.
 3. Authorize the tunnel key on each GPU node: `deploy/authorize-tunnel.sh cyan.cis.upenn.edu phastform.cis.upenn.edu`. The entry may forward only the listed loopback ports, with no shell. Re-running the script replaces the entry.
 
 ## Start, stop, status
