@@ -16,7 +16,7 @@ Environment=LH_STT_UDS=%t/lh/phastform-stt.sock
 Environment=LH_TTS_UDS=%t/lh/phastform-tts.sock
 Environment=LH_IDLE_PROCESSES=4
 Environment=HF_HUB_OFFLINE=1
-ExecStart=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/venvs/voice/bin/lh-voice-worker start --log-format json
+ExecStart=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/venvs/voice/bin/lh-voice-worker start
 # Cores 32-47 belong to the voice plane; the control plane and load generators use the others.
 CPUAffinity=32-47
 KillSignal=SIGINT

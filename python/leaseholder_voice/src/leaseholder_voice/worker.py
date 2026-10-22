@@ -3,9 +3,14 @@
 ``lh-voice-worker start`` registers the agent ``leaseholder-voice`` with the LiveKit server and
 serves every dispatched room with one ``AgentSession``: Silero VAD and LiveKit's audio
 end-of-turn model (``turn-detector-v1-mini``, run locally) on the CPU, then STT, the LLM and TTS
-on the GPU node. Turn handling (endpointing,
-interruptions, preemptive generation) keeps LiveKit's defaults, so experiments measure the stock
-voice stack; E2 fixes these settings across every arm.
+on the GPU node. Turn handling (endpointing, interruptions, preemptive generation) keeps LiveKit's
+defaults.
+
+Experiments use ``LH_TURN_DETECTION=vad`` instead: the end of a turn is then a fixed delay after
+the end of speech, the same for every arm, so voice-to-voice latency moves only with serving. The
+end-of-turn model waits up to the endpointing maximum (3 s) whenever it judges a line unfinished,
+which on synthesized callers happened on about one turn in six (W1) and would hide serving effects
+in the tail.
 
 The worker runs inside the voice-plane network namespace, where the only route to the servers is
 a Unix socket each. The environment, set by ``lh-voice-worker.service``, configures it:
@@ -17,6 +22,7 @@ a Unix socket each. The environment, set by ``lh-voice-worker.service``, configu
 | ``LH_STT_UDS``, ``LH_TTS_UDS`` | The tunnels to the STT and TTS servers |
 | ``LH_IDLE_PROCESSES`` | Pre-started job processes (default 2) |
 | ``LH_LLM_TIMEOUT`` | Seconds before an LLM request fails (default 30: a cold prefill exceeds 10) |
+| ``LH_TURN_DETECTION`` | ``model`` (default: the end-of-turn model) or ``vad`` (fixed endpointing, for experiments) |
 """
 
 from __future__ import annotations
@@ -65,6 +71,16 @@ server = AgentServer(
 )
 
 
+def turn_detection() -> inference.TurnDetector | str:
+    mode = os.environ.get("LH_TURN_DETECTION", "model")
+    if mode == "vad":
+        return "vad"
+    if mode != "model":
+        raise ValueError(f"LH_TURN_DETECTION must be model or vad, got {mode!r}")
+    # The local model: the cloud version needs LiveKit Cloud, and the namespace has no route out.
+    return inference.TurnDetector(version="v1-mini")
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     session_id = room_session_id(ctx.job.room.sid)
@@ -74,8 +90,7 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=plugins.make_stt(BASE_URL, uds=os.environ["LH_STT_UDS"]),
         llm=plugins.make_llm(BASE_URL, session_id, uds=os.environ["LH_LLM_UDS"]),
         tts=plugins.make_tts(BASE_URL, uds=os.environ["LH_TTS_UDS"]),
-        # The local model: the cloud version would need LiveKit Cloud, and the namespace has no route.
-        turn_handling={"turn_detection": inference.TurnDetector(version="v1-mini")},
+        turn_handling={"turn_detection": turn_detection()},
         conn_options=SessionConnectOptions(
             llm_conn_options=APIConnectOptions(max_retry=1, timeout=llm_timeout)
         ),
