@@ -215,7 +215,7 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 - **Units.** Each server is a `systemd --user` unit. `leaseholder.target` starts STT and TTS first, then the LLM, so vLLM's free-memory check sees the audio servers resident. Each unit counts as started only once its health endpoint answers.
 - **NUMA.** vLLM runs on node 1, local to the GPU (cores 8–15, memory preferred on node 1); the audio servers run on node 0. The CPU tier's shared-memory region prefers node 1 and spills to node 0; the measured cost of a remote tier is under 1% of pinned bandwidth.
 - **Pinned environment.** vLLM 0.32.0 with torch 2.13.0+cu130 serves both the LLM and Whisper. It uses the CUDA 13.0 toolkit for DeepGEMM's JIT, curand header links for FlashInfer's JIT, and `nvidia-cudnn-cu13==9.27.0.42`. Kokoro runs on torch 2.8.0+cu128. Lock files are in `deploy/phastform/requirements/`.
-- **MPS vs time-slicing.** Under time-slicing the audio servers slow by 43–44% during long prefills. One measurement in W1 decides between the two.
+- **Time-slicing, not MPS.** Measured in W1 ([BENCHMARKS.md](BENCHMARKS.md)): with the three servers as MPS clients, STT and TTS gain 7–8% under agent prefills, but the voice turn's LLM stage and its tail get worse and background prefill throughput drops, because the interference that matters is inside the engine. The `mps` variant (`deploy/phastform/variant.sh on mps`) stays available as an E2 arm.
 - **Fallbacks.** STT can fall back to faster-whisper INT8 (1.2 GiB). TTS can switch to Qwen3-TTS via vLLM-Omni (4.3 GiB, which shrinks the KV pool to about 20k tokens).
 
 ## 6. API layer: agentic-api

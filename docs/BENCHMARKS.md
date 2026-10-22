@@ -1,20 +1,41 @@
 # Benchmarks
 
-What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) in Phastform: two Xeon E5-2609 v4 at 1.7 GHz, 188 GiB RAM, vLLM 0.32.0. The cost-model and voice numbers come from the pre-W0 probes of 2026-10-21/22. E0 (W1) re-measures them on the frozen box with the scripts in this repository, and this page is updated from those runs.
+What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) in Phastform: two Xeon E5-2609 v4 at 1.7 GHz, 188 GiB RAM, vLLM 0.32.0. W1 numbers come from the frozen box ([deploy/phastform](../deploy/phastform)) and the `lh-bench` probes in this repository, run from cyan through the SSH tunnel as the control plane reaches the engine. Earlier probe numbers are kept only where W1 has not re-measured them, and are marked.
 
-## Tier cost model: resuming an agent turn
+## Tier cost model: resuming an agent turn (E0)
 
-| 16k-token context, BF16 weights | Time to first token |
-|---|---|
-| KV resident on the GPU (prefix-cache hit) | **0.18 s** |
-| KV restored from host RAM (native CPU offload) | **0.57 s** |
-| Recomputed | **4.75 s** |
+`lh-bench tiers` sends a unique prompt of L random token ids three times, each asking for one token: cold (recomputed), again at once (a GPU prefix-cache hit), and after other prompts pushed it out of the GPU pool (restored from the CPU tier). vLLM's prefix-cache counters, read around each request, verify where its tokens came from; no sample of these runs was invalid. Time to first token, p50 of 5 samples, frozen box (Qwen3-4B-FP8, audio servers resident, 36,400-token pool, 20 GiB write-through CPU tier, step cap 512/256), 2026-10-22:
 
-- Restoring beats recomputing from about 64–128 tokens.
-- The admission model fits these points linearly:
-  - GPU hit ≈ 60 ms + 7.2 µs per token;
-  - a CPU restore adds ≈ 8 ms + 23.6 µs per token.
-- With FP8 weights, the frozen model's 2k / 8k-token TTFT is 203 / 1,082 ms cold and 47 / 92 ms warm. It is unchanged with the audio servers co-located.
+| Prompt tokens | Recomputed | GPU hit | Restored from host RAM |
+|---|---|---|---|
+| 1,024 | 135 ms | 45 ms | 64 ms |
+| 2,048 | 198 ms | 40 ms | 95 ms |
+| 4,096 | 437 ms | 48 ms | 157 ms |
+| 8,192 | 1,114 ms | 64 ms | 281 ms |
+| 16,384 | **3,264 ms** | **97 ms** | **509 ms** |
+| 24,576 | 6,506 ms | 128 ms | 722 ms |
+| 31,744 | 10,239 ms | 156 ms | 903 ms |
+
+**Fitted model** (`lh-core`'s defaults):
+- GPU hit ≈ 35 ms + 3.8 µs/token;
+- a CPU restore adds ≈ 10 ms + 23.6 µs/token over a GPU hit (about 6.2 GB/s of KV at 144 KiB/token), the same slope as the earlier BF16 probe;
+- recompute ≈ 48 ms + 63 µs/token + 8.1 ns/token², the quadratic term being attention. The 512-token step cap that protects decode latency makes cold prefill slower than an uncapped engine.
+
+Restoring beats recomputing at every measured length (from 1,024 tokens). In the dimensionless terms E1 uses, at the 8k median prompt ρ = restore / recompute ≈ 0.25, and π = the median tool pause (166 ms) / restore ≈ 0.6.
+
+**Under contention** (p50; same probe while background load runs):
+
+| Prompt tokens | Background | Recomputed | GPU hit | Restored |
+|---|---|---|---|---|
+| 1,024 | 8 decode streams (1k prompt, 1k output) | 200 ms | 131 ms | 173 ms |
+| 16,384 | 8 decode streams | 4,528 ms | 186 ms | 592 ms |
+| 1,024 | one stream of cold 8k prefills | 342 ms | 283 ms | 263 ms |
+| 16,384 | one stream of cold 8k prefills | 5,230 ms | 387 ms | 728 ms |
+
+- **Decode load** adds a roughly constant ~85 ms to every tier (the probe shares steps with the decode batch); the restore slope is unchanged, so PCIe is not the bottleneck.
+- **Prefill load** is worse. Even a GPU-cached 1k prompt waits ~250 ms behind the running chunked prefill, and recompute slows 1.6–2.5×. This is the compute-interference path that a critical-window prefill throttle targets.
+
+The earlier probe (2026-10-21, BF16 weights, no audio servers) measured 0.18 s / 0.57 s / 4.75 s at 16k for GPU hit / restore / recompute.
 
 ## The frozen box
 
@@ -29,14 +50,30 @@ What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) i
 
 ## Voice on the shared GPU
 
-| Server-side voice turn (STT → LLM first sentence → TTS first audio) | Latency |
-|---|---|
-| Idle | **415 ms** (STT 152 ms, LLM first sentence 86 ms, TTS 176–179 ms) |
-| While background agents run 8k-token prefills | **876 ms** median |
+`lh-bench voice-turn` runs the cascade a voice agent runs, against the frozen box through the tunnel:
+1. the caller's utterance goes to STT (LibriSpeech clips of 2.0 and 3.2 s);
+2. the transcript is streamed through the LLM at the realtime priority;
+3. the first sentence goes to TTS as soon as it is complete. A sentence counts once it reaches 20 characters, LiveKit's default.
 
-- Under that background load:
-  - LLM time to first token rises from 39 to 371 ms;
-  - the co-located STT and TTS slow down by 43–44% under time-slicing.
+The turn runs from sending the audio to the first byte of TTS audio. That is the server-side share of voice-to-voice latency: endpointing, the network and playout come on top. 30 turns per row, p50 / p90 in ms (W1, 2026-10-22):
+
+| Background agent load | STT | LLM first token | LLM first sentence | TTS first audio | **Turn** | Background prefill |
+|---|---|---|---|---|---|---|
+| None | 160 / 168 | 49 / 51 | 251 / 319 | 176 / 187 | **588 / 665** | — |
+| One stream of cold 8k-token prefills | 233 / 240 | 172 / 197 | 807 / 937 | 226 / 251 | **1,261 / 1,413** | 6,220 tokens/s |
+| Two streams | 233 / 248 | 565 / 1,207 | 1,802 / 2,113 | 231 / 254 | **2,279 / 2,593** | 6,966 tokens/s |
+
+- **The LLM's first sentence carries most of the damage.** Decode steps for the voice request share the GPU with 512-token prefill chunks, so the inter-token gap stretches. The co-located STT and TTS slow by up to 46% and 28% (time-slicing between processes).
+- **MPS does not fix it.** With the three servers as clients of one MPS daemon (variant `mps`):
+  - idle turns are unchanged (606 / 669 ms);
+  - STT and TTS gain 7–8% under load;
+  - beside one prefill stream, the turn gets worse (1,403 / 2,061 ms) and background prefill throughput drops 13%;
+  - beside two streams it is mixed (2,042 / 2,870 ms).
+
+  The interference that matters is inside the engine, so the frozen box stays on time-slicing, and an MPS split is kept as an equal-hardware arm of E2.
+
+Earlier probe (2026-10-21/22, 8-character first sentence): 415 ms idle and 876 ms median under 8k prefills.
+
 - Whisper large-v3-turbo on vLLM takes 144 / 166 / 221 ms for 2 / 5 / 10 s utterances at concurrency 1.
 - Kokoro-82M reaches first audio for one sentence in 154–179 ms.
 - **A barge-in closes the LLM stream.** This is LiveKit Agents 1.8.8 with mock STT, LLM and TTS, in the voice-plane namespace on cyan (`python/leaseholder_voice`, 10 runs). Measured from the caller's barge-in onset to the LLM server seeing the disconnect:

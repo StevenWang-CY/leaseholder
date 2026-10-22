@@ -1,0 +1,14 @@
+[Unit]
+Description=Leaseholder CUDA MPS control daemon, for the mps variant of the frozen box (spatial GPU sharing)
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+# Started by the mps variant's drop-ins; stops once no GPU server requires it.
+StopWhenUnneeded=yes
+
+[Service]
+Type=exec
+Environment=CUDA_MPS_PIPE_DIRECTORY=%t/lh-mps
+Environment=CUDA_MPS_LOG_DIRECTORY=%h/leaseholder/logs/mps
+ExecStartPre=/usr/bin/mkdir -p %t/lh-mps %h/leaseholder/logs/mps
+ExecStart=/usr/bin/nvidia-cuda-mps-control -f
+ExecStop=/bin/sh -c 'echo quit | /usr/bin/nvidia-cuda-mps-control'
+TimeoutStopSec=30
