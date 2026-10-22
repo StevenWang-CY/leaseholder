@@ -78,7 +78,7 @@ Errors the gateway generates use OpenAI's format, `{"error": {"message", "type",
 
 ## Metrics and logs
 
-`GET /metrics` serves the OpenMetrics text format from a registry the gateway owns. Label values come from fixed sets or from the configuration, so the number of series is bounded. Series with fixed labels exist from the start, at zero.
+`GET /metrics` serves the OpenMetrics text format from a registry the gateway owns. Label values come from fixed sets or from the configuration, so the number of series is bounded. Every series except those of `lh_gateway_requests_total` and `lh_gateway_events_total` exists from the start, at zero.
 
 | Metric | Labels | Meaning |
 |---|---|---|

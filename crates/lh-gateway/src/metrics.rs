@@ -1,13 +1,14 @@
 //! The gateway's Prometheus metrics, in a registry it owns (no global state), rendered at `GET /metrics`.
 //!
 //! Every label takes its values from a fixed set or from the configuration (tenant names), so the number of
-//! series is bounded. Series with fixed label sets are created at start, so they export zero before traffic.
+//! series is bounded. Every series except those of requests (labeled with a status) and lifecycle events is
+//! created at start, so it exports zero before traffic.
 
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
-use lh_proto::{SloClass, headers};
+use lh_proto::SloClass;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
 use prometheus_client::metrics::counter::Counter;
@@ -209,11 +210,7 @@ impl Metrics {
         for kind in UpstreamError::ALL.map(UpstreamError::as_str) {
             create(&metrics.upstream_errors, KindLabels { kind });
         }
-        let fields = headers::ENGINE_CONTROL_HEADERS
-            .into_iter()
-            .chain([headers::REQUEST_ID, headers::CLASS, headers::SYNTHETIC])
-            .chain(headers::ENGINE_CONTROL_BODY_FIELDS);
-        for field in fields {
+        for field in crate::sanitize::sanitized_fields() {
             create(&metrics.sanitized, FieldLabels { field });
         }
         metrics.register()

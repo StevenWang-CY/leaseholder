@@ -337,6 +337,8 @@ async fn metrics_expose_every_series() {
         "lh_gateway_duration_seconds_count{class=\"background\"} 1",
         "lh_gateway_streams_active{class=\"background\"} 0",
         "lh_gateway_sanitized_total{field=\"priority\"} 0",
+        "lh_gateway_sanitized_total{field=\"x-lh-session-id\"} 0",
+        "lh_gateway_sanitized_total{field=\"x-lh-*\"} 0",
         "lh_gateway_class_clamped_total 0",
         "lh_gateway_upstream_errors_total{kind=\"timeout\"} 0",
         "lh_gateway_events_total{type=\"turn_started\",source=\"client\",duplicate=\"false\"} 1",

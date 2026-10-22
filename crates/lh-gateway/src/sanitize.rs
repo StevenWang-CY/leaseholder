@@ -22,8 +22,25 @@ pub(crate) static REQUEST_ID: HeaderName = HeaderName::from_static(headers::REQU
 pub(crate) static RESOLVED_SESSION_ID: HeaderName =
     HeaderName::from_static(headers::RESOLVED_SESSION_ID);
 
+/// The `x-lh-` headers counted under their own name when removed.
+const NAMED_LH_HEADERS: [&str; 3] = [
+    headers::CLASS,
+    headers::SYNTHETIC,
+    headers::RESOLVED_SESSION_ID,
+];
+
 /// Metric label for removed `x-lh-` headers that `lh_proto` does not name, which keeps the label bounded.
 const OTHER_LH_HEADER: &str = "x-lh-*";
+
+/// Every `field` label of `lh_gateway_sanitized_total`.
+pub(crate) fn sanitized_fields() -> impl Iterator<Item = &'static str> {
+    headers::ENGINE_CONTROL_HEADERS
+        .into_iter()
+        .chain([headers::REQUEST_ID])
+        .chain(NAMED_LH_HEADERS)
+        .chain([OTHER_LH_HEADER])
+        .chain(headers::ENGINE_CONTROL_BODY_FIELDS)
+}
 
 /// Hop-by-hop headers (RFC 9110 section 7.6.1, plus the legacy `Keep-Alive` and `Proxy-Connection`).
 static HOP_BY_HOP: [HeaderName; 8] = [
@@ -90,14 +107,10 @@ pub(crate) fn sanitize_headers(
     for name in lh_headers {
         headers.remove(&name);
         metrics.sanitized(
-            [
-                headers::CLASS,
-                headers::SYNTHETIC,
-                headers::RESOLVED_SESSION_ID,
-            ]
-            .into_iter()
-            .find(|known| *known == name.as_str())
-            .unwrap_or(OTHER_LH_HEADER),
+            NAMED_LH_HEADERS
+                .into_iter()
+                .find(|known| *known == name.as_str())
+                .unwrap_or(OTHER_LH_HEADER),
         );
     }
     for name in HOP_BY_HOP.iter().chain(&NOT_FORWARDED).chain(&listed) {
