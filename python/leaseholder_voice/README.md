@@ -30,6 +30,8 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 
 Turn detection is the one setting experiments change. LiveKit's end-of-turn model waits up to the endpointing maximum (3 s) when it judges a line unfinished: on the synthesized callers that happened on about one turn in six, and put a 3 s mode in voice-to-voice latency unrelated to serving. Experiments therefore run with `LH_TURN_DETECTION=vad`. That variant is `deploy/cyan/variants/vad-turns`: a turn ends a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), the same for every arm.
 
+Everything else is LiveKit's default except two settings for this deployment, whose only callers are the measurement bots in the namespace: interruptions are detected by VAD (what production mode picks anyway; adaptive detection needs LiveKit Inference), and there is no AEC warm-up, which would discard a barge-in on the first reply of each call although the callers have no echo path.
+
 ## Measurement callers
 
 `lh-voice render-callers` renders the corpus once through a TTS server:
@@ -196,15 +198,19 @@ disconnect.
   - in production mode, `num_idle_processes` defaults to the CPU count (48 on cyan);
   - in production mode, the worker refuses jobs above 70 % host CPU load.
 
-**Other 1.8.8 defaults the W1 worker should set.**
+**Other 1.8.8 defaults, and what the worker and the test set.**
 - `aec_warmup_duration` defaults to 3.0 s, which ignores barge-ins during the first 3 s of
-  the session's first agent turn. The bots have no echo path.
+  the session's first agent turn. The callers have no echo path, so the worker and the test
+  set `None`.
 - `turn_detection` defaults to LiveKit Inference's `TurnDetector()`, and an unset
-  `interruption.mode` means adaptive (LiveKit Inference) in dev mode. The test pins
-  `"vad"` for both. The turn-detector plugin needs `python -m livekit.agents download-files`.
-- `record` follows the server's recording setting. The test passes `record=False`.
+  `interruption.mode` means adaptive (LiveKit Inference) in dev mode and VAD in production
+  mode. The worker runs the local `v1-mini` model (or `"vad"` with `LH_TURN_DETECTION=vad`)
+  and pins `"vad"` interruptions; the test pins `"vad"` for both. The turn-detector model
+  needs `lh-voice-worker download-files` once.
+- `record` follows the server's recording setting. The worker and the test pass
+  `record=False`.
 - When the user leaves, the job stays in the room until LiveKit's departure timeout,
-  unless `RoomOptions(delete_room_on_close=True)` is set.
+  unless `RoomOptions(delete_room_on_close=True)` is set. The worker and the test set it.
 
 Test audio: `tests/data/user_turn.wav` and `tests/data/barge_in.wav` are LibriSpeech
 dev-clean utterances 1272-135031-0011 and 1272-135031-0012 (CC BY 4.0).

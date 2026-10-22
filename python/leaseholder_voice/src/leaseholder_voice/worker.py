@@ -4,7 +4,13 @@
 serves every dispatched room with one ``AgentSession``: Silero VAD and LiveKit's audio
 end-of-turn model (``turn-detector-v1-mini``, run locally) on the CPU, then STT, the LLM and TTS
 on the GPU node. Turn handling (endpointing, interruptions, preemptive generation) keeps LiveKit's
-defaults.
+defaults, with two settings pinned for this deployment, whose only callers are the measurement
+bots inside the namespace:
+
+- interruptions by VAD, which production mode picks anyway: adaptive detection needs LiveKit
+  Inference, and the namespace has no route out;
+- no AEC warm-up: the callers play files, so there is no echo to wait out, and the 3 s warm-up
+  would only discard a barge-in on the first reply of each call.
 
 Experiments use ``LH_TURN_DETECTION=vad`` instead: the end of a turn is then a fixed delay after
 the end of speech, the same for every arm, so voice-to-voice latency moves only with serving. The
@@ -89,7 +95,8 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=plugins.make_stt(BASE_URL, uds=os.environ["LH_STT_UDS"]),
         llm=plugins.make_llm(BASE_URL, session_id, uds=os.environ["LH_LLM_UDS"]),
         tts=plugins.make_tts(BASE_URL, uds=os.environ["LH_TTS_UDS"]),
-        turn_handling={"turn_detection": turn_detection()},
+        turn_handling={"turn_detection": turn_detection(), "interruption": {"mode": "vad"}},
+        aec_warmup_duration=None,
         conn_options=SessionConnectOptions(
             llm_conn_options=APIConnectOptions(max_retry=1, timeout=llm_timeout)
         ),
