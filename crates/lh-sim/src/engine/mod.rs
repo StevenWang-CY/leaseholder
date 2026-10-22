@@ -106,6 +106,18 @@ pub struct EngineStats {
     /// Requests whose footprint exceeds the whole pool. No engine admits them (vLLM refuses to
     /// start when `max_model_len` exceeds its pool), so they are dropped.
     pub oversized: u64,
+    /// Engine steps the step loop ran, the tokens they computed, and their total duration; zero, and
+    /// left out of the JSON, for the idle service.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub steps: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub step_tokens: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub step_ns: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug)]
@@ -182,10 +194,7 @@ impl Engine {
     /// Admits `req` now, or queues it behind earlier waiting requests. A request larger than the
     /// whole pool is dropped and counted in [`EngineStats::oversized`].
     pub fn submit(&mut self, id: u64, req: EngineRequest) -> Option<Admission> {
-        let footprint =
-            (req.prompt_tokens + req.output_tokens.max(1) - 1).div_ceil(self.block_tokens);
-        if footprint > self.gpu_capacity() as u64 {
-            self.stats.oversized += 1;
+        if self.reject_oversized(&req) {
             return None;
         }
         if self.queue.is_empty() {
@@ -198,6 +207,22 @@ impl Engine {
         }
         self.stats.stalls += 1;
         None
+    }
+
+    /// Whether `req` needs more blocks than the whole pool; such a request is counted in
+    /// [`EngineStats::oversized`].
+    pub fn reject_oversized(&mut self, req: &EngineRequest) -> bool {
+        let footprint =
+            (req.prompt_tokens + req.output_tokens.max(1) - 1).div_ceil(self.block_tokens);
+        let oversized = footprint > self.gpu_capacity() as u64;
+        self.stats.oversized += u64::from(oversized);
+        oversized
+    }
+
+    /// Admits `req` if its blocks fit now, for a scheduler that keeps its own waiting queue;
+    /// otherwise hands it back. The caller rejects oversized requests first.
+    pub fn admit(&mut self, id: u64, req: EngineRequest) -> Result<Admission, EngineRequest> {
+        self.try_admit(id, req)
     }
 
     /// Ends request `id`: writes its blocks through to the CPU tier, frees its GPU blocks, and
