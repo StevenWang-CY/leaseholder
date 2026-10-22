@@ -1,0 +1,170 @@
+# leaseholder-voice
+
+LiveKit Agents 1.8.8 building blocks for Leaseholder's realtime voice plane
+([ARCHITECTURE §7](../../docs/ARCHITECTURE.md#7-realtime-voice-pipeline)). The package
+holds the headers the voice worker sends to the control plane, and a factory for the stock
+OpenAI STT, LLM and TTS plugins pointed at OpenAI-compatible servers over TCP or a Unix
+socket. Its integration test runs a real LiveKit room against mock endpoints. It is the
+regression test for the W0 findings below.
+
+| Module | Contents |
+|---|---|
+| `leaseholder_voice.protocol` | `X-Session-ID` and `X-LH-Class` names, `room_session_id(room_sid)`, `realtime_headers(session_id)` |
+| `leaseholder_voice.plugins` | `make_stt`, `make_llm`, `make_tts`, `openai_client` |
+
+```python
+from leaseholder_voice import plugins
+from leaseholder_voice.protocol import room_session_id
+
+lh = f"{os.environ['XDG_RUNTIME_DIR']}/lh"
+session_id = room_session_id(ctx.job.room.sid)  # "voice-RM_..."
+llm = plugins.make_llm("http://lh/v1", session_id, uds=f"{lh}/gateway.sock")  # the control plane
+stt = plugins.make_stt("http://lh/v1", uds=f"{lh}/phastform-stt.sock")  # the tunnel to the GPU node
+tts = plugins.make_tts("http://lh/v1", uds=f"{lh}/phastform-tts.sock")  # raw 24 kHz PCM
+```
+
+The `phastform-*.sock` files are the tunnel's Unix-socket forwards (`deploy/cyan`). Until the
+control plane lands, the LLM can use `phastform-engine.sock` directly.
+
+Create one LLM per session: the headers belong to the instance.
+
+## Tests
+
+Unit tests need no network. CI runs them with `make test-python`:
+
+```bash
+uv run --extra test pytest -m "not integration"
+```
+
+The integration test runs on cyan. It needs Linux with unprivileged user namespaces,
+`unshare`, `nsenter`, `setpriv`, `ip` and `ss`, and `livekit-server` 1.13.10:
+
+```bash
+cd ~/leaseholder/src/python/leaseholder_voice
+export UV_PROJECT_ENVIRONMENT=~/leaseholder/venvs/voice
+LIVEKIT_SERVER_BIN=~/leaseholder/bin/livekit-server uv run --locked --extra test pytest -m integration -v
+```
+
+A run takes about 35 s and prints the measured latencies at the end. Logs and a JSON
+record per room are kept under pytest's base temp directory (`--basetemp` to choose it).
+The test skips when it is not on Linux or cannot find `livekit-server`.
+
+What the test does:
+
+- It creates a private user and network namespace that holds `lo` and a dummy interface.
+  The namespace has no route out.
+- Inside the namespace it starts a LiveKit server with a loopback-only config (the
+  `LIVEKIT_CONFIG` template in `tests/integration/plane.py`, ports 27880/tcp and
+  27882/udp), an agent worker, and one bot per case.
+- The agent worker is `tests/integration/agent_app.py`. It uses this package's factory
+  and Silero VAD.
+- The mock STT, LLM and TTS run in the test process, outside the namespace. The agent
+  reaches them only through their Unix sockets, as the deployed worker reaches the
+  control plane and the tunnels.
+- The bot plays a LibriSpeech utterance. Once the agent's reply audio starts, the bot
+  waits 1 s, then barges in with a second utterance. Meanwhile the mock LLM is still
+  streaming: one token per 100 ms, for 20 s.
+- The test asserts four things:
+  - every LLM request in the room carries `X-Session-ID: voice-<room SID>` and
+    `X-LH-Class: realtime`;
+  - the stream that was open at the barge-in is closed by the client, within the bound;
+  - nothing in the namespace listens outside loopback, except the WebRTC clients' ICE
+    sockets on the dummy address;
+  - none of the test's processes owns a TCP or UDP socket on the host.
+
+Namespace commands, as the test runs them:
+
+```bash
+# holder: prints "ready", then keeps the namespace alive
+unshare --user --map-root-user --net -- sh -c 'ip link set lo up && ip link add lh0 type dummy && ip link set lh0 addrgenmode none && ip addr add 10.255.0.1/32 dev lh0 && ip link set lh0 up && echo ready && exec sleep infinity'
+# every other process
+nsenter --target=<holder pid> --user --net --preserve-credentials -- <command>
+```
+
+## W0 findings (cyan, 2026-10-22)
+
+**Per-session headers.**
+- The mechanism is the 1.8.8 constructor option `livekit.plugins.openai.LLM(extra_headers=...)`.
+  `LLM.chat()` passes it to `chat.completions.create` on every request of that instance.
+- The plugin writes its own headers into the same dict:
+  - `User-Agent: LiveKit Agents/1.8.8 ...`;
+  - `X-LiveKit-Room-ID` (the room SID), `X-LiveKit-Job-ID` and `X-LiveKit-Agent-ID`;
+  - a new `X-LiveKit-Session-ID: inference_...` on every request. Despite its name, that
+    one is a request id, not the conversation.
+- `api_key` goes out as `Authorization: Bearer <key>`. For the worker, pass its
+  control-plane key.
+- All three plugins accept `client=`. The factory passes an `openai.AsyncClient` whose
+  `httpx2` transport is `AsyncHTTPTransport(uds=...)`.
+- Request timeouts: the LLM plugin sets each request's timeout from the session's
+  `llm_conn_options.timeout`, 10 s by default, for connect, read, write and pool. The mock
+  saw `x-stainless-read-timeout: 10.0`. The client's own timeout covers only the prewarm
+  `GET /models`. Cold prefills longer than 10 s need
+  `AgentSession(conn_options=SessionConnectOptions(llm_conn_options=APIConnectOptions(timeout=...)))`.
+
+**A barge-in closes the LLM stream.** Measured from the bot's barge-in speech onset to the
+mock seeing the client disconnect, over 10 runs:
+
+| Interruption handling | Median | Range | Bound in the test |
+|---|---|---|---|
+| Stock (`resume_false_interruption=True`) | 2.19 s | 2.17–2.20 s | 3.0 s |
+| `resume_false_interruption=False` | 0.58 s | 0.57–0.62 s | 1.0 s |
+
+In both modes, the agent's VAD saw the barge-in 0.10–0.16 s after onset. The agent's
+audio stopped at the bot 0.61–0.68 s after onset.
+
+`AgentActivity` decides when to interrupt, from Silero VAD:
+
+- **Stock.** After 0.5 s of barge-in speech (`interruption.min_duration`), it only pauses
+  the audio output. The agent state turns `listening`, but the LLM keeps streaming.
+- The reply is interrupted only when the barge-in turn's final transcript arrives. That
+  takes VAD end of speech (0.55 s of silence) plus the STT call. The call chain is
+  `on_final_transcript` → `_cancel_speech_pause()` → `SpeechHandle.interrupt()`.
+- So the stream stays open for the whole barge-in utterance plus about 0.9 s. The test's
+  barge-in has 1.31 s of speech.
+- **`resume_false_interruption=False`.** After 0.5 s of barge-in speech,
+  `_interrupt_by_audio_activity()` calls `SpeechHandle.interrupt()` right away.
+- A false barge-in (a cough) then kills the reply. In stock mode the reply would resume
+  after `false_interruption_timeout` (2 s).
+
+From `SpeechHandle.interrupt()`, both modes follow the same chain:
+
+1. The reply task (`_pipeline_reply_task`) cancels its LLM task with `cancel_and_wait`.
+2. The `CancelledError` unwinds the default `llm_node` out of `async with llm.chat(...)`.
+3. `LLMStream.aclose()` cancels the plugin's `_run`.
+4. In `_run`, `async with stream:` calls `openai.AsyncStream.close()`, and that calls
+   `httpx2.Response.aclose()`.
+5. The response is unfinished, so the client closes the HTTP/1.1 connection instead of
+   pooling it. That close is the disconnect the control plane sees.
+
+The agent's LLM node reports the cancellation within 10 ms of the mock seeing the
+disconnect.
+
+**Network.**
+- libwebrtc (livekit-rtc 1.1.20) gathers ICE host candidates on every non-loopback
+  interface, whatever the server's rtc block says. On cyan's host network, one process
+  with two connected rooms held 9 UDP sockets and 7 passive ICE-TCP `LISTEN` sockets on
+  158.130.4.176.
+- With only `lo` in a namespace, libwebrtc gathers no candidate at all: it ignores
+  loopback adapters. `Room.connect` then fails with `wait_pc_connection timed out`.
+- A dummy interface with a /32 address fixes it. Media flowed within 0.75 s, and the
+  server still offers only 127.0.0.1 candidates.
+- On the server, `--bind 127.0.0.1` covers signalling only. `rtc.tcp_port` must be 0,
+  because the ICE-TCP listener ignores the IP filters. The single `rtc.udp_port` binds
+  only the filtered IPs.
+- `AgentServer` defaults matter:
+  - `host=""` puts its health server on all interfaces;
+  - in production mode, `num_idle_processes` defaults to the CPU count (48 on cyan);
+  - in production mode, the worker refuses jobs above 70 % host CPU load.
+
+**Other 1.8.8 defaults the W1 worker should set.**
+- `aec_warmup_duration` defaults to 3.0 s, which ignores barge-ins during the first 3 s of
+  the session's first agent turn. The bots have no echo path.
+- `turn_detection` defaults to LiveKit Inference's `TurnDetector()`, and an unset
+  `interruption.mode` means adaptive (LiveKit Inference) in dev mode. The test pins
+  `"vad"` for both. The turn-detector plugin needs `python -m livekit.agents download-files`.
+- `record` follows the server's recording setting. The test passes `record=False`.
+- When the user leaves, the job stays in the room until LiveKit's departure timeout,
+  unless `RoomOptions(delete_room_on_close=True)` is set.
+
+Test audio: `tests/data/user_turn.wav` and `tests/data/barge_in.wav` are LibriSpeech
+dev-clean utterances 1272-135031-0011 and 1272-135031-0012 (CC BY 4.0).
