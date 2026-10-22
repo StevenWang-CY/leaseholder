@@ -469,7 +469,7 @@ fn mrc(args: MrcArgs) -> Result<(), String> {
                 prompt,
                 prompt_tokens: *prompt_tokens,
                 output_tokens: *output_tokens,
-                counted: r.record != usize::MAX,
+                counted: r.record.is_some(),
             })
             .collect();
         curves.push(("unscaled-same-order", factor, pool, curve(&acc, pool)));

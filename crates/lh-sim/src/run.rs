@@ -245,7 +245,7 @@ pub fn clairvoyant(
                     adm,
                     cfg.replay.block_tokens as u64,
                 );
-                if let Some(rec) = records.get_mut(r.record) {
+                if let Some(rec) = r.record.map(|k| &mut records[k]) {
                     rec.sources = adm.sources;
                     rec.recomputed = recomputed;
                     rec.ttft_ns = rec.admitted_ns - rec.issued_ns

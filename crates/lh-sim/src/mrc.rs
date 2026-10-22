@@ -43,7 +43,7 @@ pub fn accesses(timeline: &Timeline) -> Vec<Access<'_>> {
             prompt: &r.prompt,
             prompt_tokens: r.prompt_tokens,
             output_tokens: r.output_tokens,
-            counted: r.record != usize::MAX,
+            counted: r.record.is_some(),
         })
         .collect()
 }

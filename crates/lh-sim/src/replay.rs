@@ -121,9 +121,9 @@ pub struct TimelineRequest {
     pub prompt: Vec<BlockId>,
     pub prompt_tokens: u64,
     pub output_tokens: u64,
-    /// Index into the run's records; `usize::MAX` for warmup requests and requests that did not
-    /// complete in time.
-    pub record: usize,
+    /// Index into the run's records; `None` for warmup requests and requests that did not complete
+    /// in time.
+    pub record: Option<usize>,
     pub warmup: bool,
     /// Where the prompt comes from: the corpus trace, its conversation and turn, and the KV
     /// namespace (session play and model) its blocks were cut in.
@@ -226,25 +226,34 @@ impl Ord for Entry {
     }
 }
 
+/// One conversation of a play as it is replayed: the root, or a child spawned by a branch.
 #[derive(Debug)]
 struct Stream {
     play: u32,
     conv: u32,
+    /// 0 for the root, 1 for a child.
     depth: u8,
     /// `(gated root turn, branch)` this child must satisfy; empty for background children.
     joins: Vec<(u32, u32)>,
+    /// A child that finished, or that can never continue once sending stops.
     done: bool,
+    /// The blocks of its latest prompt, counted in the live working set.
     context: Vec<BlockId>,
 }
 
+/// One branch a gated root turn waits for.
 #[derive(Debug)]
 struct Prereq {
     branch: u32,
+    /// Children spawned so far.
     expected: u32,
+    /// Children finished so far.
     completed: u32,
+    /// The branch has been spawned, so `expected` is final.
     registered: bool,
 }
 
+/// A root turn that waits for the children of the branches it joins (AIPerf's SPAWN_JOIN).
 #[derive(Debug)]
 struct Gate {
     turn: u32,
@@ -263,23 +272,36 @@ impl Gate {
     }
 }
 
+/// One session play: a trace replayed by a lane, under its own KV namespace.
 #[derive(Debug)]
 struct Play {
     plan: Rc<ReplayPlan>,
+    /// The trace's index in the corpus.
     trace: u32,
     lane: usize,
+    /// The KV namespace its blocks are cut in: the play's index.
     namespace: u64,
     root: Option<u32>,
+    /// The root has turns left to send.
     root_pending: bool,
+    /// Child streams not yet done.
     descendants: u32,
+    /// The session tree has finished and its lane has moved on.
     drained: bool,
+    /// `(conversation, turn)` pairs completed: the replay barriers' history.
     completed: HashSet<(u32, u32)>,
+    /// Turns held by replay barriers, in AIPerf's `(conversation id, turn)` order, with their stream and
+    /// kind.
     held: BTreeMap<(u32, u32, u32), (u32, Kind)>,
+    /// Gates of later root turns.
     future_joins: BTreeMap<u32, Gate>,
+    /// The gate the root is blocked on now.
     active_join: Option<Gate>,
+    /// Branches spawned when their spawning turn was sent, so its return does not spawn them again.
     overlap_spawned: Vec<u32>,
 }
 
+/// A request in the engine, or waiting for its blocks.
 #[derive(Debug)]
 struct InFlight {
     stream: u32,
@@ -293,7 +315,8 @@ struct InFlight {
     delay_ms: Option<f64>,
     admission: Option<Admission>,
     recomputed: u64,
-    timeline: usize,
+    /// Its index in the timeline, once admitted into a run that records one.
+    timeline: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,13 +479,9 @@ impl<'a> Replay<'a> {
                 self.engine.gpu_capacity()
             ));
         }
-        // The working-set mean covers the duration, or the part of it before a run ran out of work.
-        let window_end = if self.now >= self.profiling_end {
-            self.profiling_end
-        } else {
-            self.now
-        };
-        self.advance(window_end.max(self.now));
+        // The working-set mean covers the duration, or the part of it before the run ran out of work;
+        // `advance` has integrated up to the last event.
+        let window_end = self.now.min(self.profiling_end);
         self.stats.cut_off_requests = self
             .in_flight
             .values()
@@ -580,12 +599,8 @@ impl<'a> Replay<'a> {
 
     /// Builds the lanes (`TrajectorySource`) and sends the warmup.
     fn start_lanes(&mut self) -> Result<(), String> {
-        let budget = self.cfg.concurrency + 2 * self.corpus.len().max(1);
-        let mut attempts = 0;
-        while self.lanes.len() < self.cfg.concurrency && attempts < budget {
-            attempts += 1;
+        for lane in 0..self.cfg.concurrency {
             let (trace, plan) = self.next_trace()?;
-            let lane = self.lanes.len();
             let t_star = snapshot::t_star(
                 &plan,
                 self.cfg.seed,
@@ -903,7 +918,7 @@ impl<'a> Replay<'a> {
                 delay_ms,
                 admission: None,
                 recomputed: 0,
-                timeline: usize::MAX,
+                timeline: None,
             },
         );
         if let Some(adm) = self.engine.submit(
@@ -936,13 +951,13 @@ impl<'a> Replay<'a> {
             let stream = &self.streams[f.stream as usize];
             let play = &self.plays[stream.play as usize];
             let model = play.plan.convs[stream.conv as usize].turns[f.turn as usize].model;
-            f.timeline = tl.requests.len();
+            f.timeline = Some(tl.requests.len());
             tl.events.push(TimelineEvent::Admit(tl.requests.len()));
             tl.requests.push(TimelineRequest {
                 prompt: f.prompt.clone(),
                 prompt_tokens: f.prompt_tokens,
                 output_tokens: f.output_tokens,
-                record: usize::MAX,
+                record: None,
                 warmup: f.warmup,
                 trace: play.trace,
                 conv: stream.conv,
@@ -959,8 +974,8 @@ impl<'a> Replay<'a> {
             .in_flight
             .remove(&id)
             .expect("completion of a request in flight");
-        if let Some(tl) = &mut self.timeline {
-            tl.events.push(TimelineEvent::Finish(f.timeline));
+        if let (Some(tl), Some(i)) = (&mut self.timeline, f.timeline) {
+            tl.events.push(TimelineEvent::Finish(i));
         }
         for (qid, adm) in self.engine.finish(id) {
             self.admitted(qid, adm);
@@ -972,8 +987,8 @@ impl<'a> Replay<'a> {
         let counted =
             !f.warmup && self.phase == Phase::Profiling && f.issued >= self.profiling_start;
         if counted {
-            if let Some(tl) = &mut self.timeline {
-                tl.requests[f.timeline].record = self.records.len();
+            if let (Some(tl), Some(i)) = (&mut self.timeline, f.timeline) {
+                tl.requests[i].record = Some(self.records.len());
             }
             let ttft = f.admitted - f.issued + self.cost.ttft(adm.sources).as_nanos() as u64;
             self.records.push(RequestRecord {
