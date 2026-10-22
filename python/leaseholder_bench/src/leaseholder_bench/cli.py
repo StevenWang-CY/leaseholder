@@ -1,4 +1,4 @@
-"""The ``lh-bench`` command line: ``scale-traces``, ``replay``, ``mock-server`` and ``kv-metrics``."""
+"""The ``lh-bench`` command line: trace scaling, replays, latency probes and engine metrics."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from leaseholder_bench.load import LoadSpec, parse_lengths
 from leaseholder_bench.protocol import SessionTagger, SloClass, load_class_map
 
 
@@ -82,6 +83,49 @@ def _kv_metrics(args: argparse.Namespace) -> int:
         args.out.write_text(fetch(args.url))
         return 0
     print(compare(args.before.read_text(), args.after.read_text()))
+    return 0
+
+
+def _tiers(args: argparse.Namespace) -> int:
+    from leaseholder_bench.tiers import TiersConfig, render, run_tiers
+
+    config = TiersConfig(
+        url=args.url,
+        model=args.model,
+        lengths=parse_lengths(args.lengths),
+        reps=args.reps,
+        background=args.background,
+        decode_tokens=args.decode_tokens,
+        priority=None if args.no_priority else args.priority,
+        seed=args.seed,
+    )
+    summary = asyncio.run(run_tiers(config, args.out))
+    print(render(summary))
+    return 0 if not summary["invalid"] else 3
+
+
+def _voice_turn(args: argparse.Namespace) -> int:
+    from leaseholder_bench.voice_turn import VoiceTurnConfig, render, run_voice_turns
+
+    config = VoiceTurnConfig(
+        stt_url=args.stt_url,
+        llm_url=args.llm_url,
+        tts_url=args.tts_url,
+        stt_model=args.stt_model,
+        llm_model=args.llm_model,
+        tts_model=args.tts_model,
+        voice=args.voice,
+        audio=args.audio,
+        reps=args.reps,
+        warm=args.warm,
+        concurrency=args.concurrency,
+        max_tokens=args.max_tokens,
+        slo_class=args.slo_class,
+        send_priority=not args.no_priority,
+        background=args.background,
+        decode_tokens=args.decode_tokens,
+    )
+    print(render(asyncio.run(run_voice_turns(config, args.out))))
     return 0
 
 
@@ -187,7 +231,84 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("before", type=Path)
     cmp_.add_argument("after", type=Path)
     kv.set_defaults(func=_kv_metrics)
+
+    tiers = commands.add_parser(
+        "tiers",
+        help="measure the time to first token from the GPU pool, the CPU tier and recompute (E0)",
+        description="For each prompt length, send a unique prompt three times: cold (recomputed), "
+        "again (GPU prefix-cache hit), and after flushing the GPU pool (restored from the CPU "
+        "tier). vLLM's prefix-cache counters verify each request's source. Writes run.json, "
+        "samples.jsonl and summary.json.",
+    )
+    tiers.add_argument(
+        "--url",
+        default="http://127.0.0.1:8000",
+        help="engine base URL (default %(default)s); the engine needs /metrics and an offload tier",
+    )
+    tiers.add_argument("--model", default=DEFAULT_MODEL)
+    tiers.add_argument(
+        "--lengths",
+        default="1024,2048,4096,8192,16384,24576,31744",
+        help="comma-separated prompt lengths in tokens (default %(default)s)",
+    )
+    tiers.add_argument("--reps", type=int, default=5, help="samples per length (default 5)")
+    tiers.add_argument("--out", type=Path, required=True, help="run directory")
+    tiers.add_argument("--seed", type=int, default=0)
+    _add_load_arguments(tiers, default_priority=1)
+    tiers.set_defaults(func=_tiers)
+
+    turn = commands.add_parser(
+        "voice-turn",
+        help="time server-side voice turns: STT, LLM first sentence, TTS first audio",
+        description="Run voice turns against OpenAI-compatible STT, LLM and TTS servers and time "
+        "each stage; with --background, while agent load keeps the LLM busy. Writes run.json, "
+        "turns.jsonl and summary.json.",
+    )
+    turn.add_argument("--stt-url", default="http://127.0.0.1:8100/v1")
+    turn.add_argument("--llm-url", default="http://127.0.0.1:8000/v1")
+    turn.add_argument("--tts-url", default="http://127.0.0.1:8880/v1")
+    turn.add_argument("--stt-model", default="openai/whisper-large-v3-turbo")
+    turn.add_argument("--llm-model", default=DEFAULT_MODEL)
+    turn.add_argument("--tts-model", default="kokoro")
+    turn.add_argument("--voice", default="af_heart")
+    turn.add_argument(
+        "--audio", type=Path, action="append", required=True, help="utterance WAV (repeatable)"
+    )
+    turn.add_argument("--reps", type=int, default=20, help="measured turns per caller")
+    turn.add_argument("--warm", type=int, default=2, help="unmeasured warm-up turns per caller")
+    turn.add_argument("--concurrency", type=int, default=1, help="callers taking turns at once")
+    turn.add_argument("--max-tokens", type=int, default=60)
+    turn.add_argument(
+        "--class", dest="slo_class", type=SloClass, choices=list(SloClass), default="realtime"
+    )
+    turn.add_argument("--out", type=Path, required=True, help="run directory")
+    _add_load_arguments(turn, default_priority=None)
+    turn.set_defaults(func=_voice_turn)
     return parser
+
+
+def _add_load_arguments(parser: argparse.ArgumentParser, default_priority: int | None) -> None:
+    parser.add_argument(
+        "--background",
+        type=LoadSpec.parse,
+        help="agent load while measuring: prefill:<tokens>x<concurrency> (cold prefills) or "
+        "decode:<tokens>x<concurrency> (long decodes)",
+    )
+    parser.add_argument(
+        "--decode-tokens", type=int, default=1024, help="output tokens per decode-load request"
+    )
+    if default_priority is not None:
+        parser.add_argument(
+            "--priority",
+            type=int,
+            default=default_priority,
+            help="vLLM priority of the probe requests (default %(default)s); load runs at 2",
+        )
+    parser.add_argument(
+        "--no-priority",
+        action="store_true",
+        help="omit the vLLM priority field (needed against a server without priority scheduling)",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
