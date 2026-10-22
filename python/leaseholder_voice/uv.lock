@@ -477,14 +477,14 @@ dependencies = [
     { name = "httpx2" },
     { name = "livekit" },
     { name = "livekit-agents", extra = ["openai", "silero", "turn-detector"] },
+    { name = "livekit-api" },
+    { name = "numpy" },
     { name = "openai" },
 ]
 
 [package.optional-dependencies]
 test = [
     { name = "aiohttp" },
-    { name = "livekit-api" },
-    { name = "numpy" },
     { name = "psutil" },
     { name = "pytest" },
 ]
@@ -495,8 +495,8 @@ requires-dist = [
     { name = "httpx2", specifier = ">=2.12,<3" },
     { name = "livekit", specifier = "==1.1.20" },
     { name = "livekit-agents", extras = ["openai", "silero", "turn-detector"], specifier = "==1.8.8" },
-    { name = "livekit-api", marker = "extra == 'test'", specifier = ">=1.2" },
-    { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26" },
+    { name = "livekit-api", specifier = ">=1.2" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=3.19,<4" },
     { name = "psutil", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },

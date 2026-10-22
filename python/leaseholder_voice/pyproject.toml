@@ -12,18 +12,22 @@ license = "Apache-2.0"
 dependencies = [
     "livekit-agents[openai,silero,turn-detector]==1.8.8",
     "livekit==1.1.20",  # the rtc SDK livekit-agents 1.8.8 pins
+    "livekit-api>=1.2",
     "openai>=3.19,<4",
     "httpx2>=2.12,<3",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest==9.1.1",
     "aiohttp>=3.10",
-    "livekit-api>=1.2",
-    "numpy>=1.26",
     "psutil>=7.0",
 ]
+
+[project.scripts]
+lh-voice = "leaseholder_voice.cli:main"
+lh-voice-worker = "leaseholder_voice.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leaseholder_voice"]

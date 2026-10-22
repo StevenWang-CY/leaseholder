@@ -1,0 +1,28 @@
+[Unit]
+Description=Leaseholder voice agent: LiveKit Agents worker in the voice-plane namespace on cyan
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+BindsTo=lh-voicenet.service
+After=lh-voicenet.service lh-livekit.service lh-tunnel-phastform.service
+Wants=lh-livekit.service lh-tunnel-phastform.service
+
+[Service]
+Type=exec
+# LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET, written by bootstrap.sh.
+EnvironmentFile=%h/.config/leaseholder/livekit.env
+# The namespace reaches the GPU node only through these sockets. LH_LLM_UDS is the control plane's socket;
+# point it at %t/lh/phastform-engine.sock to bypass the control plane.
+Environment=LH_LLM_UDS=%t/lh/gateway.sock
+Environment=LH_STT_UDS=%t/lh/phastform-stt.sock
+Environment=LH_TTS_UDS=%t/lh/phastform-tts.sock
+Environment=LH_IDLE_PROCESSES=4
+Environment=HF_HUB_OFFLINE=1
+ExecStart=%h/leaseholder/src/deploy/bin/in-voicenet %h/leaseholder/venvs/voice/bin/lh-voice-worker start --log-format json
+# Cores 32-47 belong to the voice plane; the control plane and load generators use the others.
+CPUAffinity=32-47
+KillSignal=SIGINT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
