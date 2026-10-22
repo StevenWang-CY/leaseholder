@@ -5,7 +5,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 | Host | Units | Ports (all loopback) |
 |---|---|---|
 | Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (bound by lh-node; the engine connects to it), KV-event replay 5558 |
-| cyan (control) | `lh-tunnel-phastform`, `lh-voicenet`, `lh-livekit`, `lh-gateway` | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only |
+| cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker` | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only |
 
 ## Deploy
 
@@ -59,12 +59,49 @@ journalctl --user -u lh-gateway -f                # one JSON line per request an
 systemctl --user restart lh-gateway               # rereads gateway.toml; drains in-flight requests for up to 30 s
 ```
 
+## The voice plane
+
+| Unit | What it runs | Notes |
+|---|---|---|
+| `lh-voicenet` | The network namespace holder | Loopback plus the dummy `lh0` (10.255.0.1/32), no route out |
+| `lh-livekit` | LiveKit server in the namespace | 127.0.0.1:17880 (signalling), UDP 17882 (media) |
+| `lh-voice-worker` | `lh-voice-worker start` (LiveKit Agents) in the namespace | Agent `leaseholder-voice`. STT and TTS through `%t/lh/phastform-{stt,tts}.sock`, the LLM through `%t/lh/gateway.sock` |
+
+```sh
+systemctl --user start lh-tunnel-phastform lh-gateway lh-voicenet lh-livekit lh-voice-worker
+journalctl --user -u lh-voice-worker -f          # JSON logs; "registered worker" means it is ready
+```
+
+**Worker variants** are drop-ins linked into `~/.config/systemd/user/lh-voice-worker.service.d/`, followed by `systemctl --user daemon-reload` and a restart:
+- `deploy/cyan/variants/vad-turns/lh-voice-worker.conf` sets fixed endpointing (`LH_TURN_DETECTION=vad`). Every experiment runs with it: LiveKit's end-of-turn model waits its 3 s maximum on about one synthesized turn in six.
+- An `Environment=LH_LLM_UDS=%t/lh/phastform-engine.sock` drop-in sends the LLM straight to the engine, bypassing the gateway.
+
+**Measurement callers.** Render the corpus once with the TTS server. The callers run inside the namespace:
+
+```sh
+~/leaseholder/venvs/voice/bin/lh-voice render-callers ~/leaseholder/data/callers --tts-url http://127.0.0.1:18880/v1
+set -a; . ~/.config/leaseholder/livekit.env; set +a
+taskset -c 24-31 ~/leaseholder/src/deploy/bin/in-voicenet ~/leaseholder/venvs/voice/bin/lh-voice bots \
+  --corpus ~/leaseholder/data/callers --callers 2 --turns 25 --barge-in 0.25 --out ~/leaseholder/runs/<run>/bots
+```
+
+**Cores on cyan** (48 threads):
+
+| Cores | Used by |
+|---|---|
+| 0–7 | The control plane (`lh-gateway`) |
+| 8–15 | agentic-api and tools |
+| 16–31 | Load generators: AIPerf on 16–23, `lh-bench` on 16–31, callers on 24–31 |
+| 32–47 | The voice plane: LiveKit and the worker |
+
 ## Engine variants
 
 A variant is a systemd drop-in in `~/.config/systemd/user/lh-engine.service.d/` that overrides `ExecStart` with extra flags. Flags on the command line take precedence over `deploy/phastform/engine.yaml`.
 - **Apply:** link the drop-in, then `systemctl --user daemon-reload && systemctl --user restart lh-engine`.
 - **Remove:** delete the link and repeat.
 - **Example:** `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check this way and always restores the frozen configuration.
+
+A variant that spans several units lives in `deploy/phastform/variants/<name>/` and is switched as a whole: `deploy/phastform/variant.sh on mps` links its drop-ins and restarts the box, and `variant.sh off mps` restores the frozen configuration. `mps` runs all three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS](../docs/BENCHMARKS.md)).
 
 ## Checks before heavy work on a shared host
 
@@ -87,6 +124,8 @@ A variant is a systemd drop-in in `~/.config/systemd/user/lh-engine.service.d/` 
 | The gateway answers 502 `upstream_unavailable` or `/ready` is 503 | The tunnel or the engine is down | `curl 127.0.0.1:18000/health`; see the tunnel row above |
 | The gateway answers 401 `invalid_api_key` | The client's key has no digest in `gateway.toml` | `printf '%s' "$key" \| sha256sum` must match an entry; restart the gateway after editing |
 | `lh-gateway` exits at start: "another process is accepting on this socket" | A second gateway serves `gateway.sock` | Stop the other process; a socket file left by a crash is replaced automatically |
+| Some voice turns wait about 3 s before the agent answers | LiveKit's end-of-turn model is waiting its maximum endpointing delay | Link the `vad-turns` worker variant |
+| A caller run fails with "the agent never listened" | The worker is not registered ("registered worker" missing from its log), or LiveKit was restarted under it | `journalctl --user -u lh-voice-worker -n 50`; `systemctl --user restart lh-voice-worker` |
 
 ## Pausing
 
