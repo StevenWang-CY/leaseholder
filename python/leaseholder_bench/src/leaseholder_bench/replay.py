@@ -372,7 +372,11 @@ async def replay(
     trace_files = sorted(traces.glob("*.json"))
     if not trace_files:
         raise ValueError(f"no trace files (*.json) in {traces}")
-    limits = httpx.Limits(max_connections=None, max_keepalive_connections=None)
+    # Idle connections go before a server's keep-alive closes them (uvicorn's and so vLLM's default is
+    # 5 s, as httpx's own expiry), or a request after a think time of about 5 s can meet a closing one.
+    limits = httpx.Limits(
+        max_connections=None, max_keepalive_connections=None, keepalive_expiry=4.0
+    )
     timeout = httpx.Timeout(config.timeout, connect=10.0)
     out.parent.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient(timeout=timeout, limits=limits, transport=transport) as client:
