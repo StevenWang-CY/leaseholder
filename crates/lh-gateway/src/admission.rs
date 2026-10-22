@@ -174,6 +174,19 @@ pub(crate) struct Ticket {
 }
 
 impl Ticket {
+    /// Whether the policy may shed the request after admitting it: flow control sheds background requests.
+    pub fn sheddable(&self) -> bool {
+        self.class == SloClass::Background
+            && matches!(self.admission.policy, Policy::FlowControl { .. })
+    }
+
+    /// Completes when the request is shed.
+    pub async fn shed(&mut self) {
+        // The sender goes only after it sent Shed, or when the request leaves, which an admitted request does
+        // by dropping this ticket.
+        let _ = self.signal.wait_for(|signal| *signal == Signal::Shed).await;
+    }
+
     /// Waits until the request is admitted, for at most `queue_timeout_s`.
     async fn wait(&mut self) -> Result<(), Refusal> {
         if *self.signal.borrow() == Signal::Admitted {

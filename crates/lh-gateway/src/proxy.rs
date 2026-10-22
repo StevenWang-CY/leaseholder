@@ -222,13 +222,13 @@ pub(crate) async fn read_body(
 }
 
 /// Sends the request upstream and relays the response. An admitted request's ticket goes with the relay and
-/// is given back when the response ends.
+/// is given back when the response ends; a request shed before its response answers 429.
 async fn forward(
     app: &App,
     mut ex: Exchange,
     mut parts: http::request::Parts,
     body: UpstreamBody,
-    ticket: Option<Ticket>,
+    mut ticket: Option<Ticket>,
 ) -> Response {
     let shared = &app.shared;
     let path = parts.uri.path_and_query().cloned();
@@ -241,30 +241,38 @@ async fn forward(
 
     ex.forwarded = true;
     let timeout = shared.first_byte_timeout;
-    let response =
-        match tokio::time::timeout(timeout, shared.upstream.client.request(request)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(err)) => {
-                let kind = if err.is_connect() {
-                    UpstreamError::Connect
-                } else {
-                    UpstreamError::Request
-                };
-                shared.metrics.upstream_error(kind);
-                let mut message = format!("upstream request failed: {err}");
-                let mut source = err.source();
-                while let Some(cause) = source {
-                    message.push_str(&format!(": {cause}"));
-                    source = cause.source();
-                }
-                return ex.error(StatusCode::BAD_GATEWAY, "upstream_unavailable", message);
+    let response = tokio::time::timeout(timeout, shared.upstream.client.request(request));
+    let response = match &mut ticket {
+        Some(ticket) if ticket.sheddable() => tokio::select! {
+            response = response => response,
+            // Dropping the request future closes its connection, which aborts the engine request.
+            () = ticket.shed() => return ex.shed(),
+        },
+        _ => response.await,
+    };
+    let response = match response {
+        Ok(Ok(response)) => response,
+        Ok(Err(err)) => {
+            let kind = if err.is_connect() {
+                UpstreamError::Connect
+            } else {
+                UpstreamError::Request
+            };
+            shared.metrics.upstream_error(kind);
+            let mut message = format!("upstream request failed: {err}");
+            let mut source = err.source();
+            while let Some(cause) = source {
+                message.push_str(&format!(": {cause}"));
+                source = cause.source();
             }
-            Err(_) => {
-                shared.metrics.upstream_error(UpstreamError::Timeout);
-                let message = format!("no response headers from the upstream within {timeout:?}");
-                return ex.error(StatusCode::GATEWAY_TIMEOUT, "upstream_timeout", message);
-            }
-        };
+            return ex.error(StatusCode::BAD_GATEWAY, "upstream_unavailable", message);
+        }
+        Err(_) => {
+            shared.metrics.upstream_error(UpstreamError::Timeout);
+            let message = format!("no response headers from the upstream within {timeout:?}");
+            return ex.error(StatusCode::GATEWAY_TIMEOUT, "upstream_timeout", message);
+        }
+    };
 
     let (mut parts, upstream_body) = response.into_parts();
     strip_hop_by_hop(&mut parts.headers);
@@ -289,7 +297,8 @@ async fn forward(
     Response::from_parts(parts, Body::new(body))
 }
 
-/// Relays an upstream body into the client's channel until either side ends.
+/// Relays an upstream body into the client's channel until either side ends, or until the admission policy
+/// sheds the request.
 async fn pump(
     mut upstream: Incoming,
     frames: mpsc::Sender<Bytes>,
@@ -297,13 +306,15 @@ async fn pump(
     mut ex: Exchange,
     mut scanner: Scanner,
     stall_timeout: Duration,
-    ticket: Option<Ticket>,
+    mut ticket: Option<Ticket>,
 ) {
     let _active = ex.class.map(|class| ex.metrics().stream_started(class));
+    let sheddable = ticket.as_ref().is_some_and(Ticket::sheddable);
     let outcome = loop {
         let frame = tokio::select! {
             biased;
             () = frames.closed() => break Outcome::Cancelled,
+            () = shed(&mut ticket), if sheddable => break Outcome::Shed,
             frame = upstream.frame() => frame,
         };
         let data = match frame {
@@ -325,7 +336,12 @@ async fn pump(
                 TrySendError::Full(data) => data,
                 TrySendError::Closed(_) => break Outcome::Cancelled,
             };
-            match tokio::time::timeout(stall_timeout, frames.send(data)).await {
+            let sent = tokio::select! {
+                biased;
+                () = shed(&mut ticket), if sheddable => break Outcome::Shed,
+                sent = tokio::time::timeout(stall_timeout, frames.send(data)) => sent,
+            };
+            match sent {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => break Outcome::Cancelled,
                 Err(_) => break Outcome::Stalled,
@@ -333,7 +349,7 @@ async fn pump(
         }
         scanner.feed(&scanned);
     };
-    if matches!(outcome, Outcome::Stalled | Outcome::Error) {
+    if matches!(outcome, Outcome::Stalled | Outcome::Error | Outcome::Shed) {
         aborted.store(true, Ordering::Release);
     }
     // An unfinished upstream body closes its connection when dropped, which aborts the engine request.
@@ -346,6 +362,14 @@ async fn pump(
         drop(ticket);
     }
     ex.finish(outcome);
+}
+
+/// Completes when the admission policy sheds the request.
+async fn shed(ticket: &mut Option<Ticket>) {
+    match ticket {
+        Some(ticket) => ticket.shed().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The body of an upstream request. Its first poll happens when hyper writes the request to a pooled
@@ -393,8 +417,8 @@ impl http_body::Body for UpstreamBody {
 #[derive(Debug)]
 struct ClientBody {
     frames: mpsc::Receiver<Bytes>,
-    /// Set by the pump before it stops on a stall or an upstream error, so the client sees an error instead of
-    /// a clean end: a truncated response must not look complete.
+    /// Set by the pump before it stops on a stall, an upstream error or a shed, so the client sees an error
+    /// instead of a clean end: a truncated response must not look complete.
     aborted: Arc<AtomicBool>,
 }
 

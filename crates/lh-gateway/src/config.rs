@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use http::uri::{Authority, Scheme, Uri};
 use lh_core::FROZEN_BOX_POOL_TOKENS;
-use lh_core::admission::Policy;
+use lh_core::admission::{Ceilings, Policy};
 use lh_proto::SloClass;
 use serde::Deserialize;
 
@@ -208,8 +208,17 @@ struct RawAdmission {
     background_max_in_flight: Option<u32>,
     pool_tokens: Option<u64>,
     reserved_tokens: Option<u64>,
+    ceilings: Option<RawCeilings>,
     queue_limit: Option<usize>,
     queue_timeout_s: Option<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCeilings {
+    realtime: u32,
+    interactive: u32,
+    background: u32,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -219,6 +228,7 @@ enum PolicyName {
     None,
     StaticCap,
     TokenReservation,
+    FlowControl,
 }
 
 impl PolicyName {
@@ -227,6 +237,7 @@ impl PolicyName {
             Self::None => "none",
             Self::StaticCap => "static-cap",
             Self::TokenReservation => "token-reservation",
+            Self::FlowControl => "flow-control",
         }
     }
 }
@@ -383,6 +394,7 @@ impl RawAdmission {
                 "queue_limit",
                 "queue_timeout_s",
             ],
+            PolicyName::FlowControl => &["ceilings", "queue_limit", "queue_timeout_s"],
         };
         let set = [
             (
@@ -391,6 +403,7 @@ impl RawAdmission {
             ),
             ("pool_tokens", self.pool_tokens.is_some()),
             ("reserved_tokens", self.reserved_tokens.is_some()),
+            ("ceilings", self.ceilings.is_some()),
             ("queue_limit", self.queue_limit.is_some()),
             ("queue_timeout_s", self.queue_timeout_s.is_some()),
         ];
@@ -425,6 +438,30 @@ impl RawAdmission {
                 Policy::TokenReservation {
                     pool_tokens,
                     reserved_tokens,
+                }
+            }
+            PolicyName::FlowControl => {
+                let RawCeilings {
+                    realtime,
+                    interactive,
+                    background,
+                } = self.ceilings.ok_or_else(|| needs("ceilings"))?;
+                if background == 0 {
+                    return Err("admission.ceilings must be positive".into());
+                }
+                if realtime < interactive || interactive < background {
+                    return Err(
+                        "admission.ceilings must not increase from realtime to background: the lower \
+                         classes are held back first"
+                            .into(),
+                    );
+                }
+                Policy::FlowControl {
+                    ceilings: Ceilings {
+                        realtime,
+                        interactive,
+                        background,
+                    },
                 }
             }
         };
@@ -679,6 +716,18 @@ mod tests {
             (reservation.queue_limit, reservation.queue_timeout),
             (8, Duration::from_secs(290))
         );
+        let flow = admission(
+            "policy = \"flow-control\"\nceilings = { realtime = 16, interactive = 12, background = 8 }",
+        )
+        .unwrap()
+        .admission
+        .unwrap();
+        let ceilings = Ceilings {
+            realtime: 16,
+            interactive: 12,
+            background: 8,
+        };
+        assert_eq!(flow.policy, Policy::FlowControl { ceilings });
 
         for (keys, cause) in [
             ("policy = \"static_cap\"", "unknown variant"),
@@ -708,6 +757,19 @@ mod tests {
                 "must be less than pool_tokens (36400)",
             ),
             ("polcy = \"none\"", "unknown field"),
+            ("policy = \"flow-control\"", "flow-control needs ceilings"),
+            (
+                "policy = \"flow-control\"\nceilings = { realtime = 8, background = 4 }",
+                "missing field `interactive`",
+            ),
+            (
+                "policy = \"flow-control\"\nceilings = { realtime = 4, interactive = 8, background = 4 }",
+                "must not increase",
+            ),
+            (
+                "policy = \"flow-control\"\nceilings = { realtime = 4, interactive = 4, background = 0 }",
+                "must be positive",
+            ),
         ] {
             let err = admission(keys).unwrap_err();
             assert!(err.contains(cause), "{keys}: {err}");

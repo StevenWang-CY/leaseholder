@@ -94,7 +94,7 @@ impl Exchange {
         };
         let body = serde_json::json!({"error": {"message": message, "type": kind, "code": code}});
         if self.forwarded {
-            self.outcome = Some(Outcome::Error);
+            self.outcome.get_or_insert(Outcome::Error);
         }
         self.error = Some(message);
         self.respond(status, &body)
@@ -106,6 +106,17 @@ impl Exchange {
             StatusCode::UNAUTHORIZED,
             "invalid_api_key",
             "missing or unknown API key",
+        )
+    }
+
+    /// The 429 for a request the admission policy shed before its response began: its place went to a
+    /// stricter class.
+    pub fn shed(mut self) -> Response {
+        self.outcome = Some(Outcome::Shed);
+        self.error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "shed",
+            "shed by the admission policy to make room for a stricter class",
         )
     }
 

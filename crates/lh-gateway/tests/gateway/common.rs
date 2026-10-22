@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 pub const AGENTS_KEY: &str = "agents-key";
 pub const BENCH_KEY: &str = "bench-key";
 
-/// A request header naming the request, for [`Mock::tags`].
+/// A request header naming the request, for [`Mock::tags`] and [`Mock::dropped`].
 pub const TAG: &str = "x-mock-tag";
 /// A request header that makes the mock engine hold a JSON answer until [`Mock::release`].
 pub const GATE: &str = "x-mock-gate";
@@ -77,22 +77,26 @@ struct MockState {
     healthy: AtomicBool,
     /// The permits gated answers wait for, granted in the order they began to wait.
     gate: Semaphore,
-    dropped: mpsc::UnboundedSender<Instant>,
+    dropped: mpsc::UnboundedSender<(Instant, Option<String>)>,
 }
 
 /// An in-process engine on 127.0.0.1.
 pub struct Mock {
     pub addr: SocketAddr,
     state: Arc<MockState>,
-    dropped: mpsc::UnboundedReceiver<Instant>,
+    dropped: mpsc::UnboundedReceiver<(Instant, Option<String>)>,
 }
 
-/// Sends the time it is dropped: held by a response body, or by a handler that has not answered yet.
-struct DropSignal(mpsc::UnboundedSender<Instant>);
+/// Sends the time it is dropped, with the request's tag: held by a response body, or by a handler that has
+/// not answered yet.
+struct DropSignal(
+    mpsc::UnboundedSender<(Instant, Option<String>)>,
+    Option<String>,
+);
 
 impl Drop for DropSignal {
     fn drop(&mut self) {
-        let _ = self.0.send(Instant::now());
+        let _ = self.0.send((Instant::now(), self.1.take()));
     }
 }
 
@@ -153,6 +157,21 @@ impl Mock {
             .await
             .expect("the mock engine's response was not dropped in time")
             .unwrap()
+            .0
+    }
+
+    /// When the response of the request tagged `tag` was dropped; drops of other requests are skipped.
+    pub async fn dropped(&mut self, tag: &str, within: Duration) -> Instant {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let (at, dropped) = tokio::time::timeout_at(deadline, self.dropped.recv())
+                .await
+                .unwrap_or_else(|_| panic!("the response of {tag} was not dropped in time"))
+                .unwrap();
+            if dropped.as_deref() == Some(tag) {
+                return at;
+            }
+        }
     }
 
     /// Lets `n` gated answers go on, the longest waiting first.
@@ -206,8 +225,10 @@ async fn models(State(state): State<Arc<MockState>>, request: Request) -> &'stat
 }
 
 async fn answer(State(state): State<Arc<MockState>>, request: Request) -> Response {
-    let gated = request.headers().contains_key(GATE);
-    let guard = DropSignal(state.dropped.clone());
+    let headers = request.headers();
+    let tag = headers.get(TAG).map(|v| v.to_str().unwrap().to_owned());
+    let gated = headers.contains_key(GATE);
+    let guard = DropSignal(state.dropped.clone(), tag);
     state.record(request).await;
     match state.script.clone() {
         Script::Json(json) => {

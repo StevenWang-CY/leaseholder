@@ -55,10 +55,19 @@ pub(crate) enum Outcome {
     Stalled,
     /// The upstream failed: no connection, no response headers in time, or a broken body.
     Error,
+    /// The admission policy shed it to make room for a stricter class; the gateway cancelled the upstream
+    /// request.
+    Shed,
 }
 
 impl Outcome {
-    const ALL: [Self; 4] = [Self::Completed, Self::Cancelled, Self::Stalled, Self::Error];
+    const ALL: [Self; 5] = [
+        Self::Completed,
+        Self::Cancelled,
+        Self::Stalled,
+        Self::Error,
+        Self::Shed,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -66,6 +75,7 @@ impl Outcome {
             Self::Cancelled => "cancelled",
             Self::Stalled => "stalled",
             Self::Error => "error",
+            Self::Shed => "shed",
         }
     }
 }

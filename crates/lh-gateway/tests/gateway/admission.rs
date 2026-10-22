@@ -1,6 +1,9 @@
-//! The admission point: caps, queues, timeouts and token reservations.
+//! The admission point: caps, queues, timeouts, token reservations and flow control.
 
 use std::time::{Duration, Instant};
+
+use bytes::Bytes;
+use http_body_util::BodyExt;
 
 use crate::common::*;
 
@@ -197,4 +200,123 @@ async fn token_reservation_admits_background_while_its_estimate_fits() {
         assert_eq!(reply.await.unwrap().status, 200);
     }
     assert_eq!(mock.tags(), ["bg1", "bg2", "s1", "bg3", "s2"]);
+}
+
+/// An interactive request of the agents tenant, named `tag`, whose answer the mock engine holds.
+fn interactive(tag: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        AGENTS_AUTH,
+        ("x-lh-class", "interactive"),
+        (TAG, tag),
+        (GATE, "1"),
+    ]
+}
+
+/// A realtime request on the voice socket, named `tag`; its answer is held only if `gated`.
+fn realtime(tag: &'static str, gated: bool) -> Vec<(&'static str, &'static str)> {
+    let mut headers = vec![(TAG, tag)];
+    if gated {
+        headers.push((GATE, "1"));
+    }
+    headers
+}
+
+fn flow_control(realtime: u32, interactive: u32, background: u32) -> String {
+    format!(
+        "[admission]\npolicy = \"flow-control\"\n\
+         ceilings = {{ realtime = {realtime}, interactive = {interactive}, background = {background} }}"
+    )
+}
+
+#[tokio::test]
+async fn flow_control_dispatches_bands_strictly_and_each_in_arrival_order() {
+    let mock = Mock::start(Script::Json("{}")).await;
+    let gw = Gateway::start(mock.addr, &flow_control(1, 1, 1)).await;
+    let mut replies = vec![spawn_call(&gw.tcp, interactive("int0"), CHAT)];
+    mock.await_requests(1).await;
+    // Arrivals in this order, all held behind int0: nothing in flight can be shed for the realtime request.
+    let waiting = |class| format!("lh_gateway_admission_waiting{{class=\"{class}\"}}");
+    let queued = [
+        (&gw.tcp, background("bg1"), "background", 1.0),
+        (&gw.tcp, interactive("int1"), "interactive", 1.0),
+        (&gw.unix, realtime("rt1", true), "realtime", 1.0),
+        (&gw.tcp, background("bg2"), "background", 2.0),
+        (&gw.tcp, interactive("int2"), "interactive", 2.0),
+    ];
+    for (target, headers, class, count) in queued {
+        replies.push(spawn_call(target, headers, CHAT));
+        gw.await_metric(&waiting(class), count).await;
+    }
+    for n in 2..=6 {
+        mock.release(1);
+        mock.await_requests(n).await;
+    }
+    assert_eq!(mock.tags(), ["int0", "rt1", "int1", "int2", "bg1", "bg2"]);
+    mock.release(1);
+    for reply in replies {
+        assert_eq!(reply.await.unwrap().status, 200);
+    }
+}
+
+#[tokio::test]
+async fn flow_control_sheds_the_newest_background_request_for_a_blocked_realtime_one() {
+    let mut mock = Mock::start(Script::Json("{}")).await;
+    let gw = Gateway::start(mock.addr, &flow_control(2, 2, 2)).await;
+    let older = spawn_call(&gw.tcp, background("bg1"), CHAT);
+    mock.await_requests(1).await;
+    let newer = spawn_call(&gw.tcp, background("bg2"), CHAT);
+    mock.await_requests(2).await;
+
+    // Two in flight: the realtime request takes the newest background request's place at once.
+    let voice = spawn_call(&gw.unix, realtime("rt", false), CHAT);
+    let shed = newer.await.unwrap();
+    assert_eq!(shed.status, 429);
+    assert_eq!(shed.json()["error"]["code"], "shed");
+    mock.dropped("bg2", Duration::from_secs(2)).await;
+    assert_eq!(voice.await.unwrap().status, 200);
+    assert_eq!(mock.tags(), ["bg1", "bg2", "rt"]);
+
+    mock.release(1);
+    assert_eq!(older.await.unwrap().status, 200);
+    let outcome = |outcome| {
+        format!("lh_gateway_request_outcomes_total{{class=\"background\",outcome=\"{outcome}\"}}")
+    };
+    gw.await_metric(&outcome("shed"), 1.0).await;
+    gw.await_metric(&outcome("completed"), 1.0).await;
+}
+
+#[tokio::test]
+async fn a_shed_stream_is_cut_off_with_an_error() {
+    let chunks: Vec<Bytes> = (0..5)
+        .map(|i| Bytes::from(format!("data: {i}\n\n")))
+        .collect();
+    let mut mock = Mock::start(Script::Sse {
+        chunks,
+        gap: Duration::from_millis(100),
+    })
+    .await;
+    let gw = Gateway::start(mock.addr, &flow_control(1, 1, 1)).await;
+    let headers = [AGENTS_AUTH, (TAG, "bg")];
+    let (response, _connection) =
+        open(&gw.tcp, "POST", "/v1/chat/completions", &headers, CHAT).await;
+    assert_eq!(response.status(), 200);
+    let mut body = response.into_body();
+    body.frame().await.unwrap().unwrap();
+
+    let voice = spawn_call(&gw.unix, realtime("rt", false), CHAT);
+    let end = loop {
+        match body.frame().await {
+            Some(Ok(_)) => continue,
+            Some(Err(_)) => break "error",
+            None => break "clean end",
+        }
+    };
+    assert_eq!(end, "error", "a shed stream must not look complete");
+    mock.dropped("bg", Duration::from_secs(2)).await;
+    assert_eq!(voice.await.unwrap().status, 200);
+    gw.await_metric(
+        "lh_gateway_request_outcomes_total{class=\"background\",outcome=\"shed\"}",
+        1.0,
+    )
+    .await;
 }
