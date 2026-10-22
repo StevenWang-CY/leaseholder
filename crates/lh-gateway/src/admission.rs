@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use lh_core::admission::{self, Action, Policy, QueueFull, RequestId, SessionUsage};
+use lh_core::admission::{self, Action, Policy, RequestId, SessionUsage};
 use lh_proto::{SessionId, SloClass};
 use tokio::sync::watch;
 
@@ -69,53 +69,54 @@ impl Admission {
         session: &SessionId,
         body_bytes: usize,
     ) -> Result<Option<Ticket>, Refusal> {
-        let arrived = Instant::now();
         if !self.policy.holds(class) {
             self.metrics.admitted(class, Duration::ZERO);
             return Ok(None);
         }
-        let mut ticket = {
+        // Background requests are priced where a policy counts their tokens: token-reservation admits by them,
+        // and preempt-resubmit counts those its preemptions discard.
+        let priced = matches!(
+            self.policy,
+            Policy::TokenReservation { .. } | Policy::PreemptResubmit
+        );
+        let estimated =
+            (priced && class == SloClass::Background).then(|| (session.clone(), body_bytes as u64));
+        // Every held request takes the lock, so what can be done before it is. Most requests are admitted at
+        // once, so only one that waits has its signal changed under the lock.
+        let (sender, signal) = watch::channel(Signal::Admitted);
+        let (id, tokens) = {
             let mut state = self.lock();
-            // Background requests are priced where a policy counts their tokens: token-reservation admits by
-            // them, and preempt-resubmit counts those its preemptions discard.
-            let priced = matches!(
-                self.policy,
-                Policy::TokenReservation { .. } | Policy::PreemptResubmit
-            );
-            let estimated = (priced && class == SloClass::Background)
-                .then(|| (session.clone(), body_bytes as u64));
             let tokens = estimated.as_ref().map_or(0, |(session, body_bytes)| {
                 state.sessions.estimate(session, *body_bytes)
             });
-            let arrival = match state.core.arrive(class, tokens) {
-                Ok(arrival) => arrival,
-                Err(QueueFull) => {
-                    self.metrics.refused(class, Refusal::QueueFull);
-                    return Err(Refusal::QueueFull);
-                }
+            let Ok(arrival) = state.core.arrive(class, tokens) else {
+                drop(state);
+                self.metrics.refused(class, Refusal::QueueFull);
+                return Err(Refusal::QueueFull);
             };
-            let signal = if arrival.admitted {
-                Signal::Admitted
-            } else {
-                Signal::Waiting
-            };
-            let (sender, signal) = watch::channel(signal);
+            if !arrival.admitted {
+                sender.send_replace(Signal::Waiting);
+            }
             state.signals.insert(arrival.id, sender);
             state.apply(arrival.actions);
-            Ticket {
-                admission: Arc::clone(self),
-                id: arrival.id,
-                class,
-                signal,
-                tokens,
-                estimated,
-                prompt_tokens: None,
-                first_byte: false,
-                left: false,
-            }
+            (arrival.id, tokens)
         };
+        let mut ticket = Ticket {
+            admission: Arc::clone(self),
+            id,
+            class,
+            signal,
+            tokens,
+            estimated,
+            waited: Duration::ZERO,
+            prompt_tokens: None,
+            first_byte: false,
+            left: false,
+        };
+        let queued = Instant::now();
         ticket.wait().await?;
-        self.metrics.admitted(class, arrived.elapsed());
+        ticket.waited = queued.elapsed();
+        self.metrics.admitted(class, ticket.waited);
         Ok(Some(ticket))
     }
 
@@ -151,11 +152,12 @@ impl State {
         }
     }
 
-    /// A request leaves the admission point, which may admit others.
-    fn leave(&mut self, id: RequestId) {
-        self.signals.remove(&id);
+    /// A request leaves the admission point, which may admit others. Returns the request's signal, for the
+    /// caller to drop once it has let go of the lock.
+    fn leave(&mut self, id: RequestId) -> Option<watch::Sender<Signal>> {
         let actions = self.core.leave(id);
         self.apply(actions);
+        self.signals.remove(&id)
     }
 }
 
@@ -171,6 +173,8 @@ pub(crate) struct Ticket {
     /// The session and body size of a request whose tokens were estimated: its usage informs the next
     /// estimate for the session.
     estimated: Option<(SessionId, u64)>,
+    /// How long the request waited to be admitted.
+    waited: Duration,
     /// The prompt tokens the response reported.
     pub prompt_tokens: Option<u64>,
     /// Whether the response's first byte has been recorded.
@@ -180,6 +184,11 @@ pub(crate) struct Ticket {
 }
 
 impl Ticket {
+    /// How long the request waited to be admitted, after the decision that made it wait.
+    pub fn waited(&self) -> Duration {
+        self.waited
+    }
+
     /// Whether the policy may shed the request after admitting it: flow control sheds background requests.
     pub fn sheddable(&self) -> bool {
         self.class == SloClass::Background
@@ -248,7 +257,9 @@ impl Ticket {
         if !state.core.is_waiting(self.id) {
             return Ok(());
         }
-        state.leave(self.id);
+        let signal = state.leave(self.id);
+        drop(state);
+        drop(signal);
         self.left = true;
         self.admission.metrics.refused(self.class, Refusal::Timeout);
         Err(Refusal::Timeout)
@@ -262,15 +273,17 @@ impl Drop for Ticket {
         }
         let mut state = self.admission.lock();
         if let (Some((session, body_bytes)), Some(prompt_tokens)) =
-            (self.estimated.take(), self.prompt_tokens)
+            (&self.estimated, self.prompt_tokens)
         {
             let usage = SessionUsage {
                 prompt_tokens,
-                body_bytes,
+                body_bytes: *body_bytes,
             };
             state.sessions.observe(session, usage);
         }
-        state.leave(self.id);
+        let signal = state.leave(self.id);
+        drop(state);
+        drop(signal);
     }
 }
 
@@ -287,8 +300,8 @@ impl Sessions {
         admission::estimate_tokens(body_bytes, self.usage.get(session).copied())
     }
 
-    fn observe(&mut self, session: SessionId, usage: SessionUsage) {
-        if let Some(last) = self.usage.get_mut(&session) {
+    fn observe(&mut self, session: &SessionId, usage: SessionUsage) {
+        if let Some(last) = self.usage.get_mut(session) {
             *last = usage;
             return;
         }
@@ -298,7 +311,7 @@ impl Sessions {
             self.usage.remove(&earliest);
         }
         self.order.push_back(session.clone());
-        self.usage.insert(session, usage);
+        self.usage.insert(session.clone(), usage);
     }
 }
 
@@ -315,7 +328,7 @@ mod tests {
         };
         for n in 0..=SESSIONS {
             let session = SessionId::new(format!("s-{n}")).unwrap();
-            sessions.observe(session, usage(n as u64 + 1));
+            sessions.observe(&session, usage(n as u64 + 1));
         }
         assert_eq!(sessions.usage.len(), SESSIONS);
         let first = SessionId::new("s-0").unwrap();
@@ -323,7 +336,7 @@ mod tests {
         // Forgotten: a quarter token per byte again.
         assert_eq!(sessions.estimate(&first, 400), 100);
         assert_eq!(sessions.estimate(&last, 400), SESSIONS as u64 + 1);
-        sessions.observe(last.clone(), usage(7));
+        sessions.observe(&last, usage(7));
         assert_eq!(sessions.estimate(&last, 800), 107);
     }
 }

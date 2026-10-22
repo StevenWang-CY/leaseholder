@@ -132,19 +132,23 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let session = &*ex.session.insert(session);
 
-    // The admission point. Time spent waiting there is not the gateway's overhead.
+    // The admission point. Its decisions are the gateway's overhead; the time a request waits there is not.
     let mut start = read;
     let ticket = match &shared.admission {
         None => None,
         Some(admission) => {
             let arrived = Instant::now();
-            let admitted = admission.admit(class, session, body.json.len()).await;
-            let wait = arrived.elapsed();
-            ex.admission_wait = Some(wait);
-            start += wait;
-            match admitted {
-                Ok(ticket) => ticket,
-                Err(refusal) => return ex.refused(refusal),
+            match admission.admit(class, session, body.json.len()).await {
+                Ok(ticket) => {
+                    let waited = ticket.as_ref().map_or(Duration::ZERO, Ticket::waited);
+                    ex.admission_wait = Some(waited);
+                    start += waited;
+                    ticket
+                }
+                Err(refusal) => {
+                    ex.admission_wait = Some(arrived.elapsed());
+                    return ex.refused(refusal);
+                }
             }
         }
     };
