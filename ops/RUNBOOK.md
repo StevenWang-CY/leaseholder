@@ -4,8 +4,19 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 
 | Host | Units | Ports (all loopback) |
 |---|---|---|
-| Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (bound by lh-node; the engine connects to it), KV-event replay 5558 |
+| Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (bound by `lh-node` from W3; the engine connects to it), KV-event replay 5558 |
 | cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker` | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only |
+
+**Cores on cyan** (48 threads):
+
+| Cores | Used by |
+|---|---|
+| 0–7 | The control plane (`lh-gateway`) |
+| 8–15 | agentic-api and tools |
+| 16–31 | Load generators: AIPerf on 16–23, `lh-bench` on 16–31, callers on 24–31 |
+| 32–47 | The voice plane: LiveKit and the worker |
+
+The `lh-gateway` and `lh-voice-worker` units set their own affinity and load generators run under `taskset`; `lh-livekit` sets none.
 
 ## Deploy
 
@@ -20,7 +31,7 @@ deploy/deploy.sh cyan.cis.upenn.edu
 **First time on a host:**
 1. Enable lingering: `loginctl enable-linger $USER`.
 2. Run its bootstrap:
-   - Phastform: `deploy/phastform/bootstrap.sh` builds `~/leaseholder/venvs/{engine,tts}` from the lock files, plus the Kokoro checkout and the JIT caches.
+   - Phastform: `deploy/phastform/bootstrap.sh` builds `~/leaseholder/venvs/{engine,tts}` from the lock files, plus the Kokoro checkout, the FlashInfer JIT workspace and the curand header links.
    - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key. Write the tunnel's SSH target to `~/.config/leaseholder/tunnel-phastform.env` as `LH_TUNNEL_TARGET=<user>@<gpu node>`.
 3. Authorize the tunnel key on each GPU node: `deploy/authorize-tunnel.sh cyan.cis.upenn.edu phastform.cis.upenn.edu`. The entry may forward only the listed loopback ports, with no shell. Re-running the script replaces the entry.
 4. On cyan, install the gateway:
@@ -49,7 +60,7 @@ A unit counts as started only once its server answers its health endpoint (`wait
 
 ## The gateway
 
-`lh-gateway` serves the OpenAI routes, `/v1/events` and its own endpoints on 127.0.0.1:18080 (API key required) and on `/run/user/$UID/lh/gateway.sock` (the voice plane, no key). Its configuration reference and metrics list are in [crates/lh-gateway/README.md](../crates/lh-gateway/README.md).
+`lh-gateway` serves the OpenAI routes and `/v1/events` on 127.0.0.1:18080, with an API key, and on `/run/user/$UID/lh/gateway.sock`, the voice plane's way in, without one. Its own `/health`, `/ready` and `/metrics` need no key. Its configuration reference and metrics list are in the [`lh-gateway` README](../crates/lh-gateway/README.md).
 
 ```sh
 curl -s 127.0.0.1:18080/health                    # the process is up
@@ -73,7 +84,7 @@ journalctl --user -u lh-voice-worker -f          # JSON logs; "registered worker
 ```
 
 **Worker variants** are drop-ins linked into `~/.config/systemd/user/lh-voice-worker.service.d/`, followed by `systemctl --user daemon-reload` and a restart:
-- `deploy/cyan/variants/vad-turns/lh-voice-worker.conf` sets fixed endpointing (`LH_TURN_DETECTION=vad`). Every experiment runs with it: LiveKit's end-of-turn model waits its 3 s maximum on about one synthesized turn in six.
+- `deploy/cyan/variants/vad-turns/lh-voice-worker.conf` sets fixed endpointing (`LH_TURN_DETECTION=vad`). Every experiment runs with it, because LiveKit's end-of-turn model waits its 3 s maximum on some synthesized turns ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 - An `Environment=LH_LLM_UDS=%t/lh/phastform-engine.sock` drop-in sends the LLM straight to the engine, bypassing the gateway.
 
 **Measurement callers.** Render the corpus once with the TTS server. The callers run inside the namespace:
@@ -85,15 +96,6 @@ taskset -c 24-31 ~/leaseholder/src/deploy/bin/in-voicenet ~/leaseholder/venvs/vo
   --corpus ~/leaseholder/data/callers --callers 2 --turns 25 --barge-in 0.25 --out ~/leaseholder/runs/<run>/bots
 ```
 
-**Cores on cyan** (48 threads):
-
-| Cores | Used by |
-|---|---|
-| 0–7 | The control plane (`lh-gateway`) |
-| 8–15 | agentic-api and tools |
-| 16–31 | Load generators: AIPerf on 16–23, `lh-bench` on 16–31, callers on 24–31 |
-| 32–47 | The voice plane: LiveKit and the worker |
-
 ## Engine variants
 
 A variant is a systemd drop-in in `~/.config/systemd/user/lh-engine.service.d/` that overrides `ExecStart` with extra flags. Flags on the command line take precedence over `deploy/phastform/engine.yaml`.
@@ -101,7 +103,7 @@ A variant is a systemd drop-in in `~/.config/systemd/user/lh-engine.service.d/` 
 - **Remove:** delete the link and repeat.
 - **Example:** `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check this way and always restores the frozen configuration.
 
-A variant that spans several units lives in `deploy/phastform/variants/<name>/` and is switched as a whole: `deploy/phastform/variant.sh on mps` links its drop-ins and restarts the box, and `variant.sh off mps` restores the frozen configuration. `mps` runs all three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS](../docs/BENCHMARKS.md)).
+A variant that spans several units lives in `deploy/phastform/variants/<name>/` and is switched as a whole: `deploy/phastform/variant.sh on mps` links its drop-ins and restarts the box, and `variant.sh off mps` restores the frozen configuration. `mps` runs all three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 
 ## Checks before heavy work on a shared host
 
