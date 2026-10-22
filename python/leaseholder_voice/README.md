@@ -12,7 +12,7 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 | `leaseholder_voice.bots` | Measurement callers (`lh-voice bots`): voice-to-voice latency, barge-in to silence |
 | `leaseholder_voice.callers` | The caller corpus (`lh-voice render-callers`): scripted lines in six stock Kokoro voices, 16 kHz WAVs |
 | `leaseholder_voice.audio` | A real-time microphone track and the agent's speech spans, on one clock |
-| `leaseholder_voice.protocol` | `X-Session-ID` and `X-LH-Class` names, `room_session_id(room_sid)`, `realtime_headers(session_id)` |
+| `leaseholder_voice.protocol` | The agent name `leaseholder-voice`, the `X-Session-ID` and `X-LH-Class` names, `room_session_id(room_sid)`, `realtime_headers(session_id)` |
 | `leaseholder_voice.plugins` | `make_stt`, `make_llm`, `make_tts`, `openai_client` |
 
 ## The voice agent

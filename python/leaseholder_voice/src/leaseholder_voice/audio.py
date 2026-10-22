@@ -7,12 +7,10 @@ microphone to the agent's audio carries no clock offset.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 from livekit import rtc
@@ -23,11 +21,6 @@ AGENT_RATE = 24_000
 AGENT_SPEECH_RMS = 0.02
 """Agent audio at or above this RMS (of full scale) counts as speech."""
 AGENT_STATE = "lk.agent.state"
-
-
-def emit(event: str, **fields: Any) -> None:
-    """One JSON line on stdout, stamped with ``time.monotonic()``."""
-    print(json.dumps({"event": event, "t": time.monotonic(), **fields}), flush=True)
 
 
 @dataclass
@@ -187,7 +180,7 @@ def agents(room: rtc.Room) -> list[rtc.RemoteParticipant]:
     ]
 
 
-async def until(condition: Any, timeout: float, what: str) -> None:
+async def until(condition: Callable[[], bool], timeout: float, what: str) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
         if time.monotonic() > deadline:

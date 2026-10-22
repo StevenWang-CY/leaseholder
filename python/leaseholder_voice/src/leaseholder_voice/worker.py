@@ -44,9 +44,8 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import silero
 
 from . import plugins
-from .protocol import room_session_id
+from .protocol import AGENT_NAME, room_session_id
 
-AGENT_NAME = "leaseholder-voice"
 BASE_URL = "http://lh.invalid/v1"
 """Requests go over the Unix sockets; the host name never resolves."""
 

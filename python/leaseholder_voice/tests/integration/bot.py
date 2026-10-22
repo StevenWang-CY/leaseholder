@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import time
@@ -17,7 +18,12 @@ from typing import Any
 
 from livekit import rtc
 
-from leaseholder_voice.audio import AGENT_STATE, AgentAudio, Clip, Microphone, agents, emit, until
+from leaseholder_voice.audio import AGENT_STATE, AgentAudio, Clip, Microphone, agents, until
+
+
+def emit(event: str, **fields: Any) -> None:
+    """One JSON line on stdout, stamped with ``time.monotonic()``."""
+    print(json.dumps({"event": event, "t": time.monotonic(), **fields}), flush=True)
 
 
 async def scenario(args: argparse.Namespace) -> None:

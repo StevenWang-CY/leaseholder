@@ -27,12 +27,12 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from livekit import api, rtc
 
 from .audio import AGENT_STATE, AgentAudio, Clip, Microphone, agents, until
-from .worker import AGENT_NAME
+from .protocol import AGENT_NAME
 
 QUIET_S = 1.0
 """Agent silence that ends its reply."""
@@ -128,7 +128,7 @@ class Caller:
         await audio.silent_after(time.monotonic(), QUIET_S, config.reply_timeout * 2)
         return row
 
-    async def call(self, rows: list[dict[str, Any]], log: Any) -> None:
+    async def call(self, rows: list[dict[str, Any]], log: TextIO) -> None:
         config = self.config
         tasks: set[asyncio.Task[None]] = set()
 

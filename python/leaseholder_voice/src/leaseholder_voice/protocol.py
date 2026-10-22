@@ -1,8 +1,12 @@
-"""Headers the voice worker sends to the Leaseholder control plane."""
+"""Names the voice plane shares: the headers the worker sends to the Leaseholder control plane,
+and the agent name that callers dispatch."""
 
 from __future__ import annotations
 
 import re
+
+AGENT_NAME = "leaseholder-voice"
+"""The LiveKit agent name the worker registers and the callers' join tokens dispatch."""
 
 SESSION_ID_HEADER = "X-Session-ID"
 """Routing, accounting and tracing key of one conversation (lh-proto: ``x-session-id``)."""
