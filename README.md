@@ -50,20 +50,20 @@ The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Status
 
-Week 0 of a 12-week plan.
+Week 1 of a 12-week plan.
 
 | Component | State |
 |---|---|
 | Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Deployed**; paused when idle ([deploy/phastform](deploy/phastform)) |
-| Control host: restricted SSH tunnels, LiveKit in a network namespace with no route out | **Deployed** ([deploy/cyan](deploy/cyan)) |
+| Control host: restricted SSH tunnels, `lh-gateway`, and LiveKit with the voice agent in a network namespace with no route out | **Deployed** ([deploy/cyan](deploy/cyan)) |
 | `lh-proto`: lifecycle events, headers, engine lease hint, ledger rows, with JSON Schemas | **v0** ([crates/lh-proto](crates/lh-proto)) |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0**. CPU-tested against vLLM's real offload manager; live-checked on the GPU |
-| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison | **v0**. Replays the 32× corpus against the frozen box (688 requests, 0 errors) |
-| `leaseholder_voice`: LiveKit plugin factory, barge-in and header integration test | **v0**. The barge-in test passes on cyan: the LLM stream closes 0.58 s after onset when interrupting on speech, 2.19 s with stock handling |
-| `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest, metrics | **v0** ([crates/lh-gateway](crates/lh-gateway)). Measured in-process against a direct call: 0.04 ms added at p50 for one client, at most 0.82 ms at p99 with 64 concurrent streams |
+| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison, tier and voice-turn probes | **v0**. Measured E0 and the server-side voice turn on the frozen box; replays the 32× corpus against it (688 requests, 0 errors) |
+| `leaseholder_voice`: the voice agent (`lh-voice-worker`), measurement callers that read latency from waveforms (`lh-voice bots`), LiveKit plugin factory, barge-in test | **v0**. Voice alone: 1,614 ms voice-to-voice p50, 1,760 ms p95. Beside a 16-session agent replay, p95 rises to 2,312 ms, the problem E2 takes on |
+| `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest, metrics | **v0, deployed on cyan** ([crates/lh-gateway](crates/lh-gateway)). Carries the voice agent and the agent replay without errors; adds 0.4 ms to a voice request's first token, paired against the engine's own socket |
 | `lh-core`: the tier cost model and KV geometry | **v0** ([crates/lh-core](crates/lh-core)) |
 | `lh-sim`: the agent replay through a model of vLLM's two-tier KV cache, with stock arms, a clairvoyant reference and miss-ratio curves | **v0** ([crates/lh-sim](crates/lh-sim)). Driven by W0's measured request times, it reproduces the engine's GPU and CPU hit shares within half a point; the full corpus simulates in 6 s on one core |
-| `lh-node` | W1 |
+| `lh-node` | W3 |
 
 The experiments are planned in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The headline is E2: the voice SLO frontier against tuned stock vLLM while background agents harvest the GPU.
 
@@ -88,13 +88,14 @@ deploy/deploy.sh cyan.cis.upenn.edu
 ## Repository layout
 
 ```text
-crates/lh-proto/          wire types and their JSON Schemas (lh-node joins in W1)
+crates/lh-proto/          wire types and their JSON Schemas (lh-node joins in W3)
 crates/lh-core/           the tier cost model and KV geometry, shared by the simulator and the gateway
 crates/lh-gateway/        the gateway in front of vLLM, with its overhead benchmark
 crates/lh-sim/            the KV cache simulator: AIPerf's replay, vLLM's two tiers, policy arms
 python/leaseholder_vllm/  engine-side plugins for vLLM 0.32, with CPU tests and a live GPU check
-python/leaseholder_bench/ trace conversion, AIPerf plugins and configs, live-reply replay driver
-python/leaseholder_voice/ LiveKit Agents integration and its hermetic barge-in test
+python/leaseholder_bench/ trace conversion, AIPerf plugins and configs, live-reply replay driver, latency probes
+python/leaseholder_voice/ the voice agent, measurement callers, LiveKit integration and its hermetic barge-in test
+benchmarks/               runs against upstream projects, with their scripts (agentic-api's HTTP baseline)
 deploy/                   per-host bootstrap, systemd units, tunnels, smoke test
 ops/                      runbook (dashboards and alert rules arrive with the control plane)
 docs/                     architecture, protocol, SLOs, experiments, benchmarks, prior art, ADRs
