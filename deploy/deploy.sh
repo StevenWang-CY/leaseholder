@@ -8,6 +8,6 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 ssh=${LH_SSH:-ssh}
 [[ -d $repo/deploy/$name ]] || { echo "deploy: no deploy/$name directory" >&2; exit 2; }
 $ssh "$host" mkdir -p leaseholder/src
-rsync -a --delete -e "$ssh" --exclude .git --exclude target --exclude __pycache__ --exclude '*.egg-info' \
+rsync -a --delete -e "$ssh" --exclude .git --exclude .claude --exclude target --exclude __pycache__ --exclude '*.egg-info' \
   --exclude .venv --exclude .pytest_cache --exclude .ruff_cache "$repo/" "$host:leaseholder/src/"
 $ssh "$host" "bash leaseholder/src/deploy/$name/install.sh"

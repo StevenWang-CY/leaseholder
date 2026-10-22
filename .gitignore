@@ -17,7 +17,8 @@ dist/
 *.parquet
 *.log
 
-# Editors and OS
+# Editors, OS and agent worktrees
 .DS_Store
 .idea/
 .vscode/
+/.claude/
