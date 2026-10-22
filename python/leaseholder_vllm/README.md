@@ -37,6 +37,6 @@ The offload manager and its policies are plain Python, so the tests run without 
 VLLM_SRC=~/src/vllm-v0.32.0 uv run --extra test pytest      # in python/leaseholder_vllm
 ```
 
-Without `VLLM_SRC` the tests use the installed vLLM (the engine environment on a GPU node), and they skip when neither is available.
+Without `VLLM_SRC` the tests use the installed vLLM (the engine environment on a GPU node), and they skip when neither is available. `tests/test_pr54530.py` builds the `pr54530` engine variant ([`deploy/phastform/variants`](../../deploy/phastform/variants)) from the same checkout's scheduler and checks that it changes nothing but the PR's lines.
 
 The live check runs on the GPU node against the running engine. `tests/live/run.sh` links the `engine-check.conf` drop-in into `lh-engine` (the frozen configuration with `LeaseConnector` and a recording `LeasePolicy`), restarts the engine, runs `tests/live/test_live_engine.py`, and restores the frozen configuration, also on failure. It checks that the hint reaches both plugins, that `X-Session-ID` reaches the GPU-tier KV events and the hint, and that a CPU restore shows up in the hit receipt.
