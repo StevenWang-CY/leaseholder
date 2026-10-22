@@ -18,7 +18,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 - **Workload.**
   - 2–4 voice callers through LiveKit (`lh-voice bots`): scripted lines with known end-of-speech times, barging in on 0% or 25% of turns; then a calls-per-GPU sweep to the knee.
   - 0–24 background agent sessions, replayed closed-loop from the Claude Code traces.
-- **Placements.** Audio co-located on the 16 GB card (the edge pattern, as in NVIDIA's single-GPU voice-agent profile). On the datacenter anchor, audio runs off the GPU.
+- **Placements.** Audio co-located on the 16 GB card (the edge pattern, as in NVIDIA's single-GPU voice-agent profile).
 
 | # | Arm | Represents |
 |---|---|---|
@@ -49,7 +49,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 
 **Volume.** 500–1,000 turns per arm; at least five repeats in the discriminating scenario, reported per run.
 
-**Datacenter anchor.** The same stack on an L4 or L40S (arms 1, 4, the best stock arm and 9) and 2–3 H100 points with an 8B-class model and traces scaled 4× or less.
+**Other hardware.** There is no datacenter GPU in this project. E2 runs on the frozen box, and a second RTX 5060 Ti in booked windows adds dedicate vs pool. What transfers is stated in hardware-free terms: each arm's behavior against KV pressure, π and ρ, and the engine logic (a waiting request cannot preempt running work under KV pressure on any GPU). `lh-sim` places L4 and H100 configurations on the same map from cost fits built from published specifications, labeled as modeled.
 
 ## E1: parking
 
