@@ -21,6 +21,7 @@ import asyncio
 import math
 import platform
 import random
+import statistics
 import time
 from collections import defaultdict
 from collections.abc import Sequence
@@ -156,12 +157,10 @@ class TierProbe:
         return rows
 
 
-def _linear(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float]:
-    """Least-squares intercept and slope."""
-    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-    sxx = sum((x - mx) ** 2 for x in xs)
-    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True)) / sxx if sxx else 0.0
-    return my - slope * mx, slope
+def _line(tokens: Sequence[float], ms: Sequence[float]) -> dict[str, float]:
+    """The least-squares line through (tokens, ms): an intercept in ms and a slope per token."""
+    fit = statistics.linear_regression(tokens, ms)
+    return {"ms": round(fit.intercept, 2), "us_per_token": round(fit.slope * 1000, 3)}
 
 
 def _quadratic(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float, float]:
@@ -199,12 +198,10 @@ def summarize_samples(samples: Sequence[Sample]) -> dict[str, Any]:
     fits: dict[str, Any] = {}
     for tier in ("gpu", "cpu"):
         if len(p50[tier]) >= 2:
-            a, b = _linear(list(p50[tier]), list(p50[tier].values()))
-            fits[tier] = {"ms": round(a, 2), "us_per_token": round(b * 1000, 3)}
+            fits[tier] = _line(list(p50[tier]), list(p50[tier].values()))
     common = sorted(set(p50["gpu"]) & set(p50["cpu"]))
     if len(common) >= 2:
-        a, b = _linear(common, [p50["cpu"][n] - p50["gpu"][n] for n in common])
-        fits["cpu_over_gpu"] = {"ms": round(a, 2), "us_per_token": round(b * 1000, 3)}
+        fits["cpu_over_gpu"] = _line(common, [p50["cpu"][n] - p50["gpu"][n] for n in common])
     if len(p50["recompute"]) >= 3:
         a, b, c = _quadratic(list(p50["recompute"]), list(p50["recompute"].values()))
         fits["recompute"] = {

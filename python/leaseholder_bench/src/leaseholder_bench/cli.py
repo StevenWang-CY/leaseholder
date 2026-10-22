@@ -92,7 +92,7 @@ def _tiers(args: argparse.Namespace) -> int:
     config = TiersConfig(
         url=args.url,
         model=args.model,
-        lengths=parse_lengths(args.lengths),
+        lengths=args.lengths,
         reps=args.reps,
         background=args.background,
         decode_tokens=args.decode_tokens,
@@ -283,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     tiers.add_argument("--model", default=DEFAULT_MODEL, help="model name (default %(default)s)")
     tiers.add_argument(
         "--lengths",
+        type=parse_lengths,
         default="1024,2048,4096,8192,16384,24576,31744",
         help="comma-separated prompt lengths in tokens (default %(default)s)",
     )
