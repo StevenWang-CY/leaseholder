@@ -27,6 +27,14 @@ from leaseholder_bench.kv_metrics import Histogram, Labels, metric_samples, samp
 from leaseholder_bench.load import summarize
 
 FIRST_BYTE = "lh_gateway_first_byte_seconds"
+OUTCOMES = "lh_gateway_request_outcomes_total"
+"""By class and outcome; ``shed`` is a request the admission point gave up for a stricter class."""
+REFUSED = "lh_gateway_admission_refused_total"
+RESUBMITS = "lh_gateway_admission_resubmits_total"
+DISCARDED = "lh_gateway_admission_discarded_tokens_total"
+"""The prompt tokens of the attempts preempt-resubmit dropped: at most the prefill they discarded."""
+USAGE = "lh_gateway_usage_tokens_total"
+"""Tokens from response usage, by class and kind, counted as each response ends."""
 
 
 def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) -> dict[str, Any]:
@@ -44,7 +52,7 @@ def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) ->
         "window_s": round(end - start, 1),
         "voice": {key: bots[key] for key in voice},
         "background": background(records, start, end) if agents else None,
-        "gateway": gateway_counts(*gateway),
+        "gateway": gateway_counts(*gateway, end - start),
         "engine": engine_counts(*engine),
     }
 
@@ -86,10 +94,11 @@ def background(records: Path, start: float, end: float) -> dict[str, Any]:
     }
 
 
-def gateway_counts(before: str, after: str) -> dict[str, Any]:
-    """The gateway's realtime first byte and its counters over the window. Shed, refused and
-    resubmitted add up the admission policies' ``*_shed_total``, ``*_refused_total`` and
-    ``*_resubmitted_total`` counters; every counter that moved is listed under ``counters``."""
+def gateway_counts(before: str, after: str, seconds: float) -> dict[str, Any]:
+    """The gateway's realtime first byte, what its admission point shed, refused and resubmitted, and
+    its own count of the background tokens served over the window of ``seconds``; every counter that
+    moved is listed under ``counters``. The admission counts are null for a gateway without an
+    admission point, the background rate for one without usage counters."""
     names = {name for name, _, _ in metric_samples(after) if name.startswith("lh_gateway_")}
     counters = {
         name: deltas(before, after, name, "gateway") or {}
@@ -97,15 +106,25 @@ def gateway_counts(before: str, after: str) -> dict[str, Any]:
         if name.endswith("_total")
     }
 
-    def added(suffix: str) -> int | None:
-        matching = [sum(c.values()) for name, c in counters.items() if name.endswith(suffix)]
-        return round(sum(matching)) if matching else None
+    def total(name: str, match: Mapping[str, str]) -> int | None:
+        if name not in counters:
+            return None
+        return round(sum(v for k, v in counters[name].items() if dict(k).items() >= match.items()))
 
+    admission = REFUSED in counters  # its series exist from the gateway's start
+    prompt = total(USAGE, {"class": "background", "kind": "prompt"})
+    completion = total(USAGE, {"class": "background", "kind": "completion"})
     return {
         "realtime_first_byte_ms": histogram_ms(before, after, FIRST_BYTE, {"class": "realtime"}),
-        "shed": added("_shed_total"),
-        "refused": added("_refused_total"),
-        "resubmitted": added("_resubmitted_total"),
+        "shed": total(OUTCOMES, {"outcome": "shed"}) if admission else None,
+        "refused": total(REFUSED, {}),
+        "resubmitted": total(RESUBMITS, {}),
+        "discarded_tokens": total(DISCARDED, {}),
+        "background_tokens_per_s": (
+            None
+            if prompt is None or completion is None
+            else round((prompt + completion) / seconds, 1)
+        ),
         "counters": {
             _series(name, labels): round(value)
             for name, series in counters.items()
@@ -212,8 +231,11 @@ COLUMNS = (
     "shed",
     "refused",
     "resubmitted",
+    "gateway_background_tokens_per_s",
 )
-"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms."""
+"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. Refused
+adds up the gateway's admission point and the engine's queue limits; the gateway's own count of the
+background tokens it served checks AIPerf's goodput."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -259,9 +281,16 @@ def _row(run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
         "realtime_first_byte_p95_ms": gateway["realtime_first_byte_ms"].get("p95"),
         "engine_preemptions": engine["preemptions"],
         "shed": gateway["shed"],
-        "refused": gateway["refused"],
+        "refused": _added(gateway["refused"], *(engine["refused"] or {}).values()),
         "resubmitted": gateway["resubmitted"],
+        "gateway_background_tokens_per_s": gateway["background_tokens_per_s"],
     }
+
+
+def _added(*counts: int | None) -> int | None:
+    """The sum of the counts that were measured; None when none was."""
+    measured = [c for c in counts if c is not None]
+    return sum(measured) if measured else None
 
 
 def mark_frontier(rows: Sequence[dict[str, Any]]) -> None:
@@ -305,7 +334,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "",
         "Background goodput (prompt and completion tokens per second of the agent requests that "
         "completed during the calls) against voice-to-voice latency in ms. • marks the points on "
-        "their arm's frontier.",
+        "their arm's frontier. Refused counts the gateway's admission point and the engine's queue "
+        "limits; — is a count the point's gateway or engine does not keep.",
     ]
     header = (
         "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "

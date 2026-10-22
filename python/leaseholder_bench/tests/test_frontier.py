@@ -65,9 +65,15 @@ lh_gateway_first_byte_seconds_bucket{class="background",le="0.1"} 0
 lh_gateway_first_byte_seconds_bucket{class="background",le="0.5"} 0
 lh_gateway_first_byte_seconds_bucket{class="background",le="+Inf"} 50
 lh_gateway_request_outcomes_total{class="background",outcome="completed"} 40
-lh_gateway_admission_shed_total{class="background"} 0
+lh_gateway_request_outcomes_total{class="background",outcome="shed"} 0
+lh_gateway_usage_tokens_total{class="background",kind="prompt"} 1000
+lh_gateway_usage_tokens_total{class="background",kind="completion"} 10
+lh_gateway_usage_tokens_total{class="background",kind="cached"} 0
+lh_gateway_usage_tokens_total{class="realtime",kind="prompt"} 5
 lh_gateway_admission_refused_total{class="background",reason="queue_full"} 1
 lh_gateway_admission_refused_total{class="background",reason="timeout"} 0
+lh_gateway_admission_resubmits_total{class="background"} 0
+lh_gateway_admission_discarded_tokens_total{class="background"} 0
 """
 GATEWAY_AFTER = """\
 lh_gateway_first_byte_seconds_bucket{class="realtime",le="0.1"} 18
@@ -78,14 +84,20 @@ lh_gateway_first_byte_seconds_bucket{class="background",le="0.1"} 0
 lh_gateway_first_byte_seconds_bucket{class="background",le="0.5"} 0
 lh_gateway_first_byte_seconds_bucket{class="background",le="+Inf"} 90
 lh_gateway_request_outcomes_total{class="background",outcome="completed"} 140
-lh_gateway_admission_shed_total{class="background"} 3
+lh_gateway_request_outcomes_total{class="background",outcome="shed"} 3
+lh_gateway_usage_tokens_total{class="background",kind="prompt"} 101000
+lh_gateway_usage_tokens_total{class="background",kind="completion"} 2010
+lh_gateway_usage_tokens_total{class="background",kind="cached"} 50000
+lh_gateway_usage_tokens_total{class="realtime",kind="prompt"} 505
 lh_gateway_admission_refused_total{class="background",reason="queue_full"} 3
 lh_gateway_admission_refused_total{class="background",reason="timeout"} 4
+lh_gateway_admission_resubmits_total{class="background"} 5
+lh_gateway_admission_discarded_tokens_total{class="background"} 2500
 """
 
 
 def test_the_gateway_counts_cover_the_window() -> None:
-    cell = gateway_counts(GATEWAY_BEFORE, GATEWAY_AFTER)
+    cell = gateway_counts(GATEWAY_BEFORE, GATEWAY_AFTER, 100.0)
     # Realtime only: 8 of 10 within 100 ms, 2 more within 500 ms.
     assert cell["realtime_first_byte_ms"] == {
         "n": 10,
@@ -94,17 +106,40 @@ def test_the_gateway_counts_cover_the_window() -> None:
         "p95": 400.0,
         "p99": 480.0,
     }
-    assert (cell["shed"], cell["refused"], cell["resubmitted"]) == (3, 6, None)
-    assert cell["counters"] == {
-        'lh_gateway_admission_refused_total{class="background",reason="queue_full"}': 2,
-        'lh_gateway_admission_refused_total{class="background",reason="timeout"}': 4,
-        'lh_gateway_admission_shed_total{class="background"}': 3,
-        'lh_gateway_request_outcomes_total{class="background",outcome="completed"}': 100,
-    }
+    assert (cell["shed"], cell["refused"], cell["resubmitted"]) == (3, 6, 5)
+    assert cell["discarded_tokens"] == 2500
+    assert cell["background_tokens_per_s"] == 1020.0  # prompt and completion, background only
+    assert (
+        cell["counters"]['lh_gateway_request_outcomes_total{class="background",outcome="shed"}']
+        == 3
+    )
+    assert (
+        'lh_gateway_admission_refused_total{class="background",reason="timeout"}'
+        in cell["counters"]
+    )
+    assert len(cell["counters"]) == 10  # every counter series that moved
     restarted = GATEWAY_AFTER.replace('completed"} 140', 'completed"} 2')
     with pytest.raises(ValueError, match="went down during the calls: the gateway restarted"):
-        gateway_counts(GATEWAY_BEFORE, restarted)
-    assert gateway_counts("", "")["realtime_first_byte_ms"] == {"n": 0}
+        gateway_counts(GATEWAY_BEFORE, restarted, 100.0)
+
+
+def test_a_gateway_without_an_admission_point_counts_none_of_its_outcomes() -> None:
+    before, after = (
+        "\n".join(
+            line for line in text.splitlines() if "admission" not in line and "shed" not in line
+        )
+        for text in (GATEWAY_BEFORE, GATEWAY_AFTER)
+    )
+    cell = gateway_counts(before, after, 100.0)
+    assert (cell["shed"], cell["refused"], cell["resubmitted"], cell["discarded_tokens"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert cell["background_tokens_per_s"] == 1020.0
+    empty = gateway_counts("", "", 100.0)
+    assert empty["realtime_first_byte_ms"] == {"n": 0} and empty["background_tokens_per_s"] is None
 
 
 ENGINE = """\
@@ -175,8 +210,9 @@ def point(
             "shed": None,
             "refused": 2,
             "resubmitted": None,
+            "background_tokens_per_s": tokens_per_s,
         },
-        "engine": {"preemptions": 4},
+        "engine": {"preemptions": 4, "refused": {"max_num_queued_tokens": 1}},
     }
     if status == "complete":
         (run_dir / "summary.json").write_text(json.dumps(summary))
@@ -230,10 +266,12 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
         rows = list(csv.DictReader(f))
     assert [r["point"] for r in rows] == ["a2-s8", "a10-mps"]  # arm 2 before arm 10
     assert rows[0]["v2v_p95_ms"] == "2000" and rows[0]["frontier"] == "True"
+    assert rows[0]["refused"] == "3"  # 2 by the gateway's admission point, 1 by the engine
+    assert rows[0]["gateway_background_tokens_per_s"] == "3000"
     table = (out / "frontier.md").read_text()
     assert "## Arm 2" in table and "## Arm 10" in table
     assert "| a2-s8: a2-s8 label | • | 16 | 3,000 | 3.00 | 1,600 | 2,000 | 2,500 |" in table
-    assert "| 140 / 8,000 | 4 | — / 2 / — |" in table
+    assert "| 140 / 8,000 | 4 | — / 3 / — |" in table
     assert main(["e2", "report", str(dirs[2]), "--out", str(out)]) == 1
 
 
@@ -268,6 +306,7 @@ def test_a_point_summary_reads_its_run_directory(tmp_path: Path) -> None:
         (run_dir / "metrics" / f"engine-{when}.prom").write_text("")
     summary = summarize_point(run_dir, T0, T0 + 321.04, agents=False)
     assert summary["window_s"] == 321.0 and summary["background"] is None
+    assert summary["gateway"]["background_tokens_per_s"] == 317.7  # 102,000 tokens over the window
     assert summary["voice"] == {k: bots[k] for k in summary["voice"]}
     assert summary["engine"]["preemptions"] is None
     bots["v2v_ms"] = {"n": 0}
