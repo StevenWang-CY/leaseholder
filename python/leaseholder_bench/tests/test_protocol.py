@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -12,25 +14,31 @@ from leaseholder_bench.protocol import (
     SloClass,
 )
 
+LH_PROTO = Path(__file__).resolve().parents[3] / "crates/lh-proto"
+
 
 def test_wire_names_match_lh_proto():
-    assert SESSION_HEADER == "X-Session-ID"
-    assert CLASS_HEADER == "X-LH-Class"
-    assert [c.value for c in SloClass] == ["realtime", "interactive", "background"]
+    headers = dict(re.findall(r'pub const (\w+): &str = "([^"]*)";', _source("headers.rs")))
+    assert SESSION_HEADER.lower() == headers["SESSION_ID"]
+    assert CLASS_HEADER.lower() == headers["CLASS"]
+    schema = json.loads((LH_PROTO / "schema/engine_lease_hint.schema.json").read_text())
+    classes = [variant["const"] for variant in schema["$defs"]["SloClass"]["oneOf"]]
+    assert [c.value for c in SloClass] == classes
 
 
-def test_class_to_vllm_priority_mapping():
-    # lh-proto SloClass::engine_priority; vLLM schedules lower values first.
-    assert dict(ENGINE_PRIORITY) == {
-        SloClass.REALTIME: 0,
-        SloClass.INTERACTIVE: 1,
-        SloClass.BACKGROUND: 2,
+def test_class_to_vllm_priority_mapping_matches_lh_proto():
+    # SloClass::engine_priority; vLLM schedules lower values first.
+    source = _source("class.rs")
+    arms = source[source.index("fn engine_priority") :].split("}", 1)[0]
+    priorities = {
+        name.lower(): int(value) for name, value in re.findall(r"Self::(\w+) => (\d+)", arms)
     }
-    assert sorted(SloClass, key=ENGINE_PRIORITY.__getitem__) == [
-        SloClass.REALTIME,
-        SloClass.INTERACTIVE,
-        SloClass.BACKGROUND,
-    ]
+    assert {c.value: p for c, p in ENGINE_PRIORITY.items()} == priorities
+    assert sorted(SloClass, key=ENGINE_PRIORITY.__getitem__) == list(SloClass)
+
+
+def _source(name: str) -> str:
+    return (LH_PROTO / "src" / name).read_text()
 
 
 def test_agent_replay_defaults_to_background():
