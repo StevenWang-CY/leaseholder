@@ -1,4 +1,4 @@
-"""The ``lh-bench`` command line: ``scale-traces``, ``replay`` and ``mock-server``."""
+"""The ``lh-bench`` command line: ``scale-traces``, ``replay``, ``mock-server`` and ``kv-metrics``."""
 
 from __future__ import annotations
 
@@ -71,6 +71,17 @@ def _mock(args: argparse.Namespace) -> int:
     args.log.parent.mkdir(parents=True, exist_ok=True)
     with args.log.open("ab") as log:
         serve(args.port, log, **options)
+    return 0
+
+
+def _kv_metrics(args: argparse.Namespace) -> int:
+    from leaseholder_bench.kv_metrics import compare, fetch
+
+    if args.action == "snapshot":
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(fetch(args.url))
+        return 0
+    print(compare(args.before.read_text(), args.after.read_text()))
     return 0
 
 
@@ -160,6 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
     mock.add_argument("--itl-ms", type=float, default=2.0)
     mock.add_argument("--max-tokens", type=int, default=64, help="cap on streamed tokens")
     mock.set_defaults(func=_mock)
+
+    kv = commands.add_parser(
+        "kv-metrics",
+        help="snapshot vLLM's /metrics, or compare KV block lifecycle histograms across a run",
+        description="Snapshot an engine's /metrics before and after a run, then compare vLLM's "
+        "KV block reuse-gap, idle-before-evict and lifetime histograms over that interval "
+        "(the engine needs --kv-cache-metrics).",
+    )
+    actions = kv.add_subparsers(dest="action", required=True)
+    snap = actions.add_parser("snapshot", help="save the exposition at URL to a file")
+    snap.add_argument("url", help="metrics URL, e.g. http://127.0.0.1:8000/metrics")
+    snap.add_argument("out", type=Path)
+    cmp_ = actions.add_parser("compare", help="report the histograms between two snapshots")
+    cmp_.add_argument("before", type=Path)
+    cmp_.add_argument("after", type=Path)
+    kv.set_defaults(func=_kv_metrics)
     return parser
 
 

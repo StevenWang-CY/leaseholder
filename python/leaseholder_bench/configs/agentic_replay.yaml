@@ -24,6 +24,10 @@ benchmark:
     streaming: true
     timeout: 300.0
     useServerTokenCount: true  # trust the server's usage counts instead of tokenizing on the client
+    # Decode each turn's recorded output length. Without it the model stops at its own EOS after a few
+    # tokens and the replay carries a fraction of the trace's decode work (measured 2026-10-22).
+    extra:
+      ignore_eos: true
   dataset:
     type: file
     path: "${LH_BENCH_DATA:data/weka-x32}"  # a directory written by `lh-bench scale-traces`

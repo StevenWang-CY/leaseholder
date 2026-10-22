@@ -16,6 +16,7 @@ def test_agentic_replay_template_defaults(tmp_path, monkeypatch):
     assert benchmark.endpoint.urls == [DEFAULT_URL]
     assert benchmark.endpoint.type == "leaseholder_chat"
     assert benchmark.get_model_names() == [DEFAULT_MODEL]
+    assert benchmark.endpoint.extra == {"ignore_eos": True}  # decode the trace's output lengths
     dataset = benchmark.get_default_dataset()
     assert dataset.format == "weka_trace_scaled"
     assert dataset.use_think_time_only is True
