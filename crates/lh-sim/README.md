@@ -107,7 +107,16 @@ Three sequences: the 32× replay; the same admission order with every prompt cut
 
 ## Runtime
 
-On one core of an Apple M5 Max (release build): the validation run, all four arms, takes 0.36 s, and `mrc` 1.35 s. The full corpus (393 traces, 98,827 requests, 1.7 GB of JSON) replayed once with all 393 traces live at once takes 5.9 s for `lru-cpu`, about 2.5 s of it reading and planning the traces, with a peak resident set of 650 MB. Played through 16 recycling lanes, all four arms take 10.2 s together, with a 1.6 GB peak while the clairvoyant pass holds the full timeline.
+Release builds, one core each, on the full corpus (393 traces, 98,827 requests, 1.7 GB of JSON). The full-corpus runs use `--duration 100000000 --grace 0 --max-sessions 393 --start-max 0`, so every trace plays once from its start.
+
+| Run | Apple M5 Max | cyan: Xeon Silver 4310 at 2.1 GHz, Linux (`taskset -c 20`) |
+|---|---|---|
+| The validation run, all four arms | 0.36 s | 0.53 s, 108 MB |
+| `mrc` | 1.35 s | — |
+| All 393 traces live at once, `lru-cpu` | 5.9 s, 650 MB (about 2.5 s of it reading and planning the traces) | 15.2 s, 293 MB |
+| Through 16 recycling lanes, all four arms | 10.2 s, 1.6 GB (the clairvoyant pass holds the full timeline) | 29.7 s, 1.36 GB |
+
+The two machines produce identical results for every arm of all three runs: request counts and the token counts by source.
 
 ## Tests
 

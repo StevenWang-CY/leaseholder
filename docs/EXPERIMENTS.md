@@ -10,6 +10,8 @@ Four questions decide whether Leaseholder earns its place in front of stock vLLM
 | — | **Reliability drills** | Node loss, an engine killed mid-stream, CPU-tier exhaustion, control-plane restart: each produces a recovery time |
 
 E0 comes first. It re-measures the tier cost model on the frozen box and checks that `lh-sim` reproduces 2–3 GPU operating points within 10–15% on resume TTFT and recompute.
+- **Cost model: done in W1.** The table and fits are in [BENCHMARKS.md](BENCHMARKS.md), and `lh-core` carries them.
+- **Simulator: in progress.** Its engine model matches the W0 replay's GPU and CPU shares within half a point when driven by the measured request times. Its own replay still runs at the idle box's speed, so the TTFT check waits for a contention model (W2).
 
 ## E2: voice under agent load
 
