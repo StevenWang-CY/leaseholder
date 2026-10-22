@@ -36,6 +36,7 @@ from typing import IO, Any
 import httpx
 import orjson
 
+from leaseholder_bench.load import summarize
 from leaseholder_bench.protocol import SessionTagger
 from leaseholder_bench.traces import common_prefix_len
 
@@ -348,13 +349,14 @@ class Replayer:
 
     def summary(self) -> str:
         ok = [s for s in self.stats if s.ok]
-        ttfts = sorted(s.ttft_ms for s in ok if s.ttft_ms is not None)
+        ttft = summarize(s.ttft_ms for s in ok if s.ttft_ms is not None)
         prompt = sum(s.prompt_tokens for s in ok)
         cached = sum(s.cached_tokens for s in ok)
-        lines = [f"requests: {len(self.stats)} ok, {len(self.stats) - len(ok)} failed"]
-        if ttfts:
-            p50, p99 = (ttfts[min(len(ttfts) - 1, int(q * len(ttfts)))] for q in (0.5, 0.99))
-            lines.append(f"ttft_ms: p50 {p50:.1f}, p99 {p99:.1f}")
+        lines = [f"requests: {len(ok)} ok, {len(self.stats) - len(ok)} failed"]
+        if ttft["n"]:
+            lines.append(
+                f"ttft_ms: p50 {ttft['p50']:.1f}, p95 {ttft['p95']:.1f}, p99 {ttft['p99']:.1f}"
+            )
         if prompt:
             lines.append(f"cached prompt tokens: {cached}/{prompt} ({cached / prompt:.1%})")
         return "\n".join(lines)

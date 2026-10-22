@@ -30,20 +30,18 @@ def random_prompt(rng: random.Random, tokens: int) -> list[int]:
     return [rng.randrange(_TOKEN_LOW, _TOKEN_HIGH) for _ in range(tokens)]
 
 
+PERCENTILES = (10, 50, 90, 95, 99)
+"""Reported by :func:`summarize`; the SLOs are set at p95 (docs/SLO.md)."""
+
+
 def summarize(values: Iterable[float]) -> dict[str, float | int]:
-    """Count, mean and p10/p50/p90/p99 of a sample (inclusive interpolation)."""
+    """Count, mean and :data:`PERCENTILES` of a sample (inclusive interpolation)."""
     xs = sorted(values)
     if not xs:
         return {"n": 0}
     qs = [xs[0]] * 99 if len(xs) == 1 else statistics.quantiles(xs, n=100, method="inclusive")
-    return {
-        "n": len(xs),
-        "mean": round(statistics.fmean(xs), 2),
-        "p10": round(qs[9], 2),
-        "p50": round(qs[49], 2),
-        "p90": round(qs[89], 2),
-        "p99": round(qs[98], 2),
-    }
+    cell: dict[str, float | int] = {"n": len(xs), "mean": round(statistics.fmean(xs), 2)}
+    return cell | {f"p{p}": round(qs[p - 1], 2) for p in PERCENTILES}
 
 
 @dataclass(frozen=True)

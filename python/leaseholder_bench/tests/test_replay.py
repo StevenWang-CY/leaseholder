@@ -228,6 +228,22 @@ def test_failed_request_is_recorded_and_its_reply_not_fed_back():
     assert third[len(second) :] == [{"role": "user", "content": session.text(H[18:])}]
 
 
+def test_summary_counts_failed_requests_apart():
+    server = FakeServer(fail={1})
+    t = trace("t", [request(0, H[:10], 3), request(1, H[:18], 5), request(2, H, 2)])
+
+    async def run() -> str:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+            config = ReplayConfig(url="http://bench.test/v1/chat/completions")
+            replayer = Replayer(config, SessionTagger(), client, io.BytesIO())
+            await replayer.play(t)
+        return replayer.summary()
+
+    lines = asyncio.run(run()).splitlines()
+    assert lines[0] == "requests: 2 ok, 1 failed"
+    assert lines[1].startswith("ttft_ms: p50 ") and ", p95 " in lines[1]
+
+
 def test_error_inside_a_stream_counts_as_a_failure():
     def server(_: httpx.Request) -> httpx.Response:
         body = b'data: {"error": {"message": "engine died", "code": 500}}\n\ndata: [DONE]\n\n'

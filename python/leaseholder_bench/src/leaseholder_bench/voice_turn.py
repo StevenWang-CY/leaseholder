@@ -232,13 +232,13 @@ async def run_voice_turns(config: VoiceTurnConfig, out_dir: Path) -> dict[str, A
 
 
 def render(summary: dict[str, Any]) -> str:
-    rows = ["stage                    n     p50     p90     p99"]
+    quantiles = ("p50", "p90", "p95", "p99")
+    rows = [f"{'stage':<22} {'n':>3} " + " ".join(f"{q:>7}" for q in quantiles)]
     for stage in STAGES:
         cell = summary[stage]
         if cell.get("n"):
-            rows.append(
-                f"{stage:<22} {cell['n']:>3} {cell['p50']:>7.1f} {cell['p90']:>7.1f} {cell['p99']:>7.1f}"
-            )
+            values = " ".join(f"{cell[q]:>7.1f}" for q in quantiles)
+            rows.append(f"{stage:<22} {cell['n']:>3} {values}")
     if summary.get("background"):
         rows.append(f"background: {summary['background']}")
     return "\n".join(rows)
