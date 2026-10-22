@@ -1,4 +1,5 @@
-"""The ``lh-bench`` command line: trace scaling, replays, latency probes and engine metrics."""
+"""The ``lh-bench`` command line: trace scaling, replays, latency probes, engine metrics and E2
+points."""
 
 from __future__ import annotations
 
@@ -372,6 +373,38 @@ def _add_voice_turn(commands: Commands) -> None:
     turn.set_defaults(func=_voice_turn)
 
 
+def _e2(args: argparse.Namespace) -> int:
+    from leaseholder_bench.frontier import load_points, write_report
+
+    rows, incomplete = load_points(args.run_dirs)
+    for run_dir in incomplete:
+        print(f"lh-bench e2: {run_dir}: the point did not complete", file=sys.stderr)
+    if not rows:
+        print("lh-bench e2: no complete point to report", file=sys.stderr)
+        return 1
+    for path in write_report(rows, args.out):
+        print(path)
+    return 0
+
+
+def _add_e2(commands: Commands) -> None:
+    e2 = commands.add_parser(
+        "e2",
+        help="E2 points: build the frontier",
+        description="Place E2 points (voice-to-voice latency beside agent load) on the frontier of "
+        "background goodput against V2V p95.",
+    )
+    actions = e2.add_subparsers(dest="action", required=True)
+    report = actions.add_parser(
+        "report",
+        help="build the frontier from run directories",
+        description="Write frontier.csv, frontier.md and, with matplotlib, frontier.svg.",
+    )
+    report.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    report.add_argument("--out", type=Path, required=True, help="report directory")
+    e2.set_defaults(func=_e2)
+
+
 def _add_load_arguments(parser: argparse.ArgumentParser) -> None:
     """The background-load flags of the latency probes."""
     parser.add_argument(
@@ -403,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_kv_metrics,
         _add_tiers,
         _add_voice_turn,
+        _add_e2,
     ):
         add(commands)
     return parser
