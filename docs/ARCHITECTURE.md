@@ -52,7 +52,7 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 Gray: second RTX 5060 Ti, booked windows; same image; dedicate-vs-pool experiment, node-loss drill
-mustard: Prometheus · Grafana · datasets · run archive      yellow, red: simulator sweeps · Linux builds
+mustard: Prometheus · Grafana · datasets · run archive      peacock: Linux builds · simulator runs
 ```
 
 In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus and Grafana on mustard, and the Gray window are planned; the rest is deployed ([RUNBOOK.md](../ops/RUNBOOK.md)).
@@ -63,7 +63,7 @@ In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus
 | **Gray** | Second GPU node in booked windows, with the identical image: the equal-hardware dedicate-vs-pool experiment and the node-loss drill. Nothing on the critical path depends on it |
 | **cyan** | Control host: the control plane, agentic-api, LiveKit and its worker, the measurement callers and AIPerf, each on its own cores ([RUNBOOK.md](../ops/RUNBOOK.md)) |
 | **mustard** | Observability and datasets: Prometheus, Grafana, trace datasets, the run archive |
-| **yellow, red** | Simulator sweeps and Linux release builds |
+| **peacock** | Linux release builds (`lh-gateway`, `lh-sim`, agentic-api) and simulator runs |
 
 **Network and security** ([ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md)):
 - **Loopback and tunnels.** Every service binds loopback. Hosts reach each other only through SSH local forwards, run as `systemd --user` units, and the tunnel key may forward only the listed loopback ports.

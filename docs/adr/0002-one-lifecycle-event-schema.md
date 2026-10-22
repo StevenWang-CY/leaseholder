@@ -22,5 +22,5 @@ Separate mechanisms per workload would duplicate the prefetch and headroom logic
 
 - A tool return and a speech onset drive the same lease transitions and the same prefetch.
 - Adding a workload means emitting events, not adding a mechanism.
-- One example file, `crates/lh-proto/testdata/events.jsonl`, pins the wire format for both languages.
+- One example file, `crates/lh-proto/testdata/events.jsonl`, pins the wire format. The Rust tests read it; the Python emitters are to test against it once they send events (W3).
 - The schema is a public interface. Changes to it are additive, or they get a new event type.
