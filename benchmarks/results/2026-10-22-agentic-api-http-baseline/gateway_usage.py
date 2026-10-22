@@ -30,5 +30,5 @@ for name, t0, t1 in phases:
     secs = inside[-1][0] - inside[0][0]
     rss = max(s[2] for s in inside) / 1024
     print(
-        f"{name:<14} {secs:6.0f} s  gateway CPU {cpu_s:6.2f} s ({100 * cpu_s / secs:5.1f}% of one core)  peak RSS {rss:6.1f} MiB"
+        f"{name:<14} {secs:6.0f} s  agentic-api CPU {cpu_s:6.2f} s ({100 * cpu_s / secs:5.1f}% of one core)  peak RSS {rss:6.1f} MiB"
     )

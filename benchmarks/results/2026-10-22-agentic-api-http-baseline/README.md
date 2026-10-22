@@ -17,9 +17,9 @@ agentic-api's own `response_provider` benchmark, run against the frozen box. Arm
 | 10 | 6,099 / 10,949 | 6,102 / 10,953 | 6,094 / 10,977 | 6,072 / 10,945 | 6,097 / 10,975 | +1 ms |
 
 - **Task correctness.** 100%, 98% and 99% on every arm, except vLLM JSON at 90% with one session.
-- **Request size per turn.** 3.6–3.8 KB through the gateway, which holds the state, against 8.4 KB direct.
-- **Gateway resources.** About 5.5 ms of CPU per Responses round: 8.6 s for about 1,500 rounds in 71 s at 10 sessions per arm, 12% of one core. Peak RSS was 44–54 MiB (`gateway_usage.py` over `server-usage.txt`).
+- **Request size per turn.** 3.6–3.8 KB through agentic-api, which holds the state, against 8.4 KB direct.
+- **agentic-api's resources.** About 5.5 ms of CPU per Responses round: 8.6 s for about 1,500 rounds in 71 s at 10 sessions per arm, 12% of one core. Peak RSS was 44–54 MiB (`gateway_usage.py` over `server-usage.txt`).
 
 **History rehydration** (depths 1, 5, 10, 25). Every arm fails the recall at turn 2 with this 4B model: success is 100%, 40%, 20% and 8%, the same on every arm. It confirms equal behavior but needs a larger model to say anything about depth.
 
-This directory keeps each run's `summary.md` (and the history `depth_summary.md`), the campaign log, the script, and the usage analysis with its samples: `python gateway_usage.py .` prints the gateway resource numbers above. The per-turn `turns.csv` and `run.json` files (8 MB) are kept with the run archive.
+This directory keeps each run's `summary.md` (and the history `depth_summary.md`), the campaign log, the script, and the usage analysis with its samples: `python gateway_usage.py .` prints agentic-api's resource numbers above. The per-turn `turns.csv` and `run.json` files (8 MB) are kept with the run archive.

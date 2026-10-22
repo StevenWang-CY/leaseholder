@@ -27,7 +27,7 @@ kv-transfer-config:
     cache_policy_module_path: leaseholder_vllm.policy
 ```
 
-The frozen box ships the stock `OffloadingConnector` with LRU. The policy is switched on only where the simulator shows that CPU-tier eviction binds (PLAN gate G-sim).
+The frozen box ships the stock `OffloadingConnector` with LRU. The policy is switched on only where the simulator shows that CPU-tier eviction binds (the G-sim gate of [E1](../../docs/EXPERIMENTS.md#e1-parking)).
 
 ## Tests
 
