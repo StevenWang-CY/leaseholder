@@ -65,7 +65,7 @@ mustard: Prometheus · Grafana · datasets · run archive      yellow, red: simu
   - The tunnel key may forward only the listed loopback ports.
 - **The voice plane.** It runs in a network namespace with no route out: loopback plus one dummy interface (10.255.0.1/32) for libwebrtc to bind, which ignores loopback adapters. libwebrtc clients bind ICE sockets on every other interface, and a server-side `rtc` block cannot stop that.
 - **Sanitized inputs.** The control plane strips the client inputs that vLLM trusts (`X-Vllm-Priority`, `X-Session-ID`, `X-data-parallel-rank`, and the matching body fields) and sets its own.
-- **Cache isolation.** Each tenant's `cache_salt` is derived from its API key.
+- **Cache isolation.** Each tenant's `cache_salt` is derived from the tenant's name, so tenants never share prefix-cache entries and rotating a key keeps the cache.
 
 ## 3. Core model
 
@@ -73,7 +73,7 @@ The wire types are in [`crates/lh-proto`](../crates/lh-proto) and are described 
 
 ### 3.1 Sessions
 
-A session is one conversation, scoped to a tenant. The control plane resolves it from, in order: a trusted caller's `X-Session-ID`; `X-Claude-Code-Session-ID`; the OpenAI `prompt_cache_key`; the LiveKit room and participant; otherwise a minted id. The resolved id is the routing key, the accounting key and the OTel `gen_ai.conversation.id`.
+A session is one conversation, scoped to a tenant. The control plane resolves it from, in order: a trusted caller's `X-Session-ID` (the voice worker sends `voice-<room SID>`); `X-Claude-Code-Session-ID`; the OpenAI `prompt_cache_key`; otherwise a minted id. The resolved id is the routing key, the accounting key and the OTel `gen_ai.conversation.id`.
 
 ### 3.2 Lifecycle events
 
