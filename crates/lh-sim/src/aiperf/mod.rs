@@ -36,10 +36,6 @@ pub(crate) struct Req {
 impl Req {
     /// Interval end in seconds; a missing, negative or non-finite duration counts as zero.
     pub fn end(&self) -> f64 {
-        request_end(self.t, self.api)
+        self.t + self.api.filter(|a| a.is_finite()).unwrap_or(0.0).max(0.0)
     }
-}
-
-pub(crate) fn request_end(t: f64, api: Option<f64>) -> f64 {
-    t + api.filter(|a| a.is_finite()).unwrap_or(0.0).max(0.0)
 }

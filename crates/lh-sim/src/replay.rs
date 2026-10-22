@@ -124,7 +124,6 @@ pub struct TimelineRequest {
     /// Index into the run's records; `usize::MAX` for warmup requests and requests that did not
     /// complete in time.
     pub record: usize,
-    pub admitted_ns: u64,
     pub warmup: bool,
     /// Where the prompt comes from: the corpus trace, its conversation and turn, and the KV
     /// namespace (session play and model) its blocks were cut in.
@@ -166,7 +165,6 @@ pub struct ReplayOutput {
     pub stats: ReplayStats,
     pub engine: crate::engine::EngineStats,
     pub timeline: Option<Timeline>,
-    pub traces: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -474,22 +472,11 @@ impl<'a> Replay<'a> {
         self.stats.working_set_mean_tokens =
             self.ws_integral / window * self.cfg.block_tokens as f64;
         self.stats.lanes = self.lanes.len();
-        let traces = self
-            .plays
-            .iter()
-            .map(|p| p.plan.trace_id.clone())
-            .collect::<Vec<_>>();
-        let mut unique = HashSet::new();
-        let traces = traces
-            .into_iter()
-            .filter(|t| unique.insert(t.clone()))
-            .collect();
         Ok(ReplayOutput {
             records: self.records,
             stats: self.stats,
-            engine: self.engine.stats.clone(),
+            engine: self.engine.stats,
             timeline: self.timeline,
-            traces,
         })
     }
 
@@ -969,7 +956,6 @@ impl<'a> Replay<'a> {
                 prompt_tokens: f.prompt_tokens,
                 output_tokens: f.output_tokens,
                 record: usize::MAX,
-                admitted_ns: now,
                 warmup: f.warmup,
                 trace: play.trace,
                 conv: stream.conv,

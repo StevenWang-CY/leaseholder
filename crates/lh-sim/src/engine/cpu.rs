@@ -21,11 +21,6 @@ pub struct StoreOutcome {
 
 /// Decides what the CPU tier keeps.
 pub trait CpuPolicy: fmt::Debug {
-    fn capacity(&self) -> usize;
-    fn len(&self) -> usize;
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
     fn contains(&self, id: BlockId) -> bool;
     /// A request was admitted with these prompt blocks (`prompt[i]` at position `i`).
     fn on_admit(&mut self, _prompt: &[BlockId]) {}
@@ -138,28 +133,9 @@ impl CpuLru {
             nodes: IdMap::default(),
         }
     }
-
-    /// Held blocks from most to least recent.
-    pub fn order(&self) -> Vec<BlockId> {
-        let mut out = Vec::new();
-        let mut n = self.lists.next[self.list as usize];
-        while n != self.list {
-            out.push(self.lists.key[n as usize]);
-            n = self.lists.next[n as usize];
-        }
-        out
-    }
 }
 
 impl CpuPolicy for CpuLru {
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    fn len(&self) -> usize {
-        self.nodes.len()
-    }
-
     fn contains(&self, id: BlockId) -> bool {
         self.nodes.contains_key(&id)
     }
@@ -225,19 +201,13 @@ pub struct CpuS3Fifo {
     lists: Lists,
     small: u32,
     main: u32,
-    entries: IdMap<S3Entry>,
+    /// Held blocks and their use counts, at most `MAX_FREQ`.
+    freq: IdMap<u8>,
     small_len: usize,
     main_len: usize,
     ghost: VecDeque<(BlockId, u64)>,
     ghost_live: IdMap<u64>,
     ghost_seq: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct S3Entry {
-    node: u32,
-    main: bool,
-    freq: u8,
 }
 
 impl CpuS3Fifo {
@@ -256,7 +226,7 @@ impl CpuS3Fifo {
             lists,
             small,
             main,
-            entries: IdMap::default(),
+            freq: IdMap::default(),
             small_len: 0,
             main_len: 0,
             ghost: VecDeque::new(),
@@ -266,8 +236,8 @@ impl CpuS3Fifo {
     }
 
     fn touch(&mut self, id: BlockId) {
-        if let Some(e) = self.entries.get_mut(&id) {
-            e.freq = (e.freq + 1).min(Self::MAX_FREQ);
+        if let Some(f) = self.freq.get_mut(&id) {
+            *f = (*f + 1).min(Self::MAX_FREQ);
         }
     }
 
@@ -294,18 +264,15 @@ impl CpuS3Fifo {
                 return false;
             };
             let id = self.lists.key[n as usize];
-            let e = self
-                .entries
-                .get_mut(&id)
-                .expect("listed blocks have entries");
+            let f = self.freq.get_mut(&id).expect("listed blocks are held");
             if protected.contains(&id) {
                 self.lists.move_front(self.main, n);
-            } else if e.freq > 0 {
-                e.freq -= 1;
+            } else if *f > 0 {
+                *f -= 1;
                 self.lists.move_front(self.main, n);
             } else {
                 self.lists.remove(n);
-                self.entries.remove(&id);
+                self.freq.remove(&id);
                 self.main_len -= 1;
                 return true;
             }
@@ -327,21 +294,16 @@ impl CpuS3Fifo {
                 self.lists.move_front(self.small, n);
                 continue;
             }
-            let e = self
-                .entries
-                .get_mut(&id)
-                .expect("listed blocks have entries");
             self.lists.remove(n);
             self.small_len -= 1;
-            if e.freq > 0 {
-                e.main = true;
-                e.node = self.lists.push_front(self.main, id);
+            if self.freq[&id] > 0 {
+                self.lists.push_front(self.main, id);
                 self.main_len += 1;
                 if self.main_len > self.main_capacity && self.evict_main(protected) {
                     evicted += 1;
                 }
             } else {
-                self.entries.remove(&id);
+                self.freq.remove(&id);
                 self.remember_ghost(id);
                 return evicted + 1;
             }
@@ -361,16 +323,8 @@ impl CpuS3Fifo {
 }
 
 impl CpuPolicy for CpuS3Fifo {
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     fn contains(&self, id: BlockId) -> bool {
-        self.entries.contains_key(&id)
+        self.freq.contains_key(&id)
     }
 
     fn on_load(&mut self, ids: &[BlockId]) {
@@ -380,19 +334,19 @@ impl CpuPolicy for CpuS3Fifo {
     }
 
     fn store(&mut self, offer: &[(BlockId, u32)]) -> Option<StoreOutcome> {
-        let new = missing(offer, |id| self.entries.contains_key(&id));
-        let protected: IdSet = if self.entries.len() + new > self.capacity {
+        let new = missing(offer, |id| self.freq.contains_key(&id));
+        let protected: IdSet = if self.freq.len() + new > self.capacity {
             offer.iter().map(|&(id, _)| id).collect()
         } else {
             IdSet::default()
         };
         let mut out = StoreOutcome::default();
         for &(id, _) in offer {
-            if self.entries.contains_key(&id) {
+            if self.freq.contains_key(&id) {
                 self.touch(id);
                 continue;
             }
-            while self.entries.len() >= self.capacity {
+            while self.freq.len() >= self.capacity {
                 let n = self.evict(&protected);
                 if n == 0 {
                     return if out.stored == 0 { None } else { Some(out) };
@@ -401,15 +355,8 @@ impl CpuPolicy for CpuS3Fifo {
             }
             let to_main = self.ghost_live.remove(&id).is_some();
             let list = if to_main { self.main } else { self.small };
-            let node = self.lists.push_front(list, id);
-            self.entries.insert(
-                id,
-                S3Entry {
-                    node,
-                    main: to_main,
-                    freq: 0,
-                },
-            );
+            self.lists.push_front(list, id);
+            self.freq.insert(id, 0);
             if to_main {
                 self.main_len += 1;
             } else {
@@ -478,14 +425,6 @@ impl CpuClairvoyant {
 }
 
 impl CpuPolicy for CpuClairvoyant {
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     fn contains(&self, id: BlockId) -> bool {
         self.entries.contains_key(&id)
     }
@@ -536,13 +475,28 @@ mod tests {
             .collect()
     }
 
+    /// The blocks of `list`, newest first.
+    fn keys(lists: &Lists, list: u32) -> Vec<BlockId> {
+        let mut out = Vec::new();
+        let mut n = lists.next[list as usize];
+        while n != list {
+            out.push(lists.key[n as usize]);
+            n = lists.next[n as usize];
+        }
+        out
+    }
+
     #[test]
     fn lru_refreshes_a_finished_prefix_head_first() {
         let mut t = CpuLru::new(4);
         t.store(&offer(&[1, 2, 3])).unwrap();
-        assert_eq!(t.order(), vec![3, 2, 1]);
+        assert_eq!(keys(&t.lists, t.list), vec![3, 2, 1]);
         t.on_finish(&[1, 2, 3]);
-        assert_eq!(t.order(), vec![1, 2, 3], "the prefix start is most recent");
+        assert_eq!(
+            keys(&t.lists, t.list),
+            vec![1, 2, 3],
+            "the prefix start is most recent"
+        );
         // Storing two more evicts the least recent: the end of the old prefix.
         let out = t.store(&offer(&[1, 7, 8])).unwrap();
         assert_eq!(
@@ -553,7 +507,7 @@ mod tests {
             }
         );
         assert!(!t.contains(3) && t.contains(1) && t.contains(2));
-        assert_eq!(t.len(), 4);
+        assert_eq!(t.nodes.len(), 4);
     }
 
     #[test]
@@ -573,16 +527,20 @@ mod tests {
         for id in 2..=10 {
             t.store(&offer(&[id])).unwrap();
         }
-        assert_eq!(t.len(), 10);
+        assert_eq!(t.freq.len(), 10);
         // A one-hit block leaves through the ghost; the reused block 1 is promoted and stays.
         let out = t.store(&offer(&[11])).unwrap();
         assert_eq!(out.stored, 1);
-        assert!(t.contains(1), "reused blocks are promoted to the main FIFO");
+        assert_eq!(
+            keys(&t.lists, t.main),
+            vec![1],
+            "reused blocks are promoted to the main FIFO"
+        );
         assert!(!t.contains(2), "the oldest one-hit block is evicted");
         // Its ghost sends it straight to the main FIFO when it comes back.
         t.store(&offer(&[2])).unwrap();
-        assert!(t.contains(2) && t.entries[&2].main);
-        assert!(t.len() <= 10);
+        assert_eq!(keys(&t.lists, t.main), vec![2, 1]);
+        assert!(t.freq.len() <= 10);
     }
 
     #[test]
@@ -590,9 +548,9 @@ mod tests {
         let mut t = CpuS3Fifo::new(50);
         for id in 0..1_000 {
             t.store(&offer(&[id])).unwrap();
-            assert!(t.len() <= 50);
+            assert!(t.freq.len() <= 50);
         }
-        assert_eq!(t.len(), 50);
+        assert_eq!(t.freq.len(), 50);
     }
 
     #[test]
@@ -689,7 +647,7 @@ mod tests {
                 hits += usize::from(t.contains(b));
                 t.on_admit(&[b]);
                 t.store(&offer(&[b]));
-                assert!(t.len() <= capacity);
+                assert!(t.entries.len() <= capacity);
             }
             assert_eq!(
                 hits,

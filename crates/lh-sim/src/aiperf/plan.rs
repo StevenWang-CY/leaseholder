@@ -139,12 +139,9 @@ impl ReplayPlan {
         &self.convs[0]
     }
 
+    /// The index of the conversation with AIPerf's id `id`.
     pub fn conv_index(&self, id: &str) -> Option<u32> {
         self.convs.iter().position(|c| c.id == id).map(|i| i as u32)
-    }
-
-    pub fn requests(&self) -> usize {
-        self.convs.iter().map(|c| c.turns.len()).sum()
     }
 
     /// Builds the plan of `trace`.

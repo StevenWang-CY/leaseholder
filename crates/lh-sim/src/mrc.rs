@@ -19,8 +19,6 @@
 
 use std::collections::BinaryHeap;
 
-use serde::Serialize;
-
 use crate::corpus::Corpus;
 use crate::prefix::{BlockId, IdMap, NodeId, Tokens};
 use crate::replay::Timeline;
@@ -101,7 +99,7 @@ impl Access<'_> {
 }
 
 /// Hit tokens at one capacity.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Point {
     /// Cache capacity in blocks.
     pub capacity: u64,
@@ -113,7 +111,7 @@ pub struct Point {
 }
 
 /// A miss-ratio curve: hit tokens at a set of capacities, out of `prompt_tokens`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Curve {
     pub requests: u64,
     pub prompt_tokens: u64,

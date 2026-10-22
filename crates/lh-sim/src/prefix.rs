@@ -66,42 +66,21 @@ impl Tokens {
 }
 
 /// Every prompt of one trace as a trie over hash ids; node 0 is the empty prefix.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct PrefixTree {
     parent: Vec<NodeId>,
     depth: Vec<u32>,
 }
 
 impl PrefixTree {
-    pub fn len(&self) -> usize {
-        self.parent.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.parent.len() <= 1
-    }
-
+    /// Hash blocks on the path from the root to `node`.
     pub fn depth(&self, node: NodeId) -> u32 {
         self.depth[node as usize]
     }
 
+    /// The node one hash block shorter than `node` (the root's parent is the root).
     pub fn parent(&self, node: NodeId) -> NodeId {
         self.parent[node as usize]
-    }
-
-    /// Hash blocks shared by the prompts ending at `a` and `b`.
-    pub fn common_prefix(&self, mut a: NodeId, mut b: NodeId) -> u32 {
-        while self.depth(a) > self.depth(b) {
-            a = self.parent(a);
-        }
-        while self.depth(b) > self.depth(a) {
-            b = self.parent(b);
-        }
-        while a != b {
-            a = self.parent(a);
-            b = self.parent(b);
-        }
-        self.depth(a)
     }
 
     /// Writes the path from the root to `end` into `path` (`path[d]` is the node at depth `d + 1`).
@@ -252,10 +231,11 @@ mod tests {
     #[test]
     fn shared_prefixes_share_nodes() {
         let (t, ends) = tree(&[&[1, 2, 3], &[1, 2, 3, 4], &[1, 2, 9], &[5]]);
-        assert_eq!(t.len(), 1 + 4 + 1 + 1);
-        assert_eq!(t.common_prefix(ends[0], ends[1]), 3);
-        assert_eq!(t.common_prefix(ends[1], ends[2]), 2);
-        assert_eq!(t.common_prefix(ends[2], ends[3]), 0);
+        // The root, 1-2-3-4, the fork at 9, and 5.
+        assert_eq!(t.parent.len(), 1 + 4 + 1 + 1);
+        assert_eq!(t.parent(ends[1]), ends[0]);
+        assert_eq!(t.parent(ends[2]), t.parent(ends[0]));
+        assert_eq!((t.depth(ends[2]), t.parent(ends[3])), (3, 0));
         // Inserting an existing prompt adds nothing.
         let mut b = PrefixTreeBuilder::default();
         let first = b.insert(&[1, 2, 3]);

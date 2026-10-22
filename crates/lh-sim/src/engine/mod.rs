@@ -37,8 +37,8 @@ use crate::prefix::{BlockId, IdMap, UNIQUE_BIT};
 
 const NO_BLOCK: BlockId = u64::MAX;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// Which [`GpuPolicy`] orders the pool's free blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuPolicyKind {
     /// vLLM's free queue.
     Lru,
@@ -46,8 +46,8 @@ pub enum GpuPolicyKind {
     Clairvoyant,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// Which [`CpuPolicy`] decides what the CPU tier keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CpuPolicyKind {
     /// vLLM's `LRUCachePolicy`.
     Lru,
@@ -56,7 +56,8 @@ pub enum CpuPolicyKind {
     Clairvoyant,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+/// The capacities and policies of one engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EngineConfig {
     /// vLLM's `num_gpu_blocks`, including the null block.
     pub gpu_blocks: usize,
@@ -175,14 +176,6 @@ impl Engine {
     /// GPU blocks that can hold KV (vLLM's pool minus the null block).
     pub fn gpu_capacity(&self) -> usize {
         self.refs.len()
-    }
-
-    pub fn cpu_len(&self) -> usize {
-        self.cpu.as_ref().map_or(0, |c| c.len())
-    }
-
-    pub fn waiting(&self) -> usize {
-        self.queue.len()
     }
 
     /// Admits `req` now, or queues it behind earlier waiting requests. A request larger than the
@@ -483,7 +476,7 @@ mod tests {
         assert!(e.submit(2, req(200, 4, 0, 1)).is_none());
         // A later small request waits behind it (vLLM stops at the first that does not fit).
         assert!(e.submit(3, req(300, 1, 0, 1)).is_none());
-        assert_eq!((e.stats.stalls, e.waiting()), (2, 2));
+        assert_eq!((e.stats.stalls, e.queue.len()), (2, 2));
         let admitted = e.finish(1);
         assert_eq!(
             admitted.iter().map(|(id, _)| *id).collect::<Vec<_>>(),

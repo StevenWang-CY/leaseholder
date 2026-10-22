@@ -12,14 +12,14 @@ use std::io::BufRead;
 use std::path::Path;
 
 use lh_core::PromptSources;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::corpus::Corpus;
 use crate::engine::{Engine, EngineRequest};
 use crate::prefix::{NodeId, Tokens};
 
 /// One request of the log.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LoggedRequest {
     pub conversation: String,
     pub turn: u32,
@@ -36,7 +36,7 @@ pub struct LoggedRequest {
 }
 
 /// The log replayed, with totals over its profiling requests.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LogReplay {
     pub requests: Vec<LoggedRequest>,
     pub profiling_requests: u64,

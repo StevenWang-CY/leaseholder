@@ -87,17 +87,6 @@ impl LruQueue {
         self.queued[slot as usize] = false;
         self.len -= 1;
     }
-
-    /// The free blocks from the front (next to be reused) to the back.
-    pub fn order(&self) -> Vec<u32> {
-        let mut out = Vec::with_capacity(self.len);
-        let mut s = self.next[self.head() as usize];
-        while s != self.tail() {
-            out.push(s);
-            s = self.next[s as usize];
-        }
-        out
-    }
 }
 
 impl GpuPolicy for LruQueue {
@@ -212,10 +201,21 @@ impl GpuPolicy for ClairvoyantFree {
 mod tests {
     use super::*;
 
+    /// The free blocks from the front (next to be reused) to the back.
+    fn order(q: &LruQueue) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut s = q.next[q.head() as usize];
+        while s != q.tail() {
+            out.push(s);
+            s = q.next[s as usize];
+        }
+        out
+    }
+
     #[test]
     fn lru_reuses_uncached_first_and_cached_oldest_first() {
         let mut q = LruQueue::new(4);
-        assert_eq!(q.order(), vec![0, 1, 2, 3]);
+        assert_eq!(order(&q), vec![0, 1, 2, 3]);
         let taken: Vec<u32> = (0..4).map(|_| q.take()).collect();
         assert_eq!(taken, vec![0, 1, 2, 3]);
         // A request frees its blocks tail first: 2 (partial, uncached), then 1 and 0 (cached).
@@ -223,9 +223,9 @@ mod tests {
         q.free(1, Some(11), 1);
         q.free(0, Some(10), 0);
         q.free(3, Some(30), 0);
-        assert_eq!(q.order(), vec![2, 1, 0, 3]);
+        assert_eq!(order(&q), vec![2, 1, 0, 3]);
         q.reuse(0);
-        assert_eq!(q.order(), vec![2, 1, 3]);
+        assert_eq!(order(&q), vec![2, 1, 3]);
         assert_eq!((q.take(), q.take(), q.free_blocks()), (2, 1, 1));
     }
 

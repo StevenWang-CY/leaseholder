@@ -57,14 +57,7 @@ pub struct Trace {
 }
 
 impl Trace {
-    /// Every model request: main-agent turns and subagent inner requests.
-    pub fn requests(&self) -> impl Iterator<Item = &Request> {
-        self.entries.iter().flat_map(|e| match e {
-            Entry::Request(r) => std::slice::from_ref(r).iter(),
-            Entry::Subagent(s) => s.requests.iter(),
-        })
-    }
-
+    /// Parses one trace in the Weka JSON format.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
         let raw: RawTrace = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         raw.into_trace()
@@ -196,9 +189,10 @@ impl TraceSource {
     }
 }
 
+/// A trace file that cannot be read or parsed.
 #[derive(Debug)]
 pub struct TraceError {
-    pub path: PathBuf,
+    path: PathBuf,
     source: ErrorKind,
 }
 
@@ -335,16 +329,22 @@ mod tests {
             (t.id.as_str(), t.block_size, t.entries.len()),
             ("abc", 2, 3)
         );
-        let Entry::Subagent(sa) = &t.entries[1] else {
-            panic!("expected a subagent")
+        let [
+            Entry::Request(first),
+            Entry::Subagent(sa),
+            Entry::Request(last),
+        ] = &t.entries[..]
+        else {
+            panic!("expected a request, a subagent and a request")
         };
         assert_eq!(
             (sa.agent_id.as_str(), sa.duration_ms, sa.requests.len()),
             ("a1", Some(2000.0), 1)
         );
-        let ids: Vec<_> = t.requests().map(|r| r.hash_ids.clone()).collect();
-        assert_eq!(ids, vec![vec![0, 1], vec![7], vec![0, 1, 2]]);
-        let first = t.requests().next().unwrap();
+        assert_eq!(
+            [&first.hash_ids, &sa.requests[0].hash_ids, &last.hash_ids],
+            [&vec![0, 1], &vec![7], &vec![0, 1, 2]]
+        );
         assert_eq!(
             (first.think_time, first.api_time, first.out),
             (None, Some(1.5), 3)

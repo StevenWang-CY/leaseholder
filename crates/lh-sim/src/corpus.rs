@@ -68,9 +68,4 @@ impl Corpus {
         }
         Ok(None)
     }
-
-    /// Every plan built so far.
-    pub fn loaded(&self) -> impl Iterator<Item = &Rc<ReplayPlan>> {
-        self.plans.iter().flatten()
-    }
 }
