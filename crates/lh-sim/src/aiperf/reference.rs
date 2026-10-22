@@ -59,16 +59,14 @@ pub fn dump(
             }));
         }
     }
+    // AIPerf's sequential sampler over the traces with a main-agent request: the initial lanes take
+    // the first, and recycled lanes the ones after.
+    let mut sampler = plans.iter().filter(|p| !p.root().turns.is_empty()).cycle();
     let mut lanes = Vec::new();
-    let mut next = 0;
-    let spawnable: Vec<&&ReplayPlan> = plans
-        .iter()
-        .filter(|p| !p.root().turns.is_empty())
-        .collect();
-    while lanes.len() < concurrency && !spawnable.is_empty() {
-        let plan = spawnable[next % spawnable.len()];
-        next += 1;
-        let lane = lanes.len();
+    for lane in 0..concurrency {
+        let Some(plan) = sampler.next() else {
+            break;
+        };
         let t_star = snapshot::t_star(plan, seed, lane, min_ratio, max_ratio);
         let snap = t_star.and_then(|t| snapshot::snapshot(plan, t));
         let name = |c: u32| plan.convs[c as usize].id.clone();
@@ -87,8 +85,28 @@ pub fn dump(
             "boundaries": snap.iter().flat_map(|s| s.boundaries.iter()).map(|&(c, n)| json!([name(c), n])).collect::<Vec<_>>(),
         }));
     }
-    let recycle: Vec<Value> = (0..32)
-        .map(|i| json!(spawnable[(next + i) % spawnable.len()].trace_id))
-        .collect();
+    let recycle: Vec<Value> = sampler.take(32).map(|p| json!(p.trace_id)).collect();
     json!({ "conversations": conversations, "lanes": lanes, "recycle": recycle })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aiperf::PlanOptions;
+    use crate::trace::Trace;
+
+    #[test]
+    fn a_corpus_without_main_agent_requests_has_no_lanes() {
+        let json = r#"{"id": "t", "block_size": 2, "requests": [
+            {"t": 0, "type": "subagent", "agent_id": "a", "requests": [
+                {"t": 0, "type": "n", "model": "m", "in": 2, "out": 1, "hash_ids": [9]}]}
+        ]}"#;
+        let trace = Trace::from_json(json.as_bytes()).unwrap();
+        let plan = ReplayPlan::build(trace, &PlanOptions::default()).unwrap();
+        let doc = dump(&[&plan], 4, 11, 0.0, 1.0);
+        assert_eq!(
+            (doc["lanes"].as_array().unwrap().len(), &doc["recycle"]),
+            (0, &json!([]))
+        );
+    }
 }
