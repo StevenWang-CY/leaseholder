@@ -283,9 +283,18 @@ async fn models_pass_through_and_other_routes_are_openai_errors() {
     let reply = call(&gw.tcp, "POST", "/v1/embeddings", &[BENCH_AUTH], CHAT).await;
     assert_eq!(reply.status, 404);
     assert_eq!(reply.json()["error"]["code"], "not_found");
+    // The error names what was asked for: its route label is only "other".
+    assert_eq!(
+        reply.json()["error"]["message"],
+        "no such route: POST /v1/embeddings"
+    );
     let reply = call(&gw.tcp, "GET", "/v1/chat/completions", &[BENCH_AUTH], "").await;
     assert_eq!(reply.status, 405);
     assert_eq!(reply.json()["error"]["code"], "method_not_allowed");
+    assert_eq!(
+        reply.json()["error"]["message"],
+        "the route does not accept this method: GET /v1/chat/completions"
+    );
 }
 
 #[tokio::test]

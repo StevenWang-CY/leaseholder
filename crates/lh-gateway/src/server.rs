@@ -13,8 +13,8 @@ use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, get, post};
 use axum::serve::ListenerExt;
-use http::StatusCode;
 use http::header::{CONTENT_TYPE, HeaderValue};
+use http::{Method, StatusCode, Uri};
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -202,21 +202,41 @@ fn router(app: App) -> Router {
         .route("/metrics", get(metrics))
         .route("/health", get(|| async { "ok\n" }))
         .route("/ready", get(ready))
-        .fallback(|State(app): State<App>| async move {
-            Exchange::new(&app.shared.metrics, Route::Other).error(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "no such route",
-            )
-        })
-        .method_not_allowed_fallback(|State(app): State<App>| async move {
-            Exchange::new(&app.shared.metrics, Route::Other).error(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "the route does not accept this method",
-            )
-        })
+        .fallback(
+            |State(app): State<App>, method: Method, uri: Uri| async move {
+                Exchange::new(&app.shared.metrics, Route::Other).error(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    format!("no such route: {}", request_line(&method, &uri)),
+                )
+            },
+        )
+        .method_not_allowed_fallback(
+            |State(app): State<App>, method: Method, uri: Uri| async move {
+                Exchange::new(&app.shared.metrics, Route::Other).error(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    format!(
+                        "the route does not accept this method: {}",
+                        request_line(&method, &uri)
+                    ),
+                )
+            },
+        )
         .with_state(app)
+}
+
+/// The method and path of a request that matched no route, for its error and log line. The `route` label of
+/// such a request is "other", so this is the only record of what was asked for; long paths are cut.
+fn request_line(method: &Method, uri: &Uri) -> String {
+    const MAX_PATH: usize = 256;
+    let path = uri.path();
+    let end = (0..=MAX_PATH.min(path.len()))
+        .rev()
+        .find(|&i| path.is_char_boundary(i))
+        .unwrap_or(0);
+    let cut = if end < path.len() { "…" } else { "" };
+    format!("{method} {}{cut}", &path[..end])
 }
 
 fn inference(route: Route) -> MethodRouter<App> {
@@ -286,4 +306,18 @@ async fn bind_unix(path: &Path) -> io::Result<(UnixListener, SocketFile)> {
 
 fn context(err: io::Error, what: impl Display) -> io::Error {
     io::Error::new(err.kind(), format!("{what}: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_lines_name_the_method_and_cut_long_paths() {
+        let uri: Uri = "/prometheus/metrics?x=1".parse().unwrap();
+        assert_eq!(request_line(&Method::GET, &uri), "GET /prometheus/metrics");
+        let long: Uri = format!("/{}", "a".repeat(300)).parse().unwrap();
+        let line = request_line(&Method::POST, &long);
+        assert_eq!(line, format!("POST /{}…", "a".repeat(255)));
+    }
 }
