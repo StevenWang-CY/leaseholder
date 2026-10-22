@@ -22,7 +22,7 @@ The voice targets are calibrated against voice alone on the frozen box (W1, 2026
 | Resume TTFT | Interactive, by source tier (GPU, CPU, recompute) | Warm p95 ≤ 250 ms at ≤ 16k tokens |
 | Harvested background goodput | Background agent tokens/s while the voice SLO holds | Reported; the x-axis of the E2 frontier |
 | Cache-contract honor rate | Hits inside a `cache_control` TTL (renewed on each use) among requests that should hit, outside the listed exceptions (node failure, model or config change, prefix mismatch) | Reported, with every miss counted; providers promise billing eligibility, not residency |
-| Control-plane overhead | Latency added per request and per streamed chunk | p99 ≤ 2 ms per request |
+| Control-plane overhead | Latency the gateway adds per request: from the end of the request body to the upstream write (`lh_gateway_overhead_seconds`). The client's upload is excluded, because a direct call waits for it too. Also the latency added per streamed chunk | p99 ≤ 2 ms per request (W1 in situ on cyan: mean 0.24 ms, all under 0.5 ms) |
 
 Synthetic requests (prefetch warm-ups, marked `X-LH-Synthetic`) are excluded from every indicator.
 

@@ -21,7 +21,9 @@ What has been measured so far, on one RTX 5060 Ti 16 GB (sm_120, PCIe Gen3 x8) i
 - a CPU restore adds ≈ 10 ms + 23.6 µs/token over a GPU hit (about 6.2 GB/s of KV at 144 KiB/token), the same slope as the earlier BF16 probe;
 - recompute ≈ 48 ms + 63 µs/token + 8.1 ns/token², the quadratic term being attention. The 512-token step cap that protects decode latency makes cold prefill slower than an uncapped engine.
 
-Restoring beats recomputing at every measured length (from 1,024 tokens). In the dimensionless terms E1 uses, at the 8k median prompt ρ = restore / recompute ≈ 0.25, and π = the median tool pause (166 ms) / restore ≈ 0.6.
+Restoring beats recomputing at every measured length (from 1,024 tokens). In the dimensionless terms E1 uses, at the 8k median prompt ρ = restore / recompute ≈ 0.25. π = the median pause / restore depends on which pause:
+- Copilot's median tool call (166 ms) gives about 0.6;
+- the W0 replay window's median think time (1.6 s, at its 3.4k median prompt) gives about 18 in `lh-sim`.
 
 **Under contention** (p50; same probe while background load runs):
 
@@ -93,6 +95,52 @@ Earlier probe (2026-10-21/22, 8-character first sentence): 415 ms idle and 876 m
   - 2.19 s median with the stock handling, which pauses the reply audio and interrupts it on the barge-in's final transcript;
   - 0.58 s with `resume_false_interruption=False`, which interrupts after 0.5 s of speech.
   - In stock mode the reply keeps streaming on the GPU for the whole barge-in.
+
+## The control plane: lh-gateway in front of the engine
+
+On cyan, every client reaches the engine through `lh-gateway`:
+- the voice agent on a private Unix socket, as tenant `voice` (realtime class);
+- the agent replay over loopback TCP with a key, as tenant `agents` (background class).
+
+The gateway forwards over the SSH tunnel to the frozen box. Measured W1, 2026-10-22.
+
+**What it adds to a voice request, paired.** The voice agent's own LLM request ran 40 rounds, alternating between the engine's tunnel socket and the gateway's voice socket, with greedy decoding so both paths generate the same text:
+
+| Path | First token p50 | First sentence p50 | End p50 | Gap between chunks, p50 / p99 |
+|---|---|---|---|---|
+| Engine socket | 43.7 ms | 223.0 ms | 370.1 ms | 12.13 / 12.64 ms |
+| Through lh-gateway | 44.1 ms | 223.3 ms | 370.3 ms | 12.14 / 12.69 ms |
+| **Paired median difference** | **+0.38 ms** | **+0.26 ms** | **+0.25 ms** | — |
+
+**Its own time, in place** (`lh_gateway_overhead_seconds`: from the end of a request's body to the upstream write). The voice agent's turns are seconds apart:
+
+| Upstream keep-alive (engine / gateway) | Requests | Mean | p99 | Within 0.5 ms | First byte p99 |
+|---|---|---|---|---|---|
+| 5 s / 4 s (vLLM's default) | 60 | 0.24 ms | 0.50 ms | 100% | 205 ms |
+| 60 s / 55 s (the frozen box from W1) | 60 | 0.13 ms | 0.44 ms | 100% | 99 ms |
+| 60 s / 55 s, beside the 16-session agent replay (both tiers) | 603 | 0.16 ms | 0.58 ms | 98.5% (all within 2 ms) | 700 ms realtime |
+
+- **A client's upload is not overhead.** The first in-place reading was 1.8 ms on average, against about 0.03 ms in process. Of that, 1.57 ms was the voice worker's event loop sending the request body after its headers, which a direct call waits for too. The overhead metric now starts at the end of the body, and the upload is timed separately (`lh_gateway_request_body_seconds`: 1.35–1.57 ms mean for the voice agent).
+- **Connections must outlive the turn gap.**
+  - vLLM drops idle connections after 5 s, and voice turns are often further apart. So most voice requests opened a new connection through the tunnel.
+  - A new connection costs about 1 ms, and now and then 40 ms more. One-token requests 6 s apart show it:
+
+    | | Gateway's own time | First byte mean | First byte p99 |
+    |---|---|---|---|
+    | 5 s keep-alive | 0.26 ms | 41.8 ms | about 90 ms |
+    | 60 s keep-alive | 0.08 ms | 38.5 ms | 49.8 ms |
+
+  - The engine now keeps idle connections for 60 s (`VLLM_HTTP_TIMEOUT_KEEP_ALIVE`) and the gateway for 55 s.
+- **End to end it is inside the run-to-run spread.**
+  - Voice alone through the gateway: V2V p50 1,684, 1,600 and 1,633 ms over three runs.
+  - Straight to the engine: 1,614 and 1,579 ms over two runs, every run with 0 errors.
+  - Beside the agent replay: 1,727 / 2,361 / 3,141 and 1,710 / 2,361 / 2,872 ms (p50 / p95 / p99) over two runs through the gateway, against 1,664 / 2,312 / 3,013 ms direct.
+- **In process** (`cargo run --release -p lh-gateway --example overhead` on cyan, [crate README](../crates/lh-gateway/README.md#overhead)), the gateway's own time is 32 µs on average. Against a direct call it adds 226 µs at p50 for one client, and at most 1.92 ms at p99, with 64 concurrent requests sharing the process with their client and engine.
+- **Under load it carried both tiers without an error.** Over the two runs:
+  - the replay sent 578 and 543 background requests and the calls 60 realtime ones each;
+  - every request completed except one realtime stream, which the voice agent closed early, as it does on a barge-in or when it replaces a preemptive reply;
+  - there were no upstream errors;
+  - agent TTFT was 141 and 146 ms p50, and 9.9 and 9.2 s p99.
 
 ## The API layer: agentic-api in front of the engine
 

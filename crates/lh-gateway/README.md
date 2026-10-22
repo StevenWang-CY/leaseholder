@@ -109,31 +109,34 @@ Each request writes one log line at its end (target `lh_gateway::request`, level
 
 `cargo run --release -p lh-gateway --example overhead` measures the latency the gateway adds and its CPU time. A mock engine that answers at once, the client and two proxies run in one process, each on its own tokio runtime with 4 worker threads, over loopback TCP with pooled keep-alive connections. Each scenario runs direct to the engine, through a bare reverse proxy on the same stack (axum server, hyper-util client, bodies passed through untouched: the HTTP hop alone), and through `lh-gateway` with a trusted tenant, a key, `X-Session-ID`, `X-LH-Class` and a `prompt_cache_key` body. The gateway formats its per-request log line, as in production. "Added" is the gateway's quantile minus the direct one. CPU is the busy time of the proxy runtime's workers, system calls included, per request (per 8-chunk stream for the streaming rows), which is also milliseconds per 1,000 requests.
 
-Apple M5 Max (18 cores), macOS 26.6, release build, 2026-10-22. Microseconds, p50 / p99:
+cyan (2× Xeon Silver 4310 at 2.1 GHz, Linux 5.15), the process pinned to 16 logical CPUs (`taskset -c 0-15`), release build, 2026-10-22. Microseconds, p50 / p99:
 
 | Scenario | Concurrency | Samples | Direct | Bare proxy | lh-gateway | Added by lh-gateway | CPU per request, bare / lh-gateway |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Non-streaming, 2 KiB body | 1 | 5000 | 21 / 49 | 45 / 67 | 60 / 85 | 39 / 37 | 13 / 29 |
-| Non-streaming, 2 KiB body | 8 | 40000 | 59 / 112 | 122 / 193 | 147 / 225 | 88 / 113 | 27 / 48 |
-| Non-streaming, 2 KiB body | 64 | 40000 | 380 / 749 | 746 / 1102 | 905 / 1496 | 525 / 747 | 41 / 54 |
-| Non-streaming, 64 KiB body | 1 | 1000 | 36 / 59 | 65 / 156 | 82 / 116 | 47 / 58 | 21 / 40 |
-| Non-streaming, 64 KiB body | 8 | 8000 | 73 / 133 | 156 / 255 | 189 / 296 | 116 / 163 | 37 / 68 |
-| Streaming, first byte | 1 | 500 | 56 / 112 | 122 / 218 | 132 / 234 | 76 / 122 | 101 / 135 |
-| Streaming, per chunk | 1 | 3500 | 34 / 68 | 67 / 121 | 68 / 114 | 33 / 47 | 101 / 135 |
-| Streaming, first byte | 8 | 4000 | 71 / 131 | 146 / 250 | 142 / 267 | 71 / 136 | 79 / 96 |
-| Streaming, per chunk | 8 | 28000 | 36 / 77 | 83 / 147 | 81 / 133 | 44 / 56 | 79 / 96 |
-| Streaming, first byte | 64 | 4000 | 233 / 430 | 559 / 986 | 564 / 1248 | 331 / 818 | 88 / 113 |
-| Streaming, per chunk | 64 | 28000 | 79 / 190 | 304 / 580 | 304 / 597 | 225 / 407 | 88 / 113 |
+| Non-streaming, 2 KiB body | 1 | 5000 | 44 / 54 | 156 / 171 | 270 / 306 | 226 / 251 | 80 / 191 |
+| Non-streaming, 2 KiB body | 8 | 40000 | 43 / 123 | 107 / 212 | 125 / 395 | 81 / 271 | 27 / 57 |
+| Non-streaming, 2 KiB body | 64 | 40000 | 243 / 481 | 690 / 1405 | 927 / 2400 | 684 / 1919 | 40 / 55 |
+| Non-streaming, 64 KiB body | 1 | 1000 | 36 / 44 | 71 / 80 | 381 / 433 | 345 / 389 | 32 / 254 |
+| Non-streaming, 64 KiB body | 8 | 8000 | 106 / 178 | 153 / 321 | 206 / 527 | 100 / 349 | 41 / 109 |
+| Streaming, first byte | 1 | 500 | 95 / 129 | 199 / 258 | 270 / 357 | 175 / 228 | 300 / 508 |
+| Streaming, per chunk | 1 | 3500 | 31 / 40 | 61 / 71 | 65 / 85 | 34 / 45 | 300 / 508 |
+| Streaming, first byte | 8 | 4000 | 97 / 156 | 230 / 342 | 303 / 421 | 206 / 265 | 302 / 452 |
+| Streaming, per chunk | 8 | 28000 | 44 / 81 | 92 / 158 | 94 / 162 | 51 / 82 | 302 / 452 |
+| Streaming, first byte | 64 | 4000 | 143 / 404 | 422 / 1865 | 440 / 1874 | 296 / 1469 | 247 / 292 |
+| Streaming, per chunk | 64 | 28000 | 72 / 223 | 210 / 775 | 234 / 893 | 163 / 670 | 247 / 292 |
 
-The gateway's own histogram over the same run: mean 30 µs from receipt to the upstream write, 91.3% of requests within 100 µs, 99.8% within 500 µs, all within 2 ms. In a second run the concurrency-1 rows moved by at most 4 µs at p50 and 55 µs at p99; the largest changes were in the first-byte row at concurrency 64, 60 µs at p50 and 213 µs at p99 (605 µs added there instead of 818).
+The gateway's own histogram over the same run: mean 32 µs from the end of the body to the upstream write; 94.3% of requests within 100 µs, 99.6% within 500 µs, 99.99% within 2 ms.
 
 What the numbers say:
-- **The SLO holds with room.** The largest added p99 is 0.82 ms (first byte, 64 concurrent streams), against a 2 ms target.
-- **Most of the tax is the hop.** At concurrency 1 the bare proxy adds 24 µs at p50 and the gateway 39 µs; the gateway's own work (body read and rewrite, sanitization, the pump task, metrics, the log line) is about 16 µs of CPU per request, and the gateway uses 29 ms of CPU per 1,000 requests in all.
-- **Streamed chunks cost the same as the bare hop:** the pump and its channel add no measurable per-chunk latency (67 vs 68 µs at p50).
-- **At 64 concurrent requests the cost is queueing,** on 4 worker threads shared with nothing else in production but here sharing a laptop with the client and the engine; the bare proxy adds 366 µs at p50 there too.
+- **The SLO holds, without much room at the extreme.** The largest added p99 is 1.92 ms, for 64 concurrent non-streaming requests in a process that also runs the client and the engine. The gateway's own time stays within 2 ms for 99.99% of requests.
+- **At one client, the hop and the gateway's work cost about the same.** The bare proxy adds 112 µs at p50 and the gateway 114 µs more. Per request, the gateway's CPU falls from 191 µs at one client to 55 µs at 64; the bare proxy's falls from 80 to 40 µs. So under load the gateway's own work costs about 15 µs of CPU per request beyond the hop.
+- **Large bodies cost a parse and a copy.** A 64 KiB body adds 345 µs at one client: one validating pass over the JSON and one copy. Agent prompts are that size, so they pay a few hundred microseconds against times to first token of 100 ms and more.
+- **Streamed chunks cost about the same as the bare hop:** 65 against 61 µs at p50 for one stream.
+- **The same benchmark on an Apple M5 Max** (18 cores, macOS 26.6) adds 39 µs at one client, and 0.82 ms at most at p99. cyan's 2.1 GHz Xeon costs several times more per request.
 
-On cyan the gateway runs on Linux with 8 cores (`CPUAffinity=0-7`), where system calls, about half of the gateway's CPU on macOS, cost less. These numbers are to be re-measured there.
+**In place on cyan**, with the voice agent and the agent replay as clients ([BENCHMARKS](../../docs/BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)):
+- the gateway's own time is 0.13 ms on average for voice requests;
+- paired against the engine's own socket, the gateway adds 0.38 ms to a voice request's first token.
 
 ## Tests
 
