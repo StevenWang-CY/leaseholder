@@ -34,7 +34,7 @@ def fetch(url: str, timeout: float = 10.0) -> str:
     return response.text
 
 
-def samples(exposition: str) -> Iterator[tuple[str, dict[str, str], float]]:
+def metric_samples(exposition: str) -> Iterator[tuple[str, dict[str, str], float]]:
     """Every sample of a Prometheus text exposition as ``(name, labels, value)``."""
     for line in exposition.splitlines():
         if m := _SAMPLE.match(line):
@@ -52,7 +52,7 @@ class Histogram:
     def parse(cls, text: str, name: str) -> Histogram:
         """Read one histogram from an exposition, summing its label sets."""
         totals: dict[float, float] = {}
-        for sample, labels, value in samples(text):
+        for sample, labels, value in metric_samples(text):
             if sample == f"{name}_bucket" and "le" in labels:
                 bound = float(labels["le"])  # "+Inf" parses as math.inf
                 totals[bound] = totals.get(bound, 0.0) + value

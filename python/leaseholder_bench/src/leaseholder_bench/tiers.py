@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 import orjson
 
-from leaseholder_bench.kv_metrics import samples
+from leaseholder_bench.kv_metrics import metric_samples
 from leaseholder_bench.load import BackgroundLoad, LoadSpec, random_prompt, summarize
 from leaseholder_bench.protocol import ENGINE_PRIORITY, SloClass
 
@@ -45,7 +45,7 @@ FLUSH_CHUNK = 16_384
 def read_counters(exposition: str) -> dict[str, float]:
     """The two hit counters of a Prometheus exposition, summed over label sets."""
     totals = {GPU_HITS: 0.0, CPU_HITS: 0.0}
-    for name, _, value in samples(exposition):
+    for name, _, value in metric_samples(exposition):
         if name in totals:
             totals[name] += value
     return totals
@@ -53,7 +53,7 @@ def read_counters(exposition: str) -> dict[str, float]:
 
 def pool_tokens(exposition: str) -> int | None:
     """GPU KV pool size in tokens, from vLLM's ``cache_config_info`` labels."""
-    for name, labels, _ in samples(exposition):
+    for name, labels, _ in metric_samples(exposition):
         if name == "vllm:cache_config_info":
             try:
                 return int(labels["num_gpu_blocks"]) * int(labels["block_size"])
