@@ -33,6 +33,7 @@ import orjson
 
 from leaseholder_bench.kv_metrics import samples
 from leaseholder_bench.load import BackgroundLoad, LoadSpec, random_prompt, summarize
+from leaseholder_bench.protocol import ENGINE_PRIORITY, SloClass
 
 TIERS = ("recompute", "gpu", "cpu")
 GPU_HITS = "vllm:prefix_cache_hits_total"
@@ -180,7 +181,8 @@ def _quadratic(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float, 
 
 
 def summarize_samples(samples: Sequence[Sample]) -> dict[str, Any]:
-    """Per tier and length: latency percentiles of valid samples; linear fits of the medians."""
+    """Per tier and length: latency percentiles of valid samples, and fits of the medians (linear
+    for the GPU and CPU tiers, quadratic for recompute)."""
     by_cell: dict[tuple[str, int], list[float]] = defaultdict(list)
     invalid: dict[str, int] = defaultdict(int)
     for s in samples:
@@ -264,12 +266,13 @@ async def run_tiers(config: TiersConfig, out_dir: Path) -> dict[str, Any]:
             if config.background is None:
                 await measure_all()
             else:
+                priority = None if config.priority is None else ENGINE_PRIORITY[SloClass.BACKGROUND]
                 async with BackgroundLoad(
                     client,
                     "/v1/completions",
                     config.model,
                     config.background,
-                    priority=None if config.priority is None else 2,
+                    priority=priority,
                     decode_tokens=config.decode_tokens,
                     seed=config.seed + 2,
                 ) as load:

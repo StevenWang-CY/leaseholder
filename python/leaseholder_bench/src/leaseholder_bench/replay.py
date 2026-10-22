@@ -66,7 +66,7 @@ WORDS = tuple(_WORD_LIST.split())
 """256 words that Qwen3's tokenizer encodes as one token each, with a leading space."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReplayConfig:
     url: str = DEFAULT_URL
     model: str = DEFAULT_MODEL

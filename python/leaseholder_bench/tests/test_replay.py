@@ -285,6 +285,23 @@ def test_run_cycles_traces_until_the_deadline(tmp_path):
     assert "requests:" in replayer.summary() and "cached prompt tokens" in replayer.summary()
 
 
+@pytest.mark.parametrize(("status", "exit_code"), [(200, 0), (503, 1)])
+def test_cli_fails_only_when_no_request_succeeds(tmp_path, monkeypatch, status, exit_code):
+    import leaseholder_bench.replay as replay_module
+    from leaseholder_bench.cli import main
+
+    server = FakeServer() if status == 200 else (lambda _: httpx.Response(status))
+    real = replay_module.replay
+    monkeypatch.setattr(
+        replay_module,
+        "replay",
+        lambda *args, **kwargs: real(*args, transport=httpx.MockTransport(server), **kwargs),
+    )
+    traces = write_traces(tmp_path / "traces", trace("t", [request(0, H[:4], 1)]))
+    out = tmp_path / "out.jsonl"
+    assert main(["replay", str(traces), "--out", str(out), "--duration", "0.1"]) == exit_code
+
+
 def test_empty_trace_directory_is_an_error(tmp_path):
     with pytest.raises(ValueError, match="no trace files"):
         asyncio.run(replay(ReplayConfig(), SessionTagger(), tmp_path, tmp_path / "out.jsonl"))

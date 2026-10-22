@@ -54,7 +54,7 @@ def _replay(args: argparse.Namespace) -> int:
     )
     replayer = asyncio.run(replay(config, tagger, args.traces, args.out))
     print(replayer.summary())
-    return 0 if replayer.stats else 1
+    return 0 if any(stat.ok for stat in replayer.stats) else 1
 
 
 def _mock(args: argparse.Namespace) -> int:
@@ -142,12 +142,13 @@ def build_parser() -> argparse.ArgumentParser:
         "hash ids, sessions, subagents and think times. Writes one <trace id>.json per trace.",
     )
     scale.add_argument("src", type=Path, help="Weka traces: a .jsonl file or a directory of *.json")
-    scale.add_argument("out_dir", type=Path)
+    scale.add_argument("out_dir", type=Path, help="directory for the scaled traces")
     scale.add_argument(
         "--factor",
         type=int,
         default=32,
-        help="tokens-per-block shrink factor: 32 fits a 32k context, 64 a 16k one (default 32)",
+        help="tokens-per-block shrink factor: 32 fits a 32k context, 64 a 16k one "
+        "(default %(default)s)",
     )
     scale.add_argument("--ids", type=Path, help="keep only the trace ids listed in this file")
     scale.add_argument("--limit", type=int, help="stop after this many traces")
@@ -172,15 +173,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("LH_BENCH_MODEL", DEFAULT_MODEL),
         help="model name sent in each request (env LH_BENCH_MODEL; default %(default)s)",
     )
-    replay.add_argument("--sessions", type=int, default=4, help="concurrent session trees")
-    replay.add_argument("--duration", type=float, default=60.0, help="seconds to send requests")
     replay.add_argument(
-        "--grace", type=float, default=30.0, help="seconds to let in-flight requests finish"
+        "--sessions", type=int, default=4, help="concurrent session trees (default %(default)s)"
     )
     replay.add_argument(
-        "--think-cap", type=float, default=600.0, help="cap on each think time in seconds"
+        "--duration",
+        type=float,
+        default=60.0,
+        help="seconds during which new requests start (default %(default)s)",
     )
-    replay.add_argument("--timeout", type=float, default=300.0, help="per-request timeout")
+    replay.add_argument(
+        "--grace",
+        type=float,
+        default=30.0,
+        help="seconds after --duration before in-flight requests are cancelled "
+        "(default %(default)s)",
+    )
+    replay.add_argument(
+        "--think-cap",
+        type=float,
+        default=600.0,
+        help="cap on each recorded think time, in seconds (default %(default)s)",
+    )
+    replay.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="per-request timeout in seconds (default %(default)s)",
+    )
     replay.add_argument(
         "--class",
         dest="slo_class",
@@ -199,7 +219,9 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument(
         "--no-ignore-eos", action="store_true", help="let the model stop before the trace's out"
     )
-    replay.add_argument("--seed", type=int, default=0, help="seed for the trace order")
+    replay.add_argument(
+        "--seed", type=int, default=0, help="seed of the trace order (default %(default)s)"
+    )
     replay.set_defaults(func=_replay)
 
     mock = commands.add_parser(
@@ -208,12 +230,25 @@ def build_parser() -> argparse.ArgumentParser:
         description="Streaming chat-completions mock bound to 127.0.0.1 that logs every "
         "request's headers and body fields.",
     )
-    mock.add_argument("--port", type=int, default=8000)
+    mock.add_argument(
+        "--port", type=int, default=8000, help="port on 127.0.0.1 (default %(default)s)"
+    )
     mock.add_argument("--log", type=Path, help="append one JSON line per request to this file")
-    mock.add_argument("--model", default="mock", help="model id listed by /v1/models")
-    mock.add_argument("--ttft-ms", type=float, default=20.0)
-    mock.add_argument("--itl-ms", type=float, default=2.0)
-    mock.add_argument("--max-tokens", type=int, default=64, help="cap on streamed tokens")
+    mock.add_argument(
+        "--model", default="mock", help="model id listed by /v1/models (default %(default)s)"
+    )
+    mock.add_argument(
+        "--ttft-ms",
+        type=float,
+        default=20.0,
+        help="delay before the first token (default %(default)s)",
+    )
+    mock.add_argument(
+        "--itl-ms", type=float, default=2.0, help="delay between tokens (default %(default)s)"
+    )
+    mock.add_argument(
+        "--max-tokens", type=int, default=64, help="cap on streamed tokens (default %(default)s)"
+    )
     mock.set_defaults(func=_mock)
 
     kv = commands.add_parser(
@@ -245,16 +280,29 @@ def build_parser() -> argparse.ArgumentParser:
         default="http://127.0.0.1:8000",
         help="engine base URL (default %(default)s); the engine needs /metrics and an offload tier",
     )
-    tiers.add_argument("--model", default=DEFAULT_MODEL)
+    tiers.add_argument("--model", default=DEFAULT_MODEL, help="model name (default %(default)s)")
     tiers.add_argument(
         "--lengths",
         default="1024,2048,4096,8192,16384,24576,31744",
         help="comma-separated prompt lengths in tokens (default %(default)s)",
     )
-    tiers.add_argument("--reps", type=int, default=5, help="samples per length (default 5)")
+    tiers.add_argument(
+        "--reps", type=int, default=5, help="samples per length (default %(default)s)"
+    )
     tiers.add_argument("--out", type=Path, required=True, help="run directory")
-    tiers.add_argument("--seed", type=int, default=0)
-    _add_load_arguments(tiers, default_priority=1)
+    tiers.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="seed of the prompts and the length order (default %(default)s)",
+    )
+    tiers.add_argument(
+        "--priority",
+        type=int,
+        default=1,
+        help="vLLM priority of the probe requests (default %(default)s); the load runs at 2",
+    )
+    _add_load_arguments(tiers)
     tiers.set_defaults(func=_tiers)
 
     turn = commands.add_parser(
@@ -264,30 +312,60 @@ def build_parser() -> argparse.ArgumentParser:
         "each stage; with --background, while agent load keeps the LLM busy. Writes run.json, "
         "turns.jsonl and summary.json.",
     )
-    turn.add_argument("--stt-url", default="http://127.0.0.1:8100/v1")
-    turn.add_argument("--llm-url", default="http://127.0.0.1:8000/v1")
-    turn.add_argument("--tts-url", default="http://127.0.0.1:8880/v1")
-    turn.add_argument("--stt-model", default="openai/whisper-large-v3-turbo")
-    turn.add_argument("--llm-model", default=DEFAULT_MODEL)
-    turn.add_argument("--tts-model", default="kokoro")
-    turn.add_argument("--voice", default="af_heart")
+    turn.add_argument(
+        "--stt-url", default="http://127.0.0.1:8100/v1", help="STT base URL (default %(default)s)"
+    )
+    turn.add_argument(
+        "--llm-url", default="http://127.0.0.1:8000/v1", help="LLM base URL (default %(default)s)"
+    )
+    turn.add_argument(
+        "--tts-url", default="http://127.0.0.1:8880/v1", help="TTS base URL (default %(default)s)"
+    )
+    turn.add_argument(
+        "--stt-model",
+        default="openai/whisper-large-v3-turbo",
+        help="STT model (default %(default)s)",
+    )
+    turn.add_argument("--llm-model", default=DEFAULT_MODEL, help="LLM model (default %(default)s)")
+    turn.add_argument("--tts-model", default="kokoro", help="TTS model (default %(default)s)")
+    turn.add_argument("--voice", default="af_heart", help="TTS voice (default %(default)s)")
     turn.add_argument(
         "--audio", type=Path, action="append", required=True, help="utterance WAV (repeatable)"
     )
-    turn.add_argument("--reps", type=int, default=20, help="measured turns per caller")
-    turn.add_argument("--warm", type=int, default=2, help="unmeasured warm-up turns per caller")
-    turn.add_argument("--concurrency", type=int, default=1, help="callers taking turns at once")
-    turn.add_argument("--max-tokens", type=int, default=60)
     turn.add_argument(
-        "--class", dest="slo_class", type=SloClass, choices=list(SloClass), default="realtime"
+        "--reps", type=int, default=20, help="measured turns per caller (default %(default)s)"
+    )
+    turn.add_argument(
+        "--warm",
+        type=int,
+        default=2,
+        help="unmeasured warm-up turns per caller (default %(default)s)",
+    )
+    turn.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="callers taking turns at once (default %(default)s)",
+    )
+    turn.add_argument(
+        "--max-tokens", type=int, default=60, help="cap on each reply (default %(default)s)"
+    )
+    turn.add_argument(
+        "--class",
+        dest="slo_class",
+        type=SloClass,
+        choices=list(SloClass),
+        default="realtime",
+        help="SLO class of the turns: their X-LH-Class and vLLM priority (default %(default)s)",
     )
     turn.add_argument("--out", type=Path, required=True, help="run directory")
-    _add_load_arguments(turn, default_priority=None)
+    _add_load_arguments(turn)
     turn.set_defaults(func=_voice_turn)
     return parser
 
 
-def _add_load_arguments(parser: argparse.ArgumentParser, default_priority: int | None) -> None:
+def _add_load_arguments(parser: argparse.ArgumentParser) -> None:
+    """The background-load flags of the latency probes."""
     parser.add_argument(
         "--background",
         type=LoadSpec.parse,
@@ -295,15 +373,11 @@ def _add_load_arguments(parser: argparse.ArgumentParser, default_priority: int |
         "decode:<tokens>x<concurrency> (long decodes)",
     )
     parser.add_argument(
-        "--decode-tokens", type=int, default=1024, help="output tokens per decode-load request"
+        "--decode-tokens",
+        type=int,
+        default=1024,
+        help="output tokens per decode-load request (default %(default)s)",
     )
-    if default_priority is not None:
-        parser.add_argument(
-            "--priority",
-            type=int,
-            default=default_priority,
-            help="vLLM priority of the probe requests (default %(default)s); load runs at 2",
-        )
     parser.add_argument(
         "--no-priority",
         action="store_true",
