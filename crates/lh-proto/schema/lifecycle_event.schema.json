@@ -11,7 +11,7 @@
       "minimum": 0
     },
     "event_id": {
-      "description": "Idempotency key, 1 to 128 characters, unique per emitter. A repeated id is acknowledged and ignored.",
+      "description": "Idempotency key, 1 to 128 bytes, unique per emitter. A repeated id is acknowledged and ignored.",
       "type": "string"
     },
     "session_id": {
