@@ -15,7 +15,7 @@ Separate mechanisms per workload would duplicate the prefetch and headroom logic
 
 - Define one `LifecycleEvent` type in `crates/lh-proto`. It is a flat JSON object whose `type` selects the variant and its fields (`turn_finished`, `tool_wait_started`, `user_speech_started`, `interrupted`, and the rest; see [PROTOCOL.md](../PROTOCOL.md)).
 - Generate JSON Schemas from the Rust types for the Python components (`crates/lh-proto/schema/`). A test fails when the checked-in schemas fall behind the code.
-- Events arrive at `POST /v1/events`, idempotent by `event_id`, or the control plane infers them from the traffic it proxies.
+- Events arrive at `POST /v1/events`, idempotent by `(source, event_id)`, or the control plane infers them from the traffic it proxies.
 - Readers ignore fields they do not know, so newer emitters do not break older control planes. They reject unknown event types, so a typo cannot silently change behavior.
 
 ## Consequences
