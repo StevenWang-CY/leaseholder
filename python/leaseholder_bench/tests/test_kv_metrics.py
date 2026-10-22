@@ -3,7 +3,13 @@ import math
 import pytest
 
 from leaseholder_bench.cli import main
-from leaseholder_bench.kv_metrics import IDLE_BEFORE_EVICT, REUSE_GAP, Histogram, compare
+from leaseholder_bench.kv_metrics import (
+    IDLE_BEFORE_EVICT,
+    REUSE_GAP,
+    Histogram,
+    compare,
+    samples,
+)
 
 LABELS = 'engine="0",model_name="m"'
 
@@ -35,6 +41,14 @@ def test_label_sets_are_summed_and_runs_are_differenced():
         f'{REUSE_GAP}_bucket{{engine="0",le="+Inf"}} 3\n{REUSE_GAP}_bucket{{engine="1",le="+Inf"}} 4'
     )
     assert Histogram.parse(text, REUSE_GAP).counts == (3.0, 7.0)
+    assert Histogram.parse(text, REUSE_GAP, {"engine": "1"}).counts == (2.0, 4.0)
+
+
+def test_samples_are_keyed_by_their_sorted_labels():
+    text = 'm_total{b="2",a="1"} 3\nm_total{a="9"} 4\nother_total 5\nm_created{a="1"} 1.7e9'
+    assert samples(text, "m_total") == {(("a", "1"), ("b", "2")): 3.0, (("a", "9"),): 4.0}
+    assert samples(text, "other_total") == {(): 5.0}
+    assert samples(text, "absent_total") == {}
 
 
 def test_quantiles_and_shares_interpolate_inside_buckets():
