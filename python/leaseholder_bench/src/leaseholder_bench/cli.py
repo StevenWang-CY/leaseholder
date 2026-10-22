@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import dataclasses
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -374,27 +375,61 @@ def _add_voice_turn(commands: Commands) -> None:
 
 
 def _e2(args: argparse.Namespace) -> int:
-    from leaseholder_bench.frontier import load_points, write_report
+    from leaseholder_bench.e2 import E2Error, Host, Systemd, load_arm, reset_cyan, run_point
+    from leaseholder_bench.frontier import load_points, render, write_report
 
-    rows, incomplete = load_points(args.run_dirs)
-    for run_dir in incomplete:
-        print(f"lh-bench e2: {run_dir}: the point did not complete", file=sys.stderr)
-    if not rows:
-        print("lh-bench e2: no complete point to report", file=sys.stderr)
+    try:
+        if args.action == "engine":
+            print(load_arm(args.arm).engine)
+        elif args.action == "reset":
+            applied = reset_cyan(Host(), Systemd())
+            for unit in ("gateway", "worker"):
+                print(f"{unit}: {'restarted' if applied[unit]['restarted'] else 'unchanged'}")
+        elif args.action == "run":
+            # A closed ssh session does not stop a point; SIGINT and SIGTERM do, after cleaning up.
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, _interrupted)
+            try:
+                summary = run_point(args.arm, args.out)
+            except KeyboardInterrupt:
+                print(f"lh-bench e2: {args.arm.stem} interrupted", file=sys.stderr)
+                return 130
+            print(render(summary))
+        else:
+            rows, incomplete = load_points(args.run_dirs)
+            for run_dir in incomplete:
+                print(f"lh-bench e2: {run_dir}: the point did not complete", file=sys.stderr)
+            if not rows:
+                print("lh-bench e2: no complete point to report", file=sys.stderr)
+                return 1
+            for path in write_report(rows, args.out):
+                print(path)
+    except E2Error as exc:
+        print(f"lh-bench e2: {exc}", file=sys.stderr)
         return 1
-    for path in write_report(rows, args.out):
-        print(path)
     return 0
+
+
+def _interrupted(signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt(signal.Signals(signum).name)
 
 
 def _add_e2(commands: Commands) -> None:
     e2 = commands.add_parser(
         "e2",
-        help="E2 points: build the frontier",
-        description="Place E2 points (voice-to-voice latency beside agent load) on the frontier of "
-        "background goodput against V2V p95.",
+        help="E2 points: measure one from its arm file on cyan, or build the frontier",
+        description="Measure E2 points (voice-to-voice latency beside agent load) and place them on "
+        "the frontier of background goodput against V2V p95.",
     )
     actions = e2.add_subparsers(dest="action", required=True)
+    run = actions.add_parser(
+        "run",
+        help="measure one point on cyan",
+        description="Configure cyan's units for the arm, check the engine, run the AIPerf replay and "
+        "the calls, and write run.json, the tools' outputs, metric snapshots and summary.json.",
+    )
+    run.add_argument("arm", type=Path, help="arm file (TOML); the point is named after the file")
+    run.add_argument("--out", type=Path, required=True, help="run directory")
     report = actions.add_parser(
         "report",
         help="build the frontier from run directories",
@@ -402,6 +437,12 @@ def _add_e2(commands: Commands) -> None:
     )
     report.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
     report.add_argument("--out", type=Path, required=True, help="report directory")
+    engine = actions.add_parser(
+        "engine",
+        help="print the engine an arm file needs, as deploy/phastform/variant.sh use takes it",
+    )
+    engine.add_argument("arm", type=Path, help="arm file (TOML)")
+    actions.add_parser("reset", help="undo what e2 run changed in cyan's units")
     e2.set_defaults(func=_e2)
 
 
