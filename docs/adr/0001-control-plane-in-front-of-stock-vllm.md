@@ -8,7 +8,7 @@
 One 16 GB GPU has to serve realtime voice turns and a swarm of tool-using coding agents. Stock vLLM 0.32 schedules everything from one queue:
 - priority scheduling orders the waiting queue and picks which running request to preempt when one cannot grow, but never preempts running work to admit a waiting request;
 - prefix-cache eviction is LRU, with no notion of when a session will be back;
-- a 16k-token agent turn costs 0.18 s from the GPU cache, 0.57 s from host RAM and 4.75 s recomputed (measured on this card).
+- a 16k-token agent turn costs 0.18 s from the GPU cache, 0.57 s from host RAM and 4.75 s recomputed (measured on this card on 2026-10-21 with BF16 weights; on the frozen box W1 measured 97 ms, 509 ms and 3.26 s, [BENCHMARKS](../BENCHMARKS.md)).
 
 There are three ways to add session awareness:
 1. patch or fork the vLLM scheduler;

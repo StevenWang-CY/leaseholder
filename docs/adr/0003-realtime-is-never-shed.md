@@ -8,9 +8,9 @@
 A voice caller expects an answer about a second after they stop talking. Rejecting a voice turn with a 429 drops the call mid-conversation, which is the failure users notice most. Load-shedding routers (llm-d's flow control, for example) treat every class the same way at the limit.
 
 On this hardware, the threat to voice is not request volume but background work holding the GPU:
-- one server-side voice turn takes 415 ms idle and 876 ms median while background agents run 8k-token prefills;
-- LLM time to first token rises from 39 to 371 ms;
-- vLLM's priority cannot preempt running requests (ADR-0001).
+- one server-side voice turn takes 415 ms idle and 876 ms median while background agents run 8k-token prefills (the 2026-10-22 probe; W1 measured 589 ms idle and 1,261 ms beside one stream of cold 8k prefills, [BENCHMARKS](../BENCHMARKS.md));
+- LLM time to first token rises from 39 to 371 ms (W1: 49 to 172 ms);
+- vLLM's priority cannot preempt running requests to admit a waiting one (ADR-0001).
 
 ## Decision
 

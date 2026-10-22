@@ -5,7 +5,7 @@
 
 ## Context
 
-Idle sessions must park somewhere cheaper than the 36,400-token GPU pool. Restoring 16k tokens from host RAM takes 0.57 s against 4.75 s recomputed, and restore beats recompute from about 64–128 tokens. The candidates were LMCache, a custom connector, and vLLM 0.32's native `OffloadingConnector`. The native connector already has:
+Idle sessions must park somewhere cheaper than the 36,400-token GPU pool. Restoring 16k tokens from host RAM takes 0.57 s against 4.75 s recomputed, and restore beats recompute from about 64–128 tokens (the 2026-10-21 BF16 probe; on the frozen box W1 measured 509 ms against 3.26 s, with restore ahead at every measured length from 1,024 tokens, [BENCHMARKS](../BENCHMARKS.md)). The candidates were LMCache, a custom connector, and vLLM 0.32's native `OffloadingConnector`. The native connector already has:
 - a pluggable `CachePolicy` (`cache_policy_module_path`);
 - write-through of generated tokens (`offload_prompt_only: false`);
 - per-request `kv_transfer_params`;

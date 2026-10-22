@@ -150,7 +150,7 @@ The control plane is a Rust workspace of about 3–4k lines, excluding tests. Th
 1. **Authenticate** the API key and resolve the tenant.
 2. **Sanitize** the engine-control headers and body fields.
 3. **Resolve** the session and class.
-4. **Admit.** Choose among *admit now*, *defer* (queue with a deadline), *make room* (realtime only: tighten the background budget, demote) and *degrade*. Predicted TTFT is queue time plus uncached tokens over the measured prefill rate, plus restore cost (GPU hit ≈ 60 ms + 7.2 µs/token; a CPU restore adds ≈ 8 ms + 23.6 µs/token).
+4. **Admit.** Choose among *admit now*, *defer* (queue with a deadline), *make room* (realtime only: tighten the background budget, demote) and *degrade*. Predicted TTFT is queue time plus uncached tokens over the measured prefill rate, plus restore cost (`lh-core`'s E0 model: GPU hit ≈ 35 ms + 3.8 µs/token; a CPU restore adds ≈ 10 ms + 23.6 µs/token).
 5. **Place** on the holder if its epoch is valid, else on the least-loaded healthy node.
 6. **Forward** with `X-Session-ID`, `X-Vllm-Priority` and the lease hint in `kv_transfer_params`.
 7. **Stream back** through a bounded per-stream buffer.

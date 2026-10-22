@@ -59,7 +59,7 @@ The turn runs from sending the audio to the first byte of TTS audio. That is the
 
 | Background agent load | STT | LLM first token | LLM first sentence | TTS first audio | **Turn** | Background prefill |
 |---|---|---|---|---|---|---|
-| None | 160 / 168 | 49 / 51 | 251 / 319 | 176 / 187 | **588 / 665** | — |
+| None | 160 / 168 | 49 / 51 | 251 / 319 | 176 / 187 | **589 / 665** | — |
 | One stream of cold 8k-token prefills | 233 / 240 | 172 / 197 | 807 / 937 | 226 / 251 | **1,261 / 1,413** | 6,220 tokens/s |
 | Two streams | 233 / 248 | 565 / 1,207 | 1,802 / 2,113 | 231 / 254 | **2,279 / 2,593** | 6,966 tokens/s |
 
@@ -133,7 +133,7 @@ This was W0 checklist item 5. The setup: AIPerf `agentic_replay` of the 32×-sca
 | TTFT | 135 ms | 815 ms | 8,501 ms |
 | Inter-token latency | 15.6 ms | 40.9 ms | 59.1 ms |
 
-**Where prompt tokens came from.** 93.4% were served from cache, and only 6.6% were computed, mostly the cold first turns of new session plays.
+**Where prompt tokens came from.** 93.4% were served from cache, and only 6.6% were computed. `lh-sim`'s replay of this run splits the computed share (6.1% there) into new context each turn adds (3.15 points), recompute after eviction from both tiers (2.05) and cold first turns (0.91).
 
 | Source | Share of prompt tokens |
 |---|---|

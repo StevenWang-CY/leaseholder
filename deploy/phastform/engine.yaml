@@ -18,7 +18,9 @@ kv-cache-memory: 5368709120
 gpu-memory-utilization: 0.70
 enable-prefix-caching: true
 
-# Priority orders only the waiting queue. The step cap bounds how long running decodes wait behind a prefill.
+# Priority orders the waiting queue and picks the running request to preempt when the KV cache is full; it never
+# preempts running work to admit a waiting request (vLLM #40004). The step cap bounds how long running decodes wait
+# behind a prefill.
 scheduling-policy: priority
 max-num-batched-tokens: 512
 long-prefill-token-threshold: 256

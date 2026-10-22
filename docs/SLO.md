@@ -14,7 +14,7 @@ The voice targets are calibrated against voice alone on the frozen box (W1, 2026
 
 | Indicator | Definition | Target |
 |---|---|---|
-| Server-side voice turn | The utterance sent to STT, until the first byte of TTS audio (`lh-bench voice-turn`): the part serving controls | p95 ≤ 800 ms (voice alone: 588 ms p50, 665 ms p90) |
+| Server-side voice turn | The utterance sent to STT, until the first byte of TTS audio (`lh-bench voice-turn`): the part serving controls | p95 ≤ 800 ms (voice alone: 589 ms p50, 665 ms p90) |
 | Voice V2V | End of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing | p95 at most 250 ms above voice alone (voice alone: 1,614 ms p50, 1,760 ms p95, 1,889 ms p99) |
 | Barge-in to silence | The user starts speaking during bot speech, until bot audio falls below threshold | p95 ≤ 250 ms beyond the configured minimum interruption duration |
 | Audio continuity | Share of bot utterances with any gap of 100 ms or more | ≤ 1% |
