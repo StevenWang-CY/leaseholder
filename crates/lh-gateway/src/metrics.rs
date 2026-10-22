@@ -212,6 +212,8 @@ pub(crate) struct Metrics {
     waiting: Family<ClassLabels, Gauge>,
     admission_wait: Histograms<ClassLabels>,
     refused: Family<RefusalLabels, Counter>,
+    resubmits: Family<ClassLabels, Counter>,
+    discarded_tokens: Family<ClassLabels, Counter>,
 }
 
 impl Metrics {
@@ -234,6 +236,8 @@ impl Metrics {
             waiting: Family::default(),
             admission_wait: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
             refused: Family::default(),
+            resubmits: Family::default(),
+            discarded_tokens: Family::default(),
         };
         for class in SloClass::ALL.map(SloClass::as_str) {
             for outcome in Outcome::ALL.map(Outcome::as_str) {
@@ -251,6 +255,8 @@ impl Metrics {
             create(&metrics.admitted, ClassLabels { class });
             create(&metrics.waiting, ClassLabels { class });
             create(&metrics.admission_wait, ClassLabels { class });
+            create(&metrics.resubmits, ClassLabels { class });
+            create(&metrics.discarded_tokens, ClassLabels { class });
         }
         for route in [Route::ChatCompletions, Route::Completions, Route::Responses] {
             let route = route.as_str();
@@ -355,6 +361,17 @@ impl Metrics {
             "Requests the admission point refused, by class and reason",
             self.refused.clone(),
         );
+        r.register(
+            "admission_resubmits",
+            "Requests sent upstream again after a preemption dropped their attempt",
+            self.resubmits.clone(),
+        );
+        r.register(
+            "admission_discarded_tokens",
+            "Estimated prompt tokens of the upstream attempts preemptions dropped: at most the prefill they \
+             discarded",
+            self.discarded_tokens.clone(),
+        );
         self
     }
 
@@ -447,6 +464,22 @@ impl Metrics {
         self.admission_wait
             .get_or_create(&labels)
             .observe(wait.as_secs_f64());
+    }
+
+    /// A preemption dropped an upstream attempt of `tokens` estimated prompt tokens.
+    pub fn preempted(&self, class: SloClass, tokens: u64) {
+        let labels = ClassLabels {
+            class: class.as_str(),
+        };
+        self.discarded_tokens.get_or_create(&labels).inc_by(tokens);
+    }
+
+    /// A preempted request was sent upstream again.
+    pub fn resubmitted(&self, class: SloClass) {
+        let labels = ClassLabels {
+            class: class.as_str(),
+        };
+        self.resubmits.get_or_create(&labels).inc();
     }
 
     pub fn refused(&self, class: SloClass, reason: Refusal) {

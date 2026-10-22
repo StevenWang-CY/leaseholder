@@ -42,9 +42,20 @@ keys_sha256 = ["<sha256 of the bench key>"]
 default_class = "interactive"
 
 # The admission policy (crates/lh-gateway/README.md#admission). Without the table, every request goes upstream
-# at once. E2's baselines set one, for example a cap on background concurrency:
+# at once. E2's baselines set one policy and its keys:
 # [admission]
 # policy = "static-cap"
 # background_max_in_flight = 4
+#
+# policy = "token-reservation"
+# reserved_tokens = 2048
+# pool_tokens = 36400
+#
+# policy = "flow-control"
+# ceilings = { realtime = 16, interactive = 12, background = 8 }
+#
+# policy = "preempt-resubmit"
+#
+# Every policy's queues:
 # queue_limit = 1024
 # queue_timeout_s = 60

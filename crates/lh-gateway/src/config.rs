@@ -229,6 +229,7 @@ enum PolicyName {
     StaticCap,
     TokenReservation,
     FlowControl,
+    PreemptResubmit,
 }
 
 impl PolicyName {
@@ -238,6 +239,7 @@ impl PolicyName {
             Self::StaticCap => "static-cap",
             Self::TokenReservation => "token-reservation",
             Self::FlowControl => "flow-control",
+            Self::PreemptResubmit => "preempt-resubmit",
         }
     }
 }
@@ -395,6 +397,7 @@ impl RawAdmission {
                 "queue_timeout_s",
             ],
             PolicyName::FlowControl => &["ceilings", "queue_limit", "queue_timeout_s"],
+            PolicyName::PreemptResubmit => &["queue_limit", "queue_timeout_s"],
         };
         let set = [
             (
@@ -464,6 +467,7 @@ impl RawAdmission {
                     },
                 }
             }
+            PolicyName::PreemptResubmit => Policy::PreemptResubmit,
         };
         Ok(Some(Admission {
             policy,
@@ -728,6 +732,10 @@ mod tests {
             background: 8,
         };
         assert_eq!(flow.policy, Policy::FlowControl { ceilings });
+        let preempt = admission("policy = \"preempt-resubmit\"")
+            .unwrap()
+            .admission;
+        assert_eq!(preempt.map(|a| a.policy), Some(Policy::PreemptResubmit));
 
         for (keys, cause) in [
             ("policy = \"static_cap\"", "unknown variant"),
@@ -769,6 +777,10 @@ mod tests {
             (
                 "policy = \"flow-control\"\nceilings = { realtime = 4, interactive = 4, background = 0 }",
                 "must be positive",
+            ),
+            (
+                "policy = \"preempt-resubmit\"\nbackground_max_in_flight = 4",
+                "does not apply to policy preempt-resubmit",
             ),
         ] {
             let err = admission(keys).unwrap_err();

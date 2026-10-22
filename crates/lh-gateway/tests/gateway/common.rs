@@ -32,7 +32,8 @@ pub const BENCH_KEY: &str = "bench-key";
 
 /// A request header naming the request, for [`Mock::tags`] and [`Mock::dropped`].
 pub const TAG: &str = "x-mock-tag";
-/// A request header that makes the mock engine hold a JSON answer until [`Mock::release`].
+/// A request header that makes the mock engine hold its answer until [`Mock::release`]: a JSON response's
+/// headers, or an event stream's first chunk, as an engine holds them through a prefill.
 pub const GATE: &str = "x-mock-gate";
 
 /// How the mock engine answers inference requests.
@@ -243,14 +244,17 @@ async fn answer(State(state): State<Arc<MockState>>, request: Request) -> Respon
             ([(CONTENT_TYPE, "application/json")], "{}").into_response()
         }
         Script::Sse { chunks, gap } => {
+            let gate = gated.then_some(state);
             let chunks = stream::unfold(
-                (chunks.into_iter(), guard, true),
-                move |(mut chunks, guard, first)| async move {
+                (chunks.into_iter(), guard, gate, true),
+                move |(mut chunks, guard, gate, first)| async move {
                     let chunk = chunks.next()?;
                     if !first {
                         tokio::time::sleep(gap).await;
+                    } else if let Some(state) = &gate {
+                        state.pass().await;
                     }
-                    Some((Ok::<_, Infallible>(chunk), (chunks, guard, false)))
+                    Some((Ok::<_, Infallible>(chunk), (chunks, guard, gate, false)))
                 },
             );
             event_stream(Body::from_stream(chunks))

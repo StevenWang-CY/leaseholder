@@ -76,9 +76,13 @@ impl Admission {
         }
         let mut ticket = {
             let mut state = self.lock();
-            // Only token-reservation prices requests, and only background ones.
-            let estimated = (matches!(self.policy, Policy::TokenReservation { .. })
-                && class == SloClass::Background)
+            // Background requests are priced where a policy counts their tokens: token-reservation admits by
+            // them, and preempt-resubmit counts those its preemptions discard.
+            let priced = matches!(
+                self.policy,
+                Policy::TokenReservation { .. } | Policy::PreemptResubmit
+            );
+            let estimated = (priced && class == SloClass::Background)
                 .then(|| (session.clone(), body_bytes as u64));
             let tokens = estimated.as_ref().map_or(0, |(session, body_bytes)| {
                 state.sessions.estimate(session, *body_bytes)
@@ -103,8 +107,10 @@ impl Admission {
                 id: arrival.id,
                 class,
                 signal,
+                tokens,
                 estimated,
                 prompt_tokens: None,
+                first_byte: false,
                 left: false,
             }
         };
@@ -116,10 +122,6 @@ impl Admission {
     /// The policy; `Debug` shows its parameters.
     pub fn policy(&self) -> Policy {
         self.policy
-    }
-
-    pub fn queue_timeout(&self) -> Duration {
-        self.queue_timeout
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -164,11 +166,15 @@ pub(crate) struct Ticket {
     id: RequestId,
     class: SloClass,
     signal: watch::Receiver<Signal>,
+    /// The request's estimated prompt tokens; 0 where its policy does not price it.
+    tokens: u64,
     /// The session and body size of a request whose tokens were estimated: its usage informs the next
     /// estimate for the session.
     estimated: Option<(SessionId, u64)>,
     /// The prompt tokens the response reported.
     pub prompt_tokens: Option<u64>,
+    /// Whether the response's first byte has been recorded.
+    first_byte: bool,
     /// Set when the request has already left, so dropping the ticket does nothing.
     left: bool,
 }
@@ -185,6 +191,46 @@ impl Ticket {
         // The sender goes only after it sent Shed, or when the request leaves, which an admitted request does
         // by dropping this ticket.
         let _ = self.signal.wait_for(|signal| *signal == Signal::Shed).await;
+    }
+
+    /// Whether the policy may preempt the request before its first byte: preempt-resubmit preempts
+    /// background requests.
+    pub fn preemptible(&self) -> bool {
+        self.class == SloClass::Background && self.admission.policy == Policy::PreemptResubmit
+    }
+
+    /// Completes when the request is preempted: it waits again, and its upstream attempt is to be dropped.
+    pub async fn preempted(&mut self) {
+        let _ = self
+            .signal
+            .wait_for(|signal| *signal != Signal::Admitted)
+            .await;
+    }
+
+    /// Counts the upstream attempt a preemption dropped, and waits until the request is admitted again, for at
+    /// most `queue_timeout_s`.
+    pub async fn readmitted(&mut self) -> Result<(), Refusal> {
+        self.admission.metrics.preempted(self.class, self.tokens);
+        self.wait().await?;
+        self.admission.metrics.resubmitted(self.class);
+        Ok(())
+    }
+
+    /// Records the response's first byte, which under preempt-resubmit ends a realtime request's hold on
+    /// background work and makes a background request safe from preemption. False if the request was
+    /// preempted first: the byte belongs to a dropped attempt and must not be relayed. Only a preemptible
+    /// request can be.
+    pub fn first_byte(&mut self) -> bool {
+        if self.first_byte || self.admission.policy != Policy::PreemptResubmit {
+            return true;
+        }
+        let mut state = self.admission.lock();
+        let Some(actions) = state.core.first_byte(self.id) else {
+            return false;
+        };
+        state.apply(actions);
+        self.first_byte = true;
+        true
     }
 
     /// Waits until the request is admitted, for at most `queue_timeout_s`.

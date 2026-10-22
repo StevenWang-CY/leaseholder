@@ -320,3 +320,125 @@ async fn a_shed_stream_is_cut_off_with_an_error() {
     )
     .await;
 }
+
+const PREEMPT: &str = "[admission]\npolicy = \"preempt-resubmit\"";
+
+fn event_stream_chunks() -> Vec<Bytes> {
+    [
+        "data: {\"n\":1}\n\n",
+        "data: {\"n\":2}\n\n",
+        "data: [DONE]\n\n",
+    ]
+    .into_iter()
+    .map(Bytes::from)
+    .collect()
+}
+
+#[tokio::test]
+async fn preempt_resubmit_sends_background_work_again_after_the_realtime_first_byte() {
+    let chunks = event_stream_chunks();
+    let expected = chunks.concat();
+    let mut mock = Mock::start(Script::Sse {
+        chunks,
+        gap: Duration::from_millis(5),
+    })
+    .await;
+    let gw = Gateway::start(mock.addr, PREEMPT).await;
+    // In prefill at the engine: its response has headers and no first byte yet.
+    let first = spawn_call(&gw.tcp, background("bg1"), CHAT);
+    mock.await_requests(1).await;
+
+    // A realtime arrival preempts it: the engine's request is dropped, and background waits for the realtime
+    // request's first byte, which the engine holds too.
+    let voice = spawn_call(&gw.unix, realtime("rt", true), CHAT);
+    mock.dropped("bg1", Duration::from_secs(2)).await;
+    let second = spawn_call(&gw.tcp, background("bg2"), CHAT);
+    gw.await_metric(WAITING, 2.0).await;
+    assert_eq!(mock.tags(), ["bg1", "rt"]);
+
+    mock.release(1);
+    mock.await_requests(4).await;
+    let mut tags = mock.tags();
+    tags[2..].sort();
+    assert_eq!(tags, ["bg1", "rt", "bg1", "bg2"]);
+    mock.release(2);
+    for reply in [first, second, voice] {
+        let reply = reply.await.unwrap();
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.header("content-type"), Some("text/event-stream"));
+        assert_eq!(&reply.body[..], &expected[..], "one whole response");
+    }
+    let metrics = gw.metrics().await;
+    let series = |name| format!("lh_gateway_admission_{name}_total{{class=\"background\"}}");
+    assert_eq!(metric(&metrics, &series("resubmits")), Some(1.0));
+    assert!(metric(&metrics, &series("discarded_tokens")).unwrap() > 0.0);
+    assert_eq!(metric(&metrics, &series("admitted")), Some(2.0));
+}
+
+#[tokio::test]
+async fn a_request_waiting_for_its_response_headers_is_preempted_and_answered_once() {
+    let mut mock = Mock::start(Script::Json(r#"{"choices":[]}"#)).await;
+    let gw = Gateway::start(mock.addr, PREEMPT).await;
+    let background = spawn_call(&gw.tcp, background("bg"), CHAT);
+    mock.await_requests(1).await;
+    let voice = call(
+        &gw.unix,
+        "POST",
+        "/v1/chat/completions",
+        &realtime("rt", false),
+        CHAT,
+    )
+    .await;
+    assert_eq!(voice.status, 200);
+    mock.dropped("bg", Duration::from_secs(2)).await;
+    mock.await_requests(3).await;
+    mock.release(1);
+    let reply = background.await.unwrap();
+    assert_eq!(
+        (reply.status, &reply.body[..]),
+        (http::StatusCode::OK, &br#"{"choices":[]}"#[..])
+    );
+    assert_eq!(mock.tags(), ["bg", "rt", "bg"]);
+}
+
+#[tokio::test]
+async fn a_background_request_already_streaming_is_never_preempted() {
+    let chunks = event_stream_chunks();
+    let expected = chunks.concat();
+    let mock = Mock::start(Script::Sse {
+        chunks,
+        gap: Duration::from_millis(100),
+    })
+    .await;
+    let gw = Gateway::start(mock.addr, PREEMPT).await;
+    let headers = [AGENTS_AUTH, (TAG, "bg")];
+    let (response, _connection) =
+        open(&gw.tcp, "POST", "/v1/chat/completions", &headers, CHAT).await;
+    let mut body = response.into_body();
+    let mut received = body
+        .frame()
+        .await
+        .unwrap()
+        .unwrap()
+        .into_data()
+        .unwrap()
+        .to_vec();
+
+    let voice = call(
+        &gw.unix,
+        "POST",
+        "/v1/chat/completions",
+        &realtime("rt", false),
+        CHAT,
+    )
+    .await;
+    assert_eq!(voice.status, 200);
+    while let Some(frame) = body.frame().await {
+        received.extend_from_slice(&frame.unwrap().into_data().unwrap());
+    }
+    assert_eq!(received, expected);
+    assert_eq!(mock.tags(), ["bg", "rt"]);
+    let metrics = gw.metrics().await;
+    let resubmits = "lh_gateway_admission_resubmits_total{class=\"background\"}";
+    assert_eq!(metric(&metrics, resubmits), Some(0.0));
+}
