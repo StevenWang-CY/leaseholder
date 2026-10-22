@@ -2,22 +2,24 @@
 
 [![CI](https://github.com/StevenWang-CY/leaseholder/actions/workflows/ci.yml/badge.svg)](https://github.com/StevenWang-CY/leaseholder/actions/workflows/ci.yml)
 
-**One GPU, two clocks.** Leaseholder is a session-aware serving control plane for vLLM. It lets one 16 GB GPU serve realtime voice calls and a swarm of coding agents at the same time, within explicit SLOs.
+**SLO-tiered serving on a shared GPU.** Leaseholder runs a never-shed realtime tier beside a harvested best-effort tier on one vLLM replica, and times the protection from conversation lifecycle events. Voice calls are the hardest realtime client; coding agents are the heavy-KV background. *One GPU, two clocks.*
 
-Agents run on tool time: seconds to minutes between turns, with long contexts they come back to. Voice runs on speech time: the caller expects an answer about a second after they stop talking. Stock engines schedule both from one queue and evict idle sessions by LRU. Leaseholder turns the lifecycle events of both workloads into **KV-cache leases**. The inputs are tool waits for agents, and speech onset, end of turn and barge-in for voice. With the leases it:
-- holds GPU headroom for the next spoken turn;
-- parks idle agent sessions in host RAM and brings them back before their tools return;
-- honors API cache TTLs;
+API providers sell the same two classes (OpenAI Fast and Flex, Google Priority and Flex, Anthropic Priority and Batch) and harvest the cheap one by killing and retrying it. On one replica that is not enough: long agent prefills slow every stage of a voice turn, and a waiting voice turn cannot preempt running agent work when the KV cache is full. Leaseholder takes the lifecycle events of both workloads (speech onset, end of turn and barge-in from voice; tool waits from agents) and:
+- reserves GPU headroom for the next spoken turn before its request exists, and frees it by parking background sessions in host RAM rather than killing them;
+- throttles background prefill while a voice turn is in flight;
+- brings parked agent sessions back before their tools return;
 - attributes every recomputed prompt token to a cause.
+
+Classes, budgets, eviction, and parking with prefetch already ship or are published; here they are baselines. [docs/PRIOR-ART.md](docs/PRIOR-ART.md) says what is new and what is not.
 
 ## The problem, measured on one RTX 5060 Ti 16 GB
 
-| | vLLM 0.32, measured 2026-10-21/22 |
+| | vLLM 0.32, Qwen3-4B-FP8, the frozen box (W1, 2026-10-22) |
 |---|---|
-| Resuming a 16k-token agent turn | **0.18 s** from the GPU cache · **0.57 s** restored from host RAM · **4.75 s** recomputed |
+| Resuming a 16k-token agent turn | **97 ms** from the GPU cache · **509 ms** restored from host RAM · **3.26 s** recomputed |
 | GPU KV pool with speech-to-text, LLM and text-to-speech co-located | **36,400 tokens**: two or three agent contexts |
-| One voice turn on the server (STT → first LLM sentence → first TTS audio) | **415 ms** idle, **876 ms** median while background agents run long prefills |
-| What stock priority scheduling does about it | Orders only the waiting queue; it never preempts running work to admit a waiting voice turn |
+| One voice turn on the server (STT → first LLM sentence → first TTS audio), p50 | **589 ms** idle · **1,261 ms** beside one stream of cold 8k-token agent prefills · **2,279 ms** beside two |
+| What stock priority scheduling does about it | vLLM preempts among running requests, but a waiting voice turn cannot preempt running work when the KV cache is full ([#40004](https://github.com/vllm-project/vllm/issues/40004)) |
 
 More numbers are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -41,7 +43,7 @@ More numbers are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
   - The control plane decides when to bring KV back, from predictions.
   - Engine-side code is limited to vLLM's own plugin points.
 - **One event schema for agents and voice.** A tool return and a speech onset trigger the same prefetch and headroom mechanism.
-- **Realtime is never shed.** Under pressure the control plane makes room by deferring and demoting background work, then degrades the reply. It never rejects a voice turn.
+- **Realtime is never shed.** Under pressure the control plane makes room by parking and deferring background work, then degrades the reply. It never rejects a voice turn.
 - **KV never crosses the network.** Sessions stick to the node that holds them. Every service binds loopback; hosts talk over SSH tunnels; the voice plane runs in a network namespace with no route out.
 
 The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

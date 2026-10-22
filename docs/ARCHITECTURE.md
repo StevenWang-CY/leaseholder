@@ -1,12 +1,14 @@
 # Architecture
 
-Leaseholder is a session-aware serving control plane. It lets **one commodity GPU serve live voice conversations and a swarm of tool-using agents at the same time, within explicit SLOs**.
-- **Position.** It sits between API clients and vLLM.
-- **Inputs.** It consumes lifecycle events from both workloads: tool waits from agents; speech onset, end of turn and barge-in from voice.
+Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier beside a harvested best-effort tier on one vLLM replica**, with the protection timed by conversation lifecycle events.
+- **Position.** A thin control plane between API clients and vLLM. Its policy lives in a library, `lh-core`, so it can also be proposed into routers that already run in production.
+- **Inputs.** Lifecycle events from both workloads: tool waits from agents; speech onset, end of turn and barge-in from voice.
 - **Leases.** From those events it manages KV-cache leases: where each session's KV lives (GPU or host RAM), when the session will be back, and how much GPU headroom to hold for the next realtime turn.
 - **Ledger.** It records why every recomputed prompt token was recomputed.
 
 *One GPU, two clocks.* Agents run on tool time, with seconds to minutes between turns. Voice runs on speech time: the user expects an answer about a second after they stop talking. Stock engines schedule both with one queue; Leaseholder schedules each by its own clock.
+
+**What is ours, and what is not.** Priority classes, budgets, eviction of best-effort work and parking with prefetch already ship (llm-d, SMG, Dynamo) or are published (ConServe, Tokencake, MORI); they are baselines here. The contributions are headroom timed by lifecycle events and freed by parking, an engine fix that lets a waiting high-priority request preempt running work under KV pressure, and a validated recompute ledger. See [PRIOR-ART.md](PRIOR-ART.md).
 
 ## 1. Tenets
 
@@ -157,10 +159,12 @@ The control plane is a Rust workspace of about 3–4k lines, excluding tests. Th
 
 ### 4.3 Turn-imminent headroom
 
-vLLM's priority orders only its waiting queue and never preempts running requests to admit a waiting one, so a KV pool full of running background agents can hold a voice turn for seconds. While any realtime session is `USER_SPEAKING` or waiting for its first sentence, the control plane:
-- caps background prefill admission at a small token budget;
-- keeps free KV at least equal to the realtime working set, by deferring new background turns and letting finished ones park in the CPU tier;
-- prefetches the speaking session's KV if it is not GPU-resident. A 2k-token restore adds about 60 ms over a GPU hit, well inside 1–3 s of speech.
+vLLM preempts among running requests but never on behalf of a waiting one, so a KV pool full of running background agents can hold a voice turn for seconds ([#40004](https://github.com/vllm-project/vllm/issues/40004)). Long background prefills also slow every stage of the turn: on the frozen box, one stream of cold 8k-token prefills takes the server-side turn from 589 to 1,261 ms. While any realtime session is `USER_SPEAKING` or waiting for its first sentence, the control plane:
+- throttles background prefill admission to a small token budget, from end of speech to first audio (the critical window);
+- keeps free KV at least equal to the realtime working set, by deferring new background turns and parking finished ones in the CPU tier;
+- prefetches the speaking session's KV if it is not GPU-resident. A 2k-token restore adds about 55 ms over a GPU hit, well inside 1–3 s of speech.
+
+The trigger is the earliest reliable signal: speech onset, or the transcript with which LiveKit starts preemptive generation, before the end of turn is confirmed. E2 compares the triggers and charges headroom held without a following turn as a false alarm. Where control-plane headroom is not enough, the engine patch ("make room") lets a waiting realtime request preempt running background work and keep the victim's KV in the CPU tier.
 
 Aging prevents background starvation. All of this runs on top of the engine's own step cap (`--max-num-batched-tokens 512 --long-prefill-token-threshold 256`), which E2 sweeps.
 
@@ -223,15 +227,17 @@ Every experiment runs on one frozen configuration with audio co-located: [`deplo
 
 ## 7. Realtime voice pipeline
 
-- **Components.** All stock: LiveKit server 1.13 and LiveKit Agents 1.8.8 in the voice-plane namespace on cyan, with Silero VAD and the turn detector on CPU. The OpenAI STT, LLM and TTS plugins reach the frozen box through Unix-socket forwards.
+- **Components.** All stock: LiveKit server 1.13 and LiveKit Agents 1.8.8 in the voice-plane namespace on cyan (`lh-voice-worker`, [`python/leaseholder_voice`](../python/leaseholder_voice)), with Silero VAD and LiveKit's audio end-of-turn model (`turn-detector-v1-mini`, run locally) on CPU. The OpenAI STT and TTS plugins reach the frozen box through Unix-socket forwards; the LLM plugin reaches the control plane's socket.
+- **Turn handling.** LiveKit's defaults: endpointing between 0.5 and 3 s, and preemptive generation on, which starts the LLM request on the final transcript before the end of turn is confirmed and discards it if the user continues. E2 runs it on and off and reports the discarded tokens.
 - **Headers.** The LLM plugin sends `X-LH-Class: realtime` and the room-scoped session id (`voice-<room SID>`) through its `extra_headers` option. The worker creates one LLM instance per session.
 - **Interruption handling.** The stock LiveKit setting pauses the reply audio after 0.5 s of barge-in speech and interrupts the reply only on the barge-in's final transcript. Until then the LLM stream stays open, 2.19 s after onset in the W0 test. With `resume_false_interruption=False` the stream closes 0.58 s after onset, at the cost of cutting the reply on a cough. The setting is fixed across E2 arms, and the wasted tokens are reported.
 - **Worker settings.**
   - `AgentServer(host="127.0.0.1")`, because the default binds all interfaces.
   - An explicit small `num_idle_processes`, because production mode defaults to the CPU count.
-  - An LLM request timeout above 10 s, because `llm_conn_options` defaults to 10 s and a cold prefill can exceed it.
-- **Lifecycle.**
-  - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended` and `interrupted` to the control plane.
+  - An LLM request timeout of 30 s, because `llm_conn_options` defaults to 10 s and a cold prefill can exceed it.
+  - Each call's room is deleted when the caller hangs up, so finished calls do not hold a job.
+- **Lifecycle** (W3).
+  - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended` and `interrupted` to the control plane, which already accepts and deduplicates them (`POST /v1/events`).
   - Speech onset triggers prefetch and headroom.
   - On barge-in, the LLM stream closes, the control plane aborts upstream, and the transcript is truncated to `played_ms`.
 - **Measurement bots.** These are `livekit-rtc` Python bots in the same namespace. They play utterances with known end timestamps and record the agent's track; V2V, barge-in-to-silence and gaps are computed from waveforms on one clock. VAD and turn-detection settings are fixed across arms, and end-of-utterance delay is reported as its own stage.
