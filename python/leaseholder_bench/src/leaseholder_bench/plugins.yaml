@@ -1,0 +1,29 @@
+schema_version: "1.0"
+
+endpoint:
+  leaseholder_chat:
+    class: leaseholder_bench.aiperf_plugin:LeaseholderChatEndpoint
+    description: |
+      OpenAI chat completions plus Leaseholder's per-session metadata: the X-Session-ID
+      header (the session-tree root, shared by a parent and its subagents), the X-LH-Class
+      header, and the prompt_cache_key and vLLM priority body fields.
+      Configured by LH_BENCH_CLASS, LH_BENCH_CLASS_MAP and LH_BENCH_SEND_PRIORITY.
+    metadata:
+      endpoint_path: /v1/chat/completions
+      supports_streaming: true
+      produces_tokens: true
+      tokenizes_input: true
+      consumes_system_message: true
+      supports_cache_bust: true
+      metrics_title: LLM Metrics
+
+custom_dataset_loader:
+  weka_trace_scaled:
+    class: leaseholder_bench.aiperf_plugin:WekaTraceScaledLoader
+    description: |
+      weka_trace that honours each trace file's own block_size, for traces scaled by
+      `lh-bench scale-traces`. The stock entry forces 64 tokens per block.
+      Usage: --custom-dataset-type weka_trace_scaled --input-file DIR
+    metadata:
+      is_trace: true
+      default_prompt_corpus: coding

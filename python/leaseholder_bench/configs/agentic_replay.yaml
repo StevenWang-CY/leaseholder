@@ -1,0 +1,58 @@
+# AIPerf 0.13.0 agentic_replay of block-scaled Claude Code traces through the leaseholder_chat
+# endpoint, which adds the X-Session-ID and X-LH-Class headers and the prompt_cache_key and
+# priority body fields to every request.
+#
+# agentic_replay keeps `concurrency` session trees live. Each lane starts at a random point of a
+# trace, replays it with its recorded think times and subagents, then recycles a trace with a fresh
+# cache-bust marker. AIPerf 0.13.0 selects this timing mode only from YAML; there is no CLI flag.
+#
+# AIPerf substitutes ${VAR:default} when it loads the file. Source aiperf.env first: it disables
+# AIPerf's dataset cache, which AIPerf can only take from the environment.
+#
+#   . configs/aiperf.env
+#   LH_BENCH_URL=http://127.0.0.1:18000/v1/chat/completions LH_BENCH_DATA=~/leaseholder/data/weka-x32 \
+#     aiperf profile --config configs/agentic_replay.yaml
+schemaVersion: "2.0"
+randomSeed: "${LH_BENCH_SEED:11}"
+benchmark:
+  model: "${LH_BENCH_MODEL:Qwen/Qwen3-4B-Instruct-2507-FP8}"
+  tokenizer:
+    name: "${LH_BENCH_TOKENIZER:Qwen/Qwen3-4B-Instruct-2507-FP8}"
+  endpoint:
+    url: "${LH_BENCH_URL:http://127.0.0.1:8000/v1/chat/completions}"
+    type: leaseholder_chat
+    streaming: true
+    timeout: 300.0
+    useServerTokenCount: true  # trust the server's usage counts instead of tokenizing on the client
+  dataset:
+    type: file
+    path: "${LH_BENCH_DATA:data/weka-x32}"  # a directory written by `lh-bench scale-traces`
+    format: weka_trace_scaled
+    useThinkTimeOnly: true  # the delay before a turn is its recorded think_time
+    interTurnDelayCapSeconds: "${LH_BENCH_THINK_CAP:600}"
+    cacheBust:
+      target: first_turn_prefix  # recycled plays of one trace must not share KV
+  phases:
+    - name: profiling
+      type: concurrency
+      concurrency: "${LH_BENCH_SESSIONS:16}"  # live session trees
+      duration: "${LH_BENCH_DURATION:1800}"  # seconds
+      # Seconds to wait after `duration`. AIPerf waits this long whenever session trees are
+      # still open, which in agentic_replay is nearly always.
+      gracePeriod: "${LH_BENCH_GRACE:120}"
+      timingMode: agentic_replay
+      trajectoryStartMinRatio: 0.0
+      trajectoryStartMaxRatio: 1.0
+      # Start every lane's first warmup and profiling request together. With spread starts
+      # (false) each lane first waits out its recorded gap after its random start point, which
+      # interTurnDelayCapSeconds does not cap; on these traces most lanes then idle for minutes
+      # (a 60 s check reached 2 of 8 session trees). Use false for a faithful arrival replay.
+      burstPhaseStarts: "${LH_BENCH_BURST_STARTS:true}"
+      systemIdleGapCapSeconds: 10
+  runtime:
+    workers: 4
+    recordProcessors: 2
+    ui: simple
+  artifacts:
+    dir: "${LH_BENCH_ARTIFACTS:runs/agentic-replay}"
+    raw: "${LH_BENCH_RAW:false}"  # true also writes each request with its headers and payload

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leaseholder-bench"
+version = "0.1.0"
+description = "Leaseholder benchmark toolchain: block-scaled agent traces, AIPerf plugins and a live-reply replay driver"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "aiperf==0.13.0",
+    "aiohttp>=3.14,<4",
+    "httpx>=0.28,<0.29",
+    "orjson>=3.11,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+lh-bench = "leaseholder_bench.cli:main"
+
+[project.entry-points."aiperf.plugins"]
+leaseholder = "leaseholder_bench:plugins.yaml"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leaseholder_bench"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
