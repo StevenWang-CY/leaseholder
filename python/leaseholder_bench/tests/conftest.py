@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,16 +8,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _hermetic_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the caller's LH_BENCH_* settings out of every test."""
-    for name in (
-        "LH_BENCH_CLASS",
-        "LH_BENCH_CLASS_MAP",
-        "LH_BENCH_SEND_PRIORITY",
-        "LH_BENCH_URL",
-        "LH_BENCH_MODEL",
-        "LH_BENCH_DATA",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    """Keep the caller's LH_BENCH_* settings (the plugin's and the YAML template's) out of every test."""
+    for name in [name for name in os.environ if name.startswith("LH_BENCH_")]:
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture
