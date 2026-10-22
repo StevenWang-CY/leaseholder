@@ -15,4 +15,5 @@ pub mod prefix;
 pub mod replay;
 pub mod replay_log;
 pub mod run;
+pub mod scheduler;
 pub mod trace;
