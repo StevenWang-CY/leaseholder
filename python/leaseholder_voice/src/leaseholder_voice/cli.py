@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import json
 import os
 import sys
@@ -35,6 +36,9 @@ def _bots(args: argparse.Namespace) -> int:
         seed=args.seed,
     )
     summary = asyncio.run(run_bots(config, args.out))
+    # Release the LiveKit handles while the native library is still loaded; left to interpreter
+    # shutdown, each one prints a failed assertion.
+    gc.collect()
     print(json.dumps(summary, indent=1))
     return 0 if not summary["errors"] else 3
 
