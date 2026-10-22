@@ -303,14 +303,20 @@ mod tests {
     }
 
     #[test]
-    fn id_maps_spread_structured_keys() {
-        let mut m: IdMap<u32> = IdMap::default();
-        for play in 0..100u64 {
-            for node in 0..100u32 {
-                m.insert(block_id(play, 0, node, 0), node);
-            }
-        }
-        assert_eq!(m.len(), 10_000);
-        assert_eq!(m[&block_id(42, 0, 7, 0)], 7);
+    fn the_id_hasher_spreads_keys_that_differ_only_in_high_bits() {
+        // One node's block in 1,024 plays: the ids differ only above bit 36. A hash map picks the
+        // bucket from the low bits of the hash and tags entries with the top 7, so both must vary.
+        let hashes: Vec<u64> = (0..1024)
+            .map(|play| {
+                let mut h = IdHasher::default();
+                h.write_u64(block_id(play, 0, 7, 0));
+                h.finish()
+            })
+            .collect();
+        let low: IdSet = hashes.iter().map(|h| h & 1023).collect();
+        let top: IdSet = hashes.iter().map(|h| h >> 57).collect();
+        // A random function fills about 647 of 1,024 buckets and all 128 tags; the identity fills one.
+        assert!(low.len() > 600, "{} low-bit buckets", low.len());
+        assert!(top.len() > 120, "{} top-bit tags", top.len());
     }
 }
