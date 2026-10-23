@@ -148,10 +148,18 @@ impl StepCost {
     /// restore of its CPU-tier tokens, and the prefill of its computed tokens in steps of at most
     /// `chunk` tokens. vLLM 0.32 gives a lone request the whole step budget.
     pub fn alone_ttft_ms(&self, tier: &TierCost, sources: PromptSources, chunk: u64) -> f64 {
-        let mut ms = self.host_ms(sources.total(), 0) + tier.restore_ms(sources.cpu);
         // vLLM computes at least the last prompt token.
-        let mut left = sources.computed.max(1);
-        let mut cached = sources.total().saturating_sub(left);
+        let computed = sources.computed.max(1);
+        let cached = sources.total().saturating_sub(computed);
+        self.host_ms(sources.total(), 0)
+            + tier.restore_ms(sources.cpu)
+            + self.prefill_ms(computed, cached, chunk)
+    }
+
+    /// The steps a lone prefill of `tokens` tokens after `cached` takes, in milliseconds, in chunks
+    /// of at most `chunk` tokens.
+    pub fn prefill_ms(&self, tokens: u64, cached: u64, chunk: u64) -> f64 {
+        let (mut left, mut cached, mut ms) = (tokens, cached, 0.0);
         while left > 0 {
             let n = left.min(chunk.max(1));
             let mut load = StepLoad::default();
@@ -288,6 +296,21 @@ mod tests {
         let cost = StepCost::frozen_box();
         let quadratic = TierCost::frozen_box().recompute.ns_per_token_squared;
         assert!((cost.ns_per_pair / (2.0 * quadratic) - 1.0).abs() < 0.13);
+    }
+
+    #[test]
+    fn a_chunk_costs_more_the_longer_the_context_it_attends_to() {
+        let cost = StepCost::frozen_box();
+        // A 512-token chunk: 38 ms on an empty context, 269 ms after 30,000 tokens, where attention
+        // over the context is most of the step. A token budget prices both the same.
+        let empty = cost.prefill_ms(512, 0, BUDGET);
+        let deep = cost.prefill_ms(512, 30_000, BUDGET);
+        assert!((empty - 38.2).abs() < 0.5, "{empty}");
+        assert!((deep - 268.7).abs() < 0.5, "{deep}");
+        assert_eq!(cost.prefill_ms(0, 30_000, BUDGET), 0.0);
+        // A longer prefill is its chunks' steps, each after the ones before it.
+        let two = cost.prefill_ms(1_024, 30_000, BUDGET);
+        assert!((two - deep - cost.prefill_ms(512, 30_512, BUDGET)).abs() < 1e-9);
     }
 
     #[test]
