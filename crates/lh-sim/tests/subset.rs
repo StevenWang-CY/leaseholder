@@ -1,5 +1,5 @@
 //! End to end on the 16-trace subset in `testdata/`: the AIPerf port against AIPerf's own replay
-//! structure, and a run of every arm.
+//! structure, a run of every stock arm, and of the E1 arms.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use lh_core::TierCapacity;
 use lh_sim::aiperf::{PlanOptions, reference};
 use lh_sim::corpus::Corpus;
-use lh_sim::replay::ReplayConfig;
+use lh_sim::replay::{Pauses, ReplayConfig};
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
 use serde_json::Value;
 
@@ -108,7 +108,7 @@ fn run_all(seed: u64) -> Vec<ArmResult> {
         ..ReplayConfig::default()
     });
     let capacity = TierCapacity::frozen_box(&cfg.geometry);
-    run::run(&mut corpus(), &cfg, &Arm::ALL, &[capacity], |_| {}).unwrap()
+    run::run(&mut corpus(), &cfg, &Arm::STOCK, &[capacity], |_| {}).unwrap()
 }
 
 #[test]
@@ -184,4 +184,44 @@ fn a_fixed_seed_gives_the_same_run() {
     // Another seed starts the lanes at other points of their traces.
     let other = run_all(6);
     assert_ne!(other[1].summary.prompt_tokens, a[1].summary.prompt_tokens);
+}
+
+#[test]
+fn the_e1_arms_run_consistently_and_repeat_exactly() {
+    let cfg = RunConfig::frozen_box(ReplayConfig {
+        pauses: Pauses::TraceLab { cap_s: Some(120.0) },
+        ..ReplayConfig::default()
+    });
+    let capacity = TierCapacity::frozen_box(&cfg.geometry);
+    let run_e1 = || run::run(&mut corpus(), &cfg, &Arm::E1, &[capacity], |_| {}).unwrap();
+    let (a, b) = (run_e1(), run_e1());
+    let names: Vec<_> = a.iter().map(|r| r.summary.arm.as_str()).collect();
+    assert_eq!(names, Arm::E1.map(Arm::name));
+    let block_bytes = lh_core::KvGeometry::QWEN3_4B_BF16.block_bytes();
+    for (x, y) in a.iter().zip(&b) {
+        let s = &x.summary;
+        assert_eq!(s, &y.summary);
+        assert!(s.requests > 100, "{}: {} requests", s.arm, s.requests);
+        assert_eq!(
+            s.gpu_tokens + s.cpu_tokens + s.computed_tokens,
+            s.prompt_tokens,
+            "{}",
+            s.arm
+        );
+        assert_eq!(
+            s.pcie_prefetched_bytes,
+            s.engine.prefetched_blocks * block_bytes
+        );
+        // Every pause is a TraceLab draw: the median is a few hundred ms.
+        assert!(
+            (100.0..1_000.0).contains(&s.regime.median_think_ms),
+            "{}: {}",
+            s.arm,
+            s.regime.median_think_ms
+        );
+    }
+    let by_name = |n: &str| &a.iter().find(|r| r.summary.arm == n).unwrap().summary;
+    assert_eq!(by_name("lru-cpu").engine.prefetched_blocks, 0);
+    assert!(by_name("oracle-prefetch").engine.prefetched_blocks > 0);
+    assert!(by_name("tokencake").engine.prefetched_blocks > 0);
 }

@@ -11,7 +11,7 @@ use lh_core::{
 use lh_sim::aiperf::{ConvKind, PlanOptions, reference};
 use lh_sim::corpus::Corpus;
 use lh_sim::engine::Engine;
-use lh_sim::replay::{ReplayConfig, Service};
+use lh_sim::replay::{Pauses, ReplayConfig, Service};
 use lh_sim::replay_log;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
 use lh_sim::scheduler::{Scheduler, StepBudget};
@@ -87,9 +87,28 @@ struct ReplayArgs {
     /// counts.
     #[arg(long, default_value_t = 1)]
     token_scale: u32,
+    /// The pauses between a session's turns: the traces' delays, or TraceLab's tool waits in their
+    /// place (capped by --think-cap).
+    #[arg(long, value_enum, default_value_t = PausesArg::Trace)]
+    pauses: PausesArg,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PausesArg {
+    Trace,
+    Tracelab,
 }
 
 impl ReplayArgs {
+    fn pauses(&self, source: PausesArg) -> Pauses {
+        match source {
+            PausesArg::Trace => Pauses::Trace,
+            PausesArg::Tracelab => Pauses::TraceLab {
+                cap_s: (self.think_cap > 0.0).then_some(self.think_cap),
+            },
+        }
+    }
+
     fn plan_options(&self) -> PlanOptions {
         PlanOptions {
             think_cap_s: (self.think_cap > 0.0).then_some(self.think_cap),
@@ -110,6 +129,7 @@ impl ReplayArgs {
             max_sessions: self.max_sessions,
             model_namespaces: !self.shared_models,
             token_scale: self.token_scale,
+            pauses: self.pauses(self.pauses),
             ..ReplayConfig::default()
         }
     }
@@ -222,7 +242,9 @@ struct RunArgs {
     capacity: CapacityArgs,
     #[command(flatten)]
     cost: CostArgs,
-    /// Arms to run, comma separated: gpu-lru, lru-cpu, s3fifo-cpu, clairvoyant. Default: all.
+    /// Arms to run, comma separated: gpu-lru, lru-cpu, s3fifo-cpu, clairvoyant, or the E1 arms
+    /// (ttl-5, ttl-30, ttl-120, history-prefetch, oracle-prefetch, tokencake, mori, infercept).
+    /// Default: the stock arms and the clairvoyant reference.
     #[arg(long = "arms", value_delimiter = ',')]
     arms: Vec<Arm>,
     /// The arm whose timeline the clairvoyant reference replays.
@@ -340,7 +362,7 @@ fn run(args: RunArgs) -> Result<(), String> {
         .capacity
         .capacities(&cfg.geometry, cfg.replay.token_scale as u64);
     let arms = if args.arms.is_empty() {
-        Arm::ALL.to_vec()
+        Arm::STOCK.to_vec()
     } else {
         args.arms.clone()
     };
@@ -451,7 +473,7 @@ fn row(r: &ArmResult) -> String {
         pct(s.shares.computed),
         ms(&s.ttft_ms),
         ms(&s.resume_ttft_ms),
-        s.pcie_restored_bytes as f64 / 1e9,
+        (s.pcie_restored_bytes + s.pcie_prefetched_bytes) as f64 / 1e9,
         s.stalls,
         s.replay.lanes,
         r.wall_s
