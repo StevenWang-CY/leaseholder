@@ -208,6 +208,30 @@ Measured in W0: AIPerf `agentic_replay` of the 32×-scaled Claude Code corpus, 1
 - With the 4× write-through CPU tier, those misses cost a restore, not a recompute. The headroom on this configuration is GPU placement and prefetch timing, not CPU-tier retention.
 - The reuse-gap histogram counts only blocks that survived until reuse, so it is biased short. This is a signal, and the simulator's clairvoyant reference is the measurement.
 
+## Agent replay at three loads, and the simulator calibrated on it (W2)
+
+AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to the engine, think times capped at 120 s, 10 minutes plus a 60 s grace), each on a freshly started engine, 2026-10-22. TTFT is AIPerf's profiling phase; the prompt-token split is vLLM's `prompt_tokens_by_source` counters over the whole run, warm-up included.
+
+| Session trees | Requests | TTFT p50 / p90 / p99 | ITL p50 | Prompt tokens: GPU / CPU tier / computed | Preemptions |
+|---|---|---|---|---|---|
+| 8 | 408 | 84 / 376 / 1,554 ms | 13.2 ms | 64.3 / 28.0 / 7.7% | 0 |
+| 16 | 686 | 132 / 787 / 9,198 ms | 15.6 ms | 55.2 / 34.6 / 10.2% | 3 |
+| 24 | 1,568 | 175 / 1,415 / 15,605 ms | 22.0 ms | 51.4 / 33.4 / 15.2% | 2 |
+
+- **Repeatability.** Three 16-session runs (W0's, one on a warm engine and the fresh one above) agree within a point on the split and range from 787 to 1,023 ms at TTFT p90. At 24 sessions a run on a warm engine was slower (TTFT p90 1,900 ms).
+- **The simulator against them.** `lh-sim` with the W2 contention model (the step loop and a fitted step time; [its README](../crates/lh-sim/README.md#the-contention-model)) reproduces resume TTFT p50 / p90 within 4–8% at 8 and 16 sessions, also when each point is left out of the fit, and request counts within 1%. At 24 sessions it is 18% / 30% fast, because restores take 163 ms longer there than modeled; the likely cause is store traffic, which the model omits.
+
+**E1 in the simulator: does knowing when a session returns help?** Resume TTFT gain over LRU + the CPU tier, in the realistic regime (the traces' think times, the CPU tier at 4×, mean of 20 seeds):
+
+| Session trees (KV pressure) | `lru-cpu` resume p50 / p90 | Oracle prefetch p50 / p90 | Clairvoyant reference p50 / p90 |
+|---|---|---|---|
+| 8 (1.6) | 86 / 267 ms | +0.7% / +11.3% | +1.3% / +15.5% |
+| 12 (2.4) | 103 / 299 ms | +2.6% / +23.3% | +0.5% / +8.0% |
+| 16 (3.2) | 139 / 895 ms | +6.8% / +7.7% | +1.7% / +9.4% |
+| 24 (4.4, outside the calibration) | 208 / 1,645 ms | −2.3% / −17.0% | +2.3% / +10.9% |
+
+Even perfect knowledge buys under 7% of the median resume, which is already a GPU hit or a short restore; it helps the tail only at low pressure. This is G-sim's negative branch ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)): the CPU-tier policy plugin stays off. The full regime map, with TraceLab's pauses, the history-level arms and the 2× and 8× tiers, is in the [simulator's README](../crates/lh-sim/README.md#the-e1-regime-map).
+
 ## Load generation
 
 - AIPerf 0.13.0 `agentic_replay` over the SemiAnalysis Claude Code traces: 99.4% of turns arrive within 50 ms of their recorded delay.
