@@ -46,12 +46,12 @@ vLLM 0.32 reads the body `session_id` before the header, and `vllm_xargs.session
 ## Lifecycle events
 
 Events tell the control plane when a session will next need its KV.
-- **Delivery.** Trusted callers `POST` them to `/v1/events`, as one JSON object or an array of them, and get 202 `{"accepted": n, "duplicates": m}`. The control plane is also to infer `turn_started` and `turn_finished` from the traffic it proxies; `lh-gateway` v0 does not yet ([`lh-gateway` README](../crates/lh-gateway/README.md#what-it-does-not-do)).
+- **Delivery.** Trusted callers `POST` them to `/v1/events`, as one JSON object or an array of them, and get 202 `{"accepted": n, "duplicates": m}`. The control plane is also to infer `turn_started` and `turn_finished` from the traffic it proxies; `lh-gateway` does not yet ([`lh-gateway` README](../crates/lh-gateway/README.md#what-it-does-not-do)).
 - **Idempotency.** Events are idempotent by `(source, event_id)` within a window (by default 100,000 ids for 10 minutes): a repeat is acknowledged and ignored.
 - **Unknowns.** Unknown fields are ignored; an unknown `type` is rejected with 400, and so is the whole batch that contains it.
 
 ```json
-{"event_id": "vw-4", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650014940,
+{"event_id": "voice-RM_a1B2c3-4", "session_id": "voice-RM_a1B2c3", "at_ms": 1792650014940,
  "source": "voice-worker", "type": "interrupted", "played_ms": 1840}
 ```
 
@@ -61,7 +61,7 @@ Events tell the control plane when a session will next need its KV.
 |---|---|
 | `event_id` | Idempotency key, unique per emitter |
 | `session_id` | The session |
-| `at_ms` | The emitter's clock, in Unix epoch ms. Ordering uses the control plane's receipt time |
+| `at_ms` | When the emitter observed what the event reports, on its clock, in Unix epoch ms. Ordering uses the control plane's receipt time |
 | `source` | `inferred`, `agentic-api`, `voice-worker` or `client` |
 | `type` | The event type, below |
 
@@ -77,6 +77,10 @@ Events tell the control plane when a session will next need its KV.
 | `playback_ended` | `played_ms` | voice worker | Back to waiting for the user |
 | `interrupted` | `played_ms` | voice worker (barge-in) | Cancel the in-flight stream; truncate the context to what the user heard |
 | `session_closed` | — | any | `CLOSED`: the session's KV becomes ordinary cache |
+
+**Voice events today.** The lease effects above are the target design. What runs since W3:
+- **The voice worker** sends every voice event of its sessions, `event_id` being the session id and a sequence number, and `played_ms` what the caller heard. It posts over the control plane's Unix socket, where the voice tenant needs no key, as JSON arrays from one background task per session, with a 1 s timeout and no retry: a late timing signal would mislead. A reply interrupted before any of its audio was made has no playback to report, and the control plane sees its stream close; a caller hanging up ends the session with `session_closed`. [`leaseholder-voice`](../python/leaseholder_voice/README.md#lifecycle-events-and-turn-lines) gives the hook behind each event and when it fires.
+- **Under the `leaseholder` admission policy**, the gateway keeps each realtime session's turn state from them ([ARCHITECTURE.md §4.3](ARCHITECTURE.md#43-turn-imminent-headroom)): `user_speech_started` arms the session's headroom when the trigger is speech onset; `user_turn_ended` opens its critical window, in which background prefill is budgeted; `playback_started`, the reply's first audio, closes it; `playback_ended` returns the session to idle; `interrupted` means the user is speaking again; `session_closed` forgets the session. A realtime request opens its session's window too, so an event's `session_id` must be the request's `X-Session-ID` (`voice-<room SID>`). Events take effect in the order the gateway receives them, and every state but idle times out after `state_timeout_s` without an event, so a lost event holds a session at most that long.
 
 ## Engine lease hint
 

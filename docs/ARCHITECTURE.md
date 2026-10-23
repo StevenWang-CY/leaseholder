@@ -10,10 +10,10 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 
 **What is ours, and what is not.** Priority classes, budgets, eviction of best-effort work and parking with prefetch already ship (llm-d, SMG, Dynamo) or are published (ConServe, Tokencake, MORI); they are baselines here. The contributions are headroom timed by lifecycle events and freed by parking, an engine fix that lets a waiting high-priority request preempt running work under KV pressure, and a validated recompute ledger. [PRIOR-ART.md](PRIOR-ART.md) gives the sources.
 
-**What exists and what is planned.** This document is the target design. After W2, the second week of a 12-week plan:
+**What exists and what is planned.** This document is the target design. After W3, the third week of a 12-week plan:
 - **deployed:** the frozen box on Phastform (§5) and, for booked windows, on Gray; on cyan the SSH tunnels, the control plane (`lh-gateway`) and the voice plane (§7);
-- **in code:** the wire types, the gateway with its admission point and E2's baseline policies, the cost and step-time models and KV geometry, the simulator with its contention model, the engine plugins and the E2 harness (§4.1);
-- **planned:** Leaseholder's own `lh-core` policies (turn-imminent headroom and the critical-window throttle from W3; leases, prefetch and the ledger with `lh-node` from W5). Sections that depend on them are marked *planned*.
+- **in code:** the wire types; the gateway with its admission point, E2's baseline policies and Leaseholder's own admission policy (turn-imminent headroom, the critical-window throttle, degrade and aging: §4.3); the voice worker's lifecycle events (§7); the engine's "make room" scheduler change, as an engine variant (§4.6); the cost and step-time models and KV geometry; the simulator with its contention model; the engine plugins and the E2 harness (§4.1);
+- **planned:** placement across two GPU nodes (W4); leases, prefetch and the ledger with `lh-node` (from W5). Sections that depend on them are marked *planned*.
 
 ## 1. Tenets
 
@@ -80,7 +80,7 @@ A session is one conversation, scoped to a tenant: the routing key, the accounti
 
 ### 3.2 Lifecycle events
 
-One event type serves every workload ([ADR-0002](adr/0002-one-lifecycle-event-schema.md)). For agents, a tool wait shows in a response that ends in `tool_calls`, or exactly in agentic-api's `tool_wait_started` and `tool_wait_ended` for server-side tools. Voice signals speech onset, end of turn, playback and barge-in (`interrupted`, with how much of the reply was played). Events reach `POST /v1/events`, which `lh-gateway` v0 already accepts and deduplicates; inferring turn events from proxied traffic is *planned*. [PROTOCOL.md](PROTOCOL.md#lifecycle-events) lists every type with its fields and its effect on the lease.
+One event type serves every workload ([ADR-0002](adr/0002-one-lifecycle-event-schema.md)). For agents, a tool wait shows in a response that ends in `tool_calls`, or exactly in agentic-api's `tool_wait_started` and `tool_wait_ended` for server-side tools. Voice signals speech onset, end of turn, playback and barge-in (`interrupted`, with how much of the reply was played). Events reach `POST /v1/events`, which `lh-gateway` accepts and deduplicates. The voice worker sends the voice events (§7), and under the `leaseholder` admission policy the gateway turns them into each realtime session's turn state (§4.3). agentic-api's tool-wait events, and turn events inferred from proxied traffic, are *planned*. [PROTOCOL.md](PROTOCOL.md#lifecycle-events) lists every type with its fields and its effect on the lease.
 
 ### 3.3 Leases (*planned*)
 
@@ -126,40 +126,43 @@ There is one row per upstream request: prompt, cached (device and host), expecte
 
 ### 4.1 Crates
 
-The control plane is a Rust workspace. The policy is to be a library behind a narrow trait, so another router can embed it. The state column says what exists after W2.
+The control plane is a Rust workspace. The policy is a library without I/O or a clock, so another router can embed it. The state column says what exists after W3.
 
 | Crate | Responsibility | State |
 |---|---|---|
 | `lh-proto` | Wire types: lifecycle events, headers, engine lease hints, ledger rows. JSON Schemas for the Python components | v0 |
-| `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions with no I/O; the planned interface is `trait Policy { admit, place, on_event, on_complete }` | The E0 tier cost model, KV geometry, a step-time model of vLLM 0.32's step loop (W2), and `admission`: the E2 baselines (static cap, token reservation, flow control, preempt-resubmit) as a pure state machine driven by arrivals, first bytes and departures. Leaseholder's own policies and the trait arrive from W3 |
-| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane | Deployed on cyan: everything but the prefetch executor and the ledger sink, which come with the policies. Since W2 its admission point runs `lh-core`'s E2 baselines, and it sends each class's priority where the upstream reads it (`upstream_priority`) |
-| `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health | W3 |
+| `lh-core` | The deterministic policy core: admission, placement, the lease table, the prefetch planner, ledger attribution. Pure code with no I/O and no clock: callers pass counts and events, and get durations and decisions back | The E0 tier cost model, KV geometry, a step-time model of vLLM 0.32's step loop (W2), and `admission`, a state machine driven by arrivals, first bytes and departures: the E2 baselines (static cap, token reservation, flow control, preempt-resubmit) and, since W3, Leaseholder's `leaseholder` policy, which also reads the realtime sessions' turns and prices background prefill with the step model (`PrefillCost`). Placement, leases, prefetch and attribution are to follow |
+| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane | Deployed on cyan: everything but the prefetch executor and the ledger sink, which come with leases. Its admission point runs `lh-core`'s policies (the E2 baselines since W2, `leaseholder` since W3), it keeps each realtime session's turn state from lifecycle events, and it sends each class's priority where the upstream reads it (`upstream_priority`) |
+| `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health | W5 |
 | `lh-sim` | A trace-driven two-tier KV simulator over `lh-core`'s cost and step-time models, with a clairvoyant reference (Belady's MIN per tier) | The stock and E1 arms, the clairvoyant reference, miss-ratio curves, the contention model (the default service since W2, calibrated at two of three operating points) and the E1 regime sweep |
 
 ### 4.2 Request path
 
-Steps marked *planned* arrive with the `lh-core` policies; `lh-gateway` runs the rest ([`lh-gateway` README](../crates/lh-gateway/README.md)).
+Steps marked *planned* arrive with placement and leases; `lh-gateway` runs the rest ([`lh-gateway` README](../crates/lh-gateway/README.md)).
 
 1. **Authenticate** the API key and resolve the tenant.
 2. **Sanitize** the engine-control headers and body fields.
 3. **Resolve** the session and class.
-4. **Admit.** Since W2 the admission point runs the E2 baselines (`[admission]`: a background cap, a token reservation, llm-d-style flow control with eviction, preempt-resubmit before the first byte); a waiting request is woken on a channel, and one whose client leaves gives its place up. *Planned*, Leaseholder's own choice among *admit now*, *defer* (queue with a deadline), *make room* (realtime only: tighten the background budget, demote) and *degrade*. Predicted time to first token is queue time plus uncached tokens over the measured prefill rate, plus restore cost from `lh-core`'s E0 model ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)).
+4. **Admit** by the configured `[admission]` policy: one of E2's baselines (a background cap, a token reservation, llm-d-style flow control with eviction, preempt-resubmit before the first byte) or Leaseholder's `leaseholder` (§4.3). Under `leaseholder` a realtime request goes upstream at once, never queued or refused, with its reply capped if the headroom was not there (*degrade*); a background request is *deferred* while it would cut into the armed realtime sessions' headroom or overrun the critical window's prefill budget, and admitted regardless after `max_defer_s` (*aging*). A waiting request is woken on a channel, and one whose client leaves gives its place up. *Planned* for the interactive class: admission by predicted time to first token, which is queue time plus uncached tokens over the measured prefill rate, plus restore cost from `lh-core`'s E0 model ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)).
 5. **Place** (*planned*) on the holder if its epoch is valid, else on the least-loaded healthy node. v0 has one upstream.
 6. **Forward** with `X-Session-ID`, the class's priority where the upstream reads it (`upstream_priority`: `X-Vllm-Priority` by default, the body's `priority` for SGLang, `X-SMG-Priority` for SMG) and the tenant's `cache_salt`, and (*planned*) the lease hint in `kv_transfer_params`.
 7. **Stream back** through a bounded per-stream buffer.
    - On client disconnect, abort upstream (vLLM aborts on disconnect).
    - On completion (*planned*), update the lease and write the ledger row.
 
-### 4.3 Turn-imminent headroom (*planned*)
+### 4.3 Turn-imminent headroom
 
-vLLM preempts among running requests but never on behalf of a waiting one, so a KV pool full of running background agents can hold a voice turn for seconds ([#40004](https://github.com/vllm-project/vllm/issues/40004)). Long background prefills also slow every stage of the turn ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)). While any realtime session is `USER_SPEAKING` or waiting for its first sentence, the control plane:
-- throttles background prefill admission to a small token budget, from end of speech to first audio (the critical window);
-- keeps free KV at least equal to the realtime working set, by deferring new background turns and parking finished ones in the CPU tier;
-- prefetches the speaking session's KV if it is not GPU-resident. A 2k-token restore adds about 55 ms over a GPU hit ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)), well inside 1–3 s of speech.
+vLLM preempts among running requests but never on behalf of a waiting one, so a KV pool full of running background agents can hold a voice turn for seconds ([#40004](https://github.com/vllm-project/vllm/issues/40004)): 4.9 s to the first token of a 746-token voice turn behind two 18k-token agent requests, on the frozen box's image ([BENCHMARKS.md](BENCHMARKS.md#the-kv-case-make-room)). Long background prefills also slow every stage of the turn ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)).
 
-The trigger is the earliest reliable signal: speech onset, or the transcript with which LiveKit starts preemptive generation, before the end of turn is confirmed. E2 compares the triggers and charges headroom held without a following turn as a false alarm. Where control-plane headroom is not enough, the engine patch ("make room") lets a waiting realtime request preempt running background work and keep the victim's KV in the CPU tier.
+Under the `leaseholder` admission policy (E2 arm 9; the [`lh-gateway` README](../crates/lh-gateway/README.md#policy-leaseholder) gives its keys and exact semantics), the control plane follows each realtime session through its turn, from lifecycle events (§7) in the order it receives them: `user_speaking` from speech onset; `critical` from the end of the turn, or from the realtime request, which LiveKit's preemptive generation sends earlier, until the reply's first audio; then `playback`. Every state but idle times out, so a lost event holds a session at most `state_timeout_s`, and a session without events is critical while its request is in flight. From those states the control plane:
+- **keeps KV headroom** for each armed session, from speech onset (`trigger = "onset"`) or within the critical window alone (`"request"`): a background request goes upstream only if the estimated KV of the background requests in flight and its own leave `headroom_tokens` free per armed session. Deferring new background turns lets the running ones finish, and their KV parks in the write-through CPU tier;
+- **throttles background prefill in the critical window** to a budget of predicted prefill time, not of tokens: `lh-core`'s step model prices a request's new tokens after its context, and a 512-token chunk after a 30k-token context costs about seven times one after none;
+- **degrades rather than sheds**: a realtime request that arrives while the headroom is not there goes upstream at once, with its reply capped at `degrade_max_tokens`;
+- **ages** deferred work: a background request deferred `max_defer_s` is admitted regardless, so agents never starve, and one larger than the headroom leaves is counted as `oversize`.
 
-Aging prevents background starvation. All of this runs on top of the engine's own step cap (`--max-num-batched-tokens 512 --long-prefill-token-threshold 256`), which E2 sweeps.
+Each mechanism can be switched off, and E2 ablates each alone. Headroom armed by speech onset that no realtime request follows is a *false alarm*, charged in token-seconds of background work held back. The gateway works from an estimate of the KV in flight; the engine's "make room" change (§4.6) is its exact counterpart inside the engine, where a waiting realtime request that lacks KV preempts lower-priority running work, whose KV stays in the CPU tier, and a class-aware reserve keeps blocks free. *Planned*, with prefetch (§4.4): restoring the speaking session's KV when it is not GPU-resident. A 2k-token restore adds about 55 ms over a GPU hit ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)), well inside 1–3 s of speech.
+
+All of this runs on top of the engine's own step cap (`--max-num-batched-tokens 512 --long-prefill-token-threshold 256`), which E2 sweeps.
 
 ### 4.4 Prefetch (*planned*)
 
@@ -190,6 +193,13 @@ The CPU tier is vLLM's native `OffloadingConnector` with `offload_prompt_only: f
 - **`LeasePolicy`** makes CPU-tier eviction lease-aware. It ships only where the simulator shows that CPU-tier eviction binds at the chosen RAM ratio. It is soft: it refuses a store only where LRU would refuse it too.
 
 A live check on the frozen box confirmed the contract end to end: the hint reaches both plugins, a prompt written through to the CPU tier is restored from it after a GPU cache reset, and `X-Session-ID` appears in GPU-tier KV events but not in CPU-tier ones ([BENCHMARKS.md](BENCHMARKS.md#engine-plugins)).
+
+**"Make room"**, the scheduler change for #40004's KV case that is proposed upstream, runs as the engine variant `make-room` ([variants README](../deploy/phastform/variants/README.md)): `build.py` generates it from vLLM 0.32.0's scheduler at each start, with asserted anchors, and the engine loads it with `--scheduler-cls`. It adds three mechanisms to priority scheduling, each a key of `--additional-config` and off by default:
+- **KV make-room** (`make_room.max_preemptions_per_step`). When the highest-priority waiting request lacks KV for its whole sequence, it preempts running requests of a strictly lower priority through vLLM's own preemption path, before the running loop: lowest priority first, then the most blocks given back, then the latest arrival. It preempts as few as needed and at most N a step, and none if N would not suffice. Deferred block frees count as free. With the OffloadingConnector, a victim's pending stores are flushed, and its KV stays in the CPU tier for its resume.
+- **The budget cap** (`make_room.budget_cap`). Running prefills of a lower priority leave the waiting request's first chunk in the step's token budget; decodes are never cut.
+- **The reserve** (`make_room.reserve_tokens`). Requests of a positive priority value (interactive and background) are admitted only while their whole sequences leave the reserve free: a class-aware watermark, where `--watermark` is class-blind.
+
+CPU tests check it on vLLM's real scheduler, and a GPU probe measures the KV case with and without it ([BENCHMARKS.md](BENCHMARKS.md#the-kv-case-make-room)).
 
 ## 5. Data plane: the frozen box
 
@@ -229,10 +239,11 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
   - Each call's room is deleted when the caller hangs up, so finished calls do not hold a job.
   - Interruptions by VAD, which production mode picks anyway: adaptive detection needs LiveKit Inference, and the namespace has no route out.
   - No AEC warm-up, because the callers play files: the default 3 s warm-up would only discard a barge-in on each call's first reply.
-- **Lifecycle** (*planned*, W3).
-  - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended` and `interrupted` to the control plane, which already accepts and deduplicates them (`POST /v1/events`).
-  - Speech onset triggers prefetch and headroom.
-  - On barge-in, the LLM stream closes, the control plane aborts upstream, and the transcript is truncated to `played_ms`.
+- **Lifecycle events** ([`leaseholder-voice` README](../python/leaseholder_voice/README.md#lifecycle-events-and-turn-lines)).
+  - The worker posts `user_speech_started`, `user_turn_ended`, `playback_started`, `playback_ended`, `interrupted` (with `played_ms`, what the caller heard) and `session_closed`, each from one LiveKit hook, to the control plane's `/v1/events`, over the socket its LLM requests use. Posting never blocks the session: one background task per session sends what is queued, with a 1 s timeout and no retry, because a late timing signal would mislead.
+  - Speech onset arms the headroom, and the end of the turn opens the critical window (§4.3). On barge-in, LiveKit closes the LLM stream, the control plane aborts upstream, and the reply stays in the context only as far as it was heard.
+  - `LH_EVENTS=off` (the `no-events` worker variant) stops the events, for E2's ablation; they stop as well when the LLM bypasses the gateway.
+  - Each reply logs one line with its stage times (end of speech to the final transcript and to the end-of-turn decision, the LLM's first token and first sentence, TTS first audio, end to end), which E2 reports as the stage waterfall.
 - **Measurement callers** (`lh-voice bots`). These are `livekit-rtc` Python callers in the same namespace. They play utterances with known end timestamps and record the agent's track, and compute V2V and barge-in to silence from waveforms on one clock; audio gaps, the continuity indicator, are not reported yet. VAD and turn-detection settings are fixed across arms, and E2 reports end-of-utterance delay as its own stage.
 
 ## 8. Simulator
@@ -251,7 +262,7 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
 ## 9. Observability
 
 - **Indicators, targets and alerts.** See [SLO.md](SLO.md).
-- **What exists.** `lh-gateway` serves its metrics at `/metrics`, among them the admission point's (`lh_gateway_admission_*`: admitted, waiting, wait time, refused by reason, resubmits, discarded tokens), and logs one line per request, with its admission wait, and per lifecycle event ([`lh-gateway` README](../crates/lh-gateway/README.md#metrics-and-logs)). E2 points snapshot these and the engine's metrics around the calls (`lh-bench e2`).
+- **What exists.** `lh-gateway` serves its metrics at `/metrics`, among them the admission point's (`lh_gateway_admission_*`: admitted, waiting, wait time, refused by reason, resubmits, discarded tokens; under `leaseholder`, deferrals by reason, aged and oversize admissions, degraded replies and false alarms with their token-seconds) and the realtime sessions by state, with state timeouts. It logs one JSON line per request, with its admission wait and what deferred it, and per lifecycle event ([`lh-gateway` README](../crates/lh-gateway/README.md#metrics-and-logs)). The voice worker logs one line per reply with its stage times (§7). Each E2 point keeps the gateway's request lines (the exact first-byte percentiles), the worker's journal (the stage waterfall and the event counts), the GPU's clocks and temperature once a second, and snapshots of the gateway's and the engine's metrics around the calls (`lh-bench e2`).
 - **Dashboards** (*planned*, as code in `ops/`):
   1. the voice turn waterfall and SLOs;
   2. KV and leases: pool occupancy, tier residency, prefetch outcomes, PCIe budget;
@@ -278,11 +289,11 @@ In v0, `lh-gateway` implements the slow-client row, tested with a stalled reader
 | Layer | Tests |
 |---|---|
 | `lh-proto` | Wire format pinned by examples; schemas kept current; ledger accounting identities |
-| `lh-core` | The cost model against the measured E0 cells, the KV geometry, the step-time model, and each admission baseline's decisions on hand-made event sequences. With Leaseholder's policies: unit and property tests for the lease invariants, and deterministic simulation with seeded event sequences |
+| `lh-core` | The cost model against the measured E0 cells, the KV geometry, the step-time model, and each admission policy's decisions on hand-made sequences of requests and turns (for `leaseholder`: each mechanism alone and together, aging and oversize, degrade, realtime never held). With leases: unit and property tests for the lease invariants, and deterministic simulation with seeded event sequences |
 | `lh-sim` | The AIPerf port against AIPerf's own plan; engine semantics and the step loop on hand-made sequences; the clairvoyant tiers and MIN against exhaustive search; Mattson stack distances against a direct LRU simulation; every arm end to end on a 16-trace subset; the idle service reproducing v0's outputs exactly |
-| `lh-gateway` | Integration against an in-process mock engine: mid-stream disconnect, backpressure, header sanitization, event idempotency, and the admission baselines (caps, queue limits and timeouts, eviction, transparent resubmission, a streaming response never preempted). The proxy tax in process and in place ([BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
+| `lh-gateway` | Integration against an in-process mock engine: mid-stream disconnect, backpressure, header sanitization, event idempotency, the admission baselines (caps, queue limits and timeouts, eviction, transparent resubmission, a streaming response never preempted), and `leaseholder` driven by events through `/v1/events` (deferral while a session is armed, the critical budget, aging, the degrade rewrite of `max_tokens`, state timeouts and lost events). The proxy tax in process and in place ([BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
 | Ledger | *Planned*: the injected-cause suite, at least 95% correct attribution, with the `unknown` share reported |
-| Engine plugins | CPU tests against vLLM's real offload manager (in CI); a live check on the GPU node |
-| Voice | Hermetic LiveKit barge-in and header test in the voice-plane namespace; *planned*: a nightly caller smoke test on the frozen box |
+| Engine plugins and variants | CPU tests against vLLM's real offload manager, and builds of the generated scheduler variants from v0.32.0's source (in CI); `make-room`'s behavior on vLLM's real scheduler, on CPU with torch (run on the GPU node's environment); a live check of the plugins and the KV probe on the GPU node |
+| Voice | Hermetic LiveKit test in the voice-plane namespace: barge-in, headers, and the lifecycle events in order; unit tests of the event mapping and delivery; *planned*: a nightly caller smoke test on the frozen box |
 | Performance | *Planned*: a nightly fixed scenario on the GPU node against stored baselines; a weekly compatibility run against the newest vLLM |
 | CI | GitHub Actions on CPU: rustfmt, clippy and ruff; the Rust unit, simulator and integration tests; the engine plugin tests against vLLM's offload manager; the Python unit tests |

@@ -75,6 +75,8 @@ journalctl --user -u lh-gateway -f                # one JSON line per request an
 systemctl --user restart lh-gateway               # rereads gateway.toml; drains in-flight requests for up to 30 s
 ```
 
+E2 reads each point's request lines from this journal, so `gateway.toml` keeps `log_format = "json"`, as the example does.
+
 ## The voice plane
 
 | Unit | What it runs | Notes |
@@ -92,6 +94,9 @@ journalctl --user -u lh-voice-worker -f          # JSON logs; "registered worker
 - `deploy/cyan/variants/vad-turns/lh-voice-worker.conf` sets fixed endpointing (`LH_TURN_DETECTION=vad`). Every experiment runs with it, because LiveKit's end-of-turn model waits its 3 s maximum on some synthesized turns ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 - An `Environment=LH_LLM_UDS=%t/lh/phastform-engine.sock` drop-in sends the LLM straight to the engine, bypassing the gateway.
 - `deploy/cyan/variants/no-preemptive-generation/lh-voice-worker.conf` turns LiveKit's preemptive generation off (`LH_PREEMPTIVE_GENERATION=false`), for E2's factor.
+- `deploy/cyan/variants/no-events/lh-voice-worker.conf` stops the worker's lifecycle events (`LH_EVENTS=off`), for arm 9's ablation; the turn lines stay.
+
+**Lifecycle events.** Each session's end logs its counts (`journalctl --user -u lh-voice-worker | grep '"session ended"'`: `events_sent`, `events_dropped`, `events_failed`), and the gateway counts what it received in `lh_gateway_events_total{source="voice-worker"}`. With the LLM on an engine's socket (the bypass) the worker sends none.
 
 **Measurement callers.** Render the corpus once with the TTS server. The callers run inside the namespace:
 
@@ -107,6 +112,7 @@ taskset -c 24-31 ~/leaseholder/src/deploy/bin/in-voicenet ~/leaseholder/venvs/vo
 The frozen box is `deploy/phastform/engine.yaml` and the units in `deploy/phastform/systemd/`. `deploy/phastform/variant.sh use NAME|frozen [FLAG...]` makes the box run exactly one variant plus engine flags, restarting only what changes; `variant.sh use frozen` restores the frozen box. The variants, the flags the E2 arms use and how each was checked are in [`deploy/phastform/variants/README.md`](../deploy/phastform/variants/README.md):
 - **Flags** go on the engine's command line through `LH_ENGINE_FLAGS`, set by a generated drop-in (`variant-flags.conf`); vLLM takes the command line over `engine.yaml`.
 - **`pr54530`**: vLLM #54530 ported to 0.32.0, generated at each start by `build.py` and loaded with `--scheduler-cls`.
+- **`make-room`**: Leaseholder's scheduler change for #40004's KV case, arm 9's engine side, generated and loaded the same way. Its switches are `--additional-config.make_room.*` keys: its unit sets arm 9's values, and an arm's engine flags override one. `/server_info` reports them under `additional_config`. `probe.py` measures a priority-0 request's first token behind two long priority-2 requests, with the reserve off.
 - **`sglang`**: SGLang 0.5.22 on the engine's port. Build its environment once with `bash ~/leaseholder/src/deploy/phastform/variants/sglang/install.sh`. Its unit counts as started only after one sampled request, because the first one compiles FlashInfer's kernels for minutes.
 - **`mps`**: the three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 
@@ -116,9 +122,11 @@ The frozen box is `deploy/phastform/engine.yaml` and the units in `deploy/phastf
 
 An E2 point is one arm file (`benchmarks/e2/arms/`); `lh-bench e2 run ARM --out DIR` measures it on cyan, and `benchmarks/e2/campaign.sh` runs a campaign file from a workstation, switching the engine before each point ([`benchmarks/e2/README.md`](../benchmarks/e2/README.md)). What a point changes on cyan, and how to undo it:
 - **The gateway.** An arm with a `[gateway]` table runs the gateway from `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in) through the `e2-gateway` drop-in.
-- **The worker.** `preemptive_generation = false` links the `no-preemptive-generation` worker drop-in.
+- **The worker.** `preemptive_generation = false` links the `no-preemptive-generation` worker drop-in, and `[voice] events = false` the `no-events` one.
 - **SMG.** An arm with `router = "smg"` starts `lh-smg`, and every other arm stops it.
-- **Undo.** `~/leaseholder/venvs/bench/bin/lh-bench e2 reset` puts the gateway back on `gateway.toml`, preemptive generation on and SMG stopped. A campaign runs it at its end.
+- **Undo.** `~/leaseholder/venvs/bench/bin/lh-bench e2 reset` puts the gateway back on `gateway.toml`, preemptive generation and the events on, and SMG stopped. A campaign runs it at its end.
+
+Beside AIPerf's and the callers' records, each point keeps the gateway's request lines (`gateway.jsonl`, the exact first bytes), the worker's journal (`voice-worker.log`: turn lines and event counts) and the GPU's clocks and temperature (`gpu.csv`, which `campaign.sh` samples over SSH once a second while the point runs). The [`leaseholder-bench` README](../python/leaseholder_bench/README.md#e2-points) lists every file.
 
 One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.lh-bench-e2.lock` on cyan, and SIGINT to it stops AIPerf and the callers and marks the point failed.
 
@@ -149,6 +157,8 @@ One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.
 | `lh-bench e2 run`: "another lh-bench e2 run or reset holds" the lock | A point is still running, or one was interrupted | The pid is in `~/leaseholder/runs/.lh-bench-e2.lock`; stop it with SIGINT, or wait |
 | The gateway does not start for a point, and `run.json` quotes its log | The arm's `[gateway]` table sets a key this gateway build does not know | Deploy a gateway build that has it, or fix the arm; `lh-bench e2 reset` restores `gateway.toml` |
 | The gateway answers 429 `queue_full` or 503 `queue_timeout` | An `[admission]` policy's queue is full or its wait ran out | Expected under the E2 policies, and counted in `lh_gateway_admission_refused_total` |
+| `lh-engine` fails at start with "make_room.reserve_tokens leaves no room for a request of max_model_len tokens" | The `make-room` reserve and one `max_model_len` request do not fit in the KV pool together | Lower `make_room.reserve_tokens` below the pool less `max_model_len`: about 3,600 tokens on the frozen box |
+| The voice worker logs "lifecycle events do not reach the control plane" | The gateway is down or restarting, or `LH_LLM_UDS` is not the gateway's socket | `systemctl --user status lh-gateway`. The worker logs when events reach the gateway again; those lost meanwhile are not resent, and the gateway's session states time out after `state_timeout_s` |
 | The engine's `/server_info` answers 500 | vLLM collects its environment with `uv pip list` and cannot find uv | The unit's `PATH` must include `~/.local/bin` and `VIRTUAL_ENV` must name the engine venv (as `lh-engine.service` does) |
 
 ## Pausing

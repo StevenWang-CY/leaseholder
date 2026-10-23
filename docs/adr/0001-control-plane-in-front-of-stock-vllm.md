@@ -35,3 +35,8 @@ Build option 3: a Rust service (tokio, hyper/axum, tower).
 
 The decision stands: the control plane stays in front of stock vLLM, and its policy lives in `lh-core` so routers that already run in production can adopt it. The one engine change Leaseholder needs, letting a waiting high-priority request preempt running work under KV pressure while keeping the victim's KV ([vLLM #40004](https://github.com/vllm-project/vllm/issues/40004)), is proposed upstream as a vLLM PR rather than carried as a fork.
 
+## Update (2026-10-23, W3)
+
+- **No trait.** The policies are variants of one enum in `lh_core::admission`, driven by a pure state machine (arrivals, first bytes, departures and the realtime sessions' turns) that the gateway feeds and whose waits it carries out. A closed set of policies at one admission point needed no trait; another router embeds the state machine as the gateway does.
+- **The engine fix for E2** runs as a generated scheduler module, the `make-room` variant: built from vLLM 0.32.0's source at each start with asserted anchors and loaded with `--scheduler-cls`, so the box stays a stock install and the change is exactly the one proposed upstream.
+

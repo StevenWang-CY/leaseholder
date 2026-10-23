@@ -10,7 +10,7 @@ API providers sell the same two tiers (OpenAI Fast and Flex, Google Priority and
 - brings parked agent sessions back before their tools return;
 - attributes every recomputed prompt token to a cause.
 
-These mechanisms are built from week 3 (W3) of a 12-week plan; [Status](#status) says what runs today. Classes, budgets, eviction and parking with prefetch already ship or are published; here they are baselines. [docs/PRIOR-ART.md](docs/PRIOR-ART.md) says what is new and what is not.
+The headroom, the throttle and an engine fix for the full-KV case run since week 3 (W3) of a 12-week plan; parking with prefetch and the ledger arrive with leases. [Status](#status) says what runs today. Classes, budgets, eviction and parking with prefetch already ship or are published; here they are baselines. [docs/PRIOR-ART.md](docs/PRIOR-ART.md) says what is new and what is not.
 
 ## The problem, measured on one RTX 5060 Ti 16 GB
 
@@ -52,21 +52,21 @@ The full design, with what exists and what is planned, is in [docs/ARCHITECTURE.
 
 ## Status
 
-State after week 2 (W2) of a 12-week plan:
+State after week 3 (W3) of a 12-week plan:
 
 | Component | State |
 |---|---|
 | Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Deployed** on Phastform, and on Gray as the second GPU node for booked windows; paused when idle ([`deploy/phastform`](deploy/phastform), [`deploy/gray`](deploy/gray)) |
-| Engine variants for E2: vLLM #54530 ported to 0.32.0, SGLang 0.5.22, CUDA MPS, engine flags from an arm file | **Deployed** ([`deploy/phastform/variants`](deploy/phastform/variants)) |
+| Engine variants for E2: vLLM #54530 ported to 0.32.0, SGLang 0.5.22, CUDA MPS, engine flags from an arm file, and `make-room`, Leaseholder's scheduler fix for a waiting high-priority request under KV pressure (#40004), generated from vLLM's source with three switches | **Deployed** ([`deploy/phastform/variants`](deploy/phastform/variants)); `make-room` tested on vLLM's real scheduler and probed on the GPU: 4.9 s → 268 ms to a voice turn's first token behind two 18k-token agent requests |
 | Control host: restricted SSH tunnels, `lh-gateway`, and LiveKit with the voice agent in a network namespace with no route out; SMG for one E2 arm | **Deployed** ([`deploy/cyan`](deploy/cyan)) |
 | `lh-proto`: lifecycle events, headers, engine lease hint, ledger rows, with JSON Schemas | **v0** ([`crates/lh-proto`](crates/lh-proto)) |
-| `lh-core`: the tier cost model, KV geometry, the step-time model fitted on the frozen box, and the admission state machine with E2's baseline policies (static cap, token reservation, llm-d flow control emulated, preempt-resubmit) | **W2** ([`crates/lh-core`](crates/lh-core)); Leaseholder's own policy (headroom, critical-window throttle, degrade) arrives in W3 |
-| `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest, metrics, and an admission point running `lh-core`'s policies, with the class sent upstream as vLLM's priority header, SGLang's body field or SMG's header | **W2, deployed on cyan** ([`crates/lh-gateway`](crates/lh-gateway)) |
+| `lh-core`: the tier cost model, KV geometry, the step-time model fitted on the frozen box, and the admission state machine with E2's baseline policies (static cap, token reservation, llm-d flow control emulated, preempt-resubmit) and Leaseholder's own, `leaseholder`: KV headroom for armed voice sessions, a critical-window prefill budget priced by the step model, degrade and aging | **W3** ([`crates/lh-core`](crates/lh-core)) |
+| `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest with each voice session's turn state, metrics, and an admission point running `lh-core`'s policies, with the class sent upstream as vLLM's priority header, SGLang's body field or SMG's header | **W3, deployed on cyan** ([`crates/lh-gateway`](crates/lh-gateway)) |
 | `lh-sim`: the agent replay through a model of vLLM's two-tier KV cache and its step loop (calibrated within 8% of resume TTFT at 8 and 16 sessions), with stock arms, E1's information-level arms, a clairvoyant reference and the regime map | **W2** ([`crates/lh-sim`](crates/lh-sim)); E1's gate (G-sim) came out negative |
 | `lh-node` | W5, with leases and engine epochs |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0** ([`python/leaseholder_vllm`](python/leaseholder_vllm)); CPU-tested against vLLM's real offload manager, live-checked on the GPU; off in E2, as G-sim decided |
-| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison, tier and voice-turn probes, and `lh-bench e2`, the E2 harness (arm files, campaigns, per-point summaries, the frontier report) | **W2** ([`python/leaseholder_bench`](python/leaseholder_bench), [`benchmarks/e2`](benchmarks/e2)) |
-| `leaseholder_voice`: the voice agent (`lh-voice-worker`), measurement callers that read latency from waveforms (`lh-voice bots`), LiveKit plugin factory, barge-in test | **v0** ([`python/leaseholder_voice`](python/leaseholder_voice)); measured alone and beside the agent replay in every E2 point |
+| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison, tier and voice-turn probes, and `lh-bench e2`, the E2 harness (arm files, campaigns, per-point summaries with exact first bytes, the stage waterfall and the GPU's clocks, the frontier report) | **W3** ([`python/leaseholder_bench`](python/leaseholder_bench), [`benchmarks/e2`](benchmarks/e2)) |
+| `leaseholder_voice`: the voice agent (`lh-voice-worker`) with its lifecycle events and per-turn stage times, measurement callers that read latency from waveforms (`lh-voice bots`), LiveKit plugin factory, barge-in test | **W3** ([`python/leaseholder_voice`](python/leaseholder_voice)); measured alone and beside the agent replay in every E2 point |
 
 The experiments are planned in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The headline is E2: the voice SLO frontier against tuned stock vLLM while background agents harvest the GPU.
 
@@ -113,7 +113,7 @@ docs/                     architecture, protocol, SLOs, experiments, benchmarks,
   - an engine fix that lets a waiting request preempt running work when the KV cache is full, keeping the victim's KV (open in vLLM as #40004; a draft in SGLang, #45686);
   - a recompute ledger validated by injected causes;
   - measurements of when lifecycle timing beats static reservation and engine priority, and when it does not.
-- **The gateway is a harness.** `lh-gateway` is a small Rust proxy for experiments on one GPU without Kubernetes. It runs `lh-core`'s admission policies: E2's baselines since W2, Leaseholder's own from W3. It does not compete with fleet routers. The policy is to be proposed where production runs:
+- **The gateway is a harness.** `lh-gateway` is a small Rust proxy for experiments on one GPU without Kubernetes. It runs `lh-core`'s admission policies: E2's baselines since W2, Leaseholder's own since W3. It does not compete with fleet routers. The policy is to be proposed where production runs:
   - the engine fix, as a vLLM scheduler PR under #40004;
   - the agent-side lease and prefetch policy, in vllm-project/router on RFCs #427 (engine-confirmed retention) and #428 (prefetch before a tool returns);
   - the lifecycle-event sink and cache-control pass-through, in agentic-api (#364, #330).

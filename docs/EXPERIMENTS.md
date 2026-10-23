@@ -33,7 +33,13 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 | 9 | Leaseholder: headroom timed by lifecycle events and freed by parking, the critical-window prefill throttle, class-aware admission (never shed), the engine "make room" patch; each also alone | This project |
 | 10 | MPS with an active-thread split; audio off the GPU | Equal-hardware partitioning |
 
-**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (speech onset, end of turn, the preemptive-generation transcript); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech cuts the reply after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); the difference is reported as wasted tokens.
+**Arm 9 as built** (W3; [`disc-a9-s24.toml`](../benchmarks/e2/arms/disc-a9-s24.toml), [`a9.campaign`](../benchmarks/e2/a9.campaign)):
+- **The gateway** runs the `leaseholder` admission policy ([ARCHITECTURE.md §4.3](ARCHITECTURE.md#43-turn-imminent-headroom)): 1,024 tokens of KV headroom per armed session (a voice turn at its longest in arm 1; with two callers, the size of arm 6's 2,048-token reservation, so arm 9 against arm 6 is timed against static at equal size), armed from speech onset; 150 ms of predicted background prefill per critical window; replies capped at 16 tokens when the headroom was not there; aging after 10 s.
+- **The engine** runs the `make-room` variant ([ARCHITECTURE.md §4.6](ARCHITECTURE.md#46-engine-side-policy)): at most two preemptions a step for a waiting request that lacks KV, the budget cap, and a 2,048-token reserve that requests of a positive priority leave free.
+- **The voice worker** posts its lifecycle events.
+- **Single-mechanism ablations**, each arm 9 without one part: the throttle, the headroom, degrade, the events (`[voice] events = false`), the gateway policy (engine only), the engine change (gateway only), and each engine switch (KV make-room, the budget cap, the reserve). The trigger factor runs as `trigger = "request"`, and the throttle's budget at 0, 150 and 500 ms.
+
+**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (`trigger = "onset"`, speech onset; or `"request"`, the realtime request, which preemptive generation sends at the final transcript and which otherwise follows the end of the turn); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech cuts the reply after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); the difference is reported as wasted tokens.
 
 **Metrics.**
 - Voice V2V p50, p95 and p99 from waveforms, server-side and end-to-end (including endpointing).
@@ -41,7 +47,7 @@ E0 comes first. It re-measures the tier cost model on the frozen box and checks 
 - LLM time to first sentence and the stage waterfall, separating compute interference (step time) from KV admission blocking.
 - Abort latency and wasted tokens, including discarded preemptive generations.
 - Harvested background goodput, counting shed and aborted work as lost; goodput per GPU-hour and $/M tokens at the SLO.
-- The false-alarm cost of headroom held without a following turn (block-seconds).
+- Under `leaseholder`: background deferrals by reason and their time, aged and oversize admissions, degraded replies, state timeouts, and the false-alarm cost of headroom held without a following turn (token-seconds of background work held back).
 
 **Plot.** Harvested background goodput on x, voice V2V p95 on y, one frontier per arm, with the regimes where tuned stock or engine preemption is already enough marked.
 
