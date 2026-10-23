@@ -1,6 +1,6 @@
 [package]
 name = "lh-core"
-description = "Leaseholder's deterministic policy core: admission, the tier cost model and KV geometry"
+description = "Leaseholder's deterministic policy core: admission, placement, the tier cost model and KV geometry"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -446,6 +446,16 @@ impl Admission {
         self.waiting[index(class)].len()
     }
 
+    /// The estimated tokens of the admitted background requests.
+    pub const fn background_tokens(&self) -> u64 {
+        self.background_tokens
+    }
+
+    /// The estimated tokens of the waiting background requests.
+    pub const fn waiting_tokens(&self) -> u64 {
+        self.waiting_tokens
+    }
+
     /// Whether a held request may go upstream beside the admitted ones.
     fn fits(&self, held: &Held) -> bool {
         let (class, tokens) = (held.class, held.tokens);
@@ -1179,5 +1189,18 @@ mod tests {
         let realtime = a.arrive(Realtime, estimate(0)).unwrap();
         assert_eq!((realtime.deferred, realtime.reply_cap), (None, None));
         assert!(a.is_waiting(waiting));
+    }
+
+    #[test]
+    fn the_background_tokens_held_are_reported_in_flight_and_waiting() {
+        let mut a = priced(Policy::Leaseholder(leaseholder()), 8);
+        let running = admitted(&mut a, Background, 6_000);
+        assert_eq!(a.set_turns(turns(1, 0)), []);
+        // 6,000 + 4,000 leave less than one turn's 1,000 free: it waits.
+        let deferred = waits(&mut a, Background, 4_000);
+        admitted(&mut a, Realtime, 700);
+        assert_eq!((a.background_tokens(), a.waiting_tokens()), (6_000, 4_000));
+        assert_eq!(a.leave(running), [Action::Admit(deferred)]);
+        assert_eq!((a.background_tokens(), a.waiting_tokens()), (4_000, 0));
     }
 }
