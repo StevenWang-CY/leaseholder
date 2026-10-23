@@ -302,6 +302,12 @@ impl Engine {
         blocks as u64 * self.block_tokens
     }
 
+    /// Pool blocks that running requests and holds pin: what no new request can take. Free cached
+    /// blocks are not among them, as vLLM evicts those for a request that needs them.
+    pub fn pinned_blocks(&self) -> usize {
+        self.pinned
+    }
+
     /// Pins the blocks at the start of `prefix` that the pool caches until [`release`](Self::release).
     /// `None` when it caches none of them.
     pub fn hold(&mut self, prefix: &[BlockId]) -> Option<u64> {

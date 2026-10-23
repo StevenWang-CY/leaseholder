@@ -100,6 +100,14 @@ pub struct ReplayConfig {
     /// its original token counts (output lengths come back rounded up to a multiple of 32).
     pub token_scale: u32,
     pub pauses: Pauses,
+    /// KV a realtime tier needs free beside the replay (E2's voice calls), in tokens: the replay
+    /// measures how long the background leaves less than this of the pool free. 0 measures nothing.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub realtime_tokens: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Default for ReplayConfig {
@@ -119,6 +127,7 @@ impl Default for ReplayConfig {
             block_tokens: 16,
             token_scale: 1,
             pauses: Pauses::Trace,
+            realtime_tokens: 0,
         }
     }
 }
@@ -202,6 +211,16 @@ pub struct ReplayStats {
     /// full blocks), over the profiling window.
     pub working_set_mean_tokens: f64,
     pub working_set_peak_tokens: u64,
+    /// The share of the profiling window in which the live working set left less than
+    /// [`ReplayConfig::realtime_tokens`] of the pool free: the realtime tier's KV then displaces
+    /// cached background KV, which vLLM evicts for a request that needs blocks. `None`, and left out,
+    /// when nothing is measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realtime_short_share: Option<f64>,
+    /// The share in which the blocks running requests pin left less than that free: a realtime
+    /// request then waits for blocks, as vLLM preempts no running request for a waiting one (#40004).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realtime_blocked_share: Option<f64>,
 }
 
 /// What one replay produced.
@@ -492,6 +511,11 @@ pub struct Replay<'a> {
     ws_last_change: u64,
     /// The working set's size integrated over the profiling window, in blocks × ns.
     ws_integral: f64,
+    /// [`ReplayConfig::realtime_tokens`] in blocks, and the profiling time (ns) in which the working
+    /// set, and the pinned blocks, left fewer than that free.
+    realtime_blocks: usize,
+    realtime_short_ns: u64,
+    realtime_blocked_ns: u64,
     stats: ReplayStats,
     /// A reused buffer for prefix-tree paths.
     scratch: Vec<NodeId>,
@@ -516,6 +540,7 @@ impl<'a> Replay<'a> {
                 (Some(Scheduler::new(budget, steps, cost.clone())), stall)
             }
         };
+        let realtime_blocks = cfg.realtime_tokens.div_ceil(cfg.block_tokens as u64) as usize;
         Self {
             cfg,
             corpus,
@@ -551,6 +576,9 @@ impl<'a> Replay<'a> {
             working_set: IdMap::default(),
             ws_last_change: 0,
             ws_integral: 0.0,
+            realtime_blocks,
+            realtime_short_ns: 0,
+            realtime_blocked_ns: 0,
             stats: ReplayStats::default(),
             scratch: Vec::new(),
         }
@@ -624,6 +652,10 @@ impl<'a> Replay<'a> {
         let window = window_end.saturating_sub(self.profiling_start).max(1) as f64;
         self.stats.working_set_mean_tokens =
             self.ws_integral / window * self.cfg.block_tokens as f64;
+        if self.realtime_blocks > 0 {
+            self.stats.realtime_short_share = Some(self.realtime_short_ns as f64 / window);
+            self.stats.realtime_blocked_share = Some(self.realtime_blocked_ns as f64 / window);
+        }
         self.stats.lanes = self.lanes.len();
         Ok(ReplayOutput {
             records: self.records,
@@ -633,13 +665,23 @@ impl<'a> Replay<'a> {
         })
     }
 
-    /// Moves the clock to `at`, integrating the live working set over the profiling duration.
+    /// Moves the clock to `at`, integrating the live working set, and the time it and the pinned
+    /// blocks leave the realtime tier short, over the profiling duration.
     fn advance(&mut self, at: u64) {
         if self.phase == Phase::Profiling && at > self.ws_last_change {
             let from = self.ws_last_change.max(self.profiling_start);
             let to = at.min(self.profiling_end);
             if to > from {
                 self.ws_integral += self.working_set.len() as f64 * (to - from) as f64;
+                if self.realtime_blocks > 0 {
+                    let pool = self.engine.gpu_capacity();
+                    if self.working_set.len() + self.realtime_blocks > pool {
+                        self.realtime_short_ns += to - from;
+                    }
+                    if self.engine.pinned_blocks() + self.realtime_blocks > pool {
+                        self.realtime_blocked_ns += to - from;
+                    }
+                }
             }
             self.ws_last_change = at;
         }
@@ -1937,5 +1979,50 @@ mod tests {
             );
             last_done = second.done_ns;
         }
+    }
+
+    #[test]
+    fn the_realtime_tier_is_short_while_too_little_of_the_pool_is_free() {
+        // 11 usable blocks: an 8-block prompt, a 1 s pause, then a 9-block prompt over it.
+        let trace = r#"{"id": "rt", "block_size": 16, "requests": [
+            {"t": 0, "type": "n", "model": "m", "in": 128, "out": 1, "hash_ids": [1, 2, 3, 4, 5, 6, 7, 8], "api_time": 0.1},
+            {"t": 2, "type": "n", "model": "m", "in": 144, "out": 1, "hash_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9], "think_time": 1.0}
+        ]}"#;
+        let engine = EngineConfig {
+            gpu_blocks: 12,
+            cpu_blocks: 0,
+            block_tokens: 16,
+            gpu_policy: GpuPolicyKind::Lru,
+            cpu_policy: CpuPolicyKind::Lru,
+        };
+        let run_rt = |realtime_tokens| {
+            let cfg = ReplayConfig {
+                realtime_tokens,
+                ..from_start(1)
+            };
+            run_with(&[trace], cfg, &engine, Retention::None)
+        };
+        let share = |ns: u64, end: u64| ns as f64 / end as f64;
+        // 4 blocks: the working set leaves fewer free throughout, the pinned prompt while each runs.
+        let out = run_rt(64);
+        let (first, second) = (&out.records[0], &out.records[1]);
+        let end = second.done_ns;
+        let running = first.done_ns - first.admitted_ns + second.done_ns - second.admitted_ns;
+        assert_eq!(out.stats.realtime_short_share, Some(1.0));
+        let blocked = out.stats.realtime_blocked_share.unwrap();
+        assert!((blocked - share(running, end)).abs() < 1e-12, "{blocked}");
+        // 3 blocks fit beside the 8-block prompt, pinned or not, but not beside the 9-block one.
+        let out = run_rt(48);
+        let second = &out.records[1];
+        assert_eq!(second.done_ns, end);
+        let short = out.stats.realtime_short_share.unwrap();
+        assert!((short - share(end - second.issued_ns, end)).abs() < 1e-12);
+        let blocked = out.stats.realtime_blocked_share.unwrap();
+        assert!((blocked - share(second.done_ns - second.admitted_ns, end)).abs() < 1e-12);
+        let none = run_rt(0).stats;
+        assert_eq!(
+            (none.realtime_short_share, none.realtime_blocked_share),
+            (None, None)
+        );
     }
 }
