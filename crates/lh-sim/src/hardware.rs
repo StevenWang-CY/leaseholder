@@ -575,6 +575,7 @@ pub fn markdown(results: &[Placement], hash_block: u32, realtime_tokens: u64) ->
         let short = share(&|q| lru(q).replay.realtime_short_share);
         let blocked = share(&|q| lru(q).replay.realtime_blocked_share);
         let steps = p.gpu.step_cost();
+        let ms = |pct| thousands(mean(&|q| q.result.resume(Arm::LruCpu, pct)).round() as u64);
         let gains = |arm: Arm| {
             format!(
                 "{:+.0} / {:+.0}%",
@@ -591,7 +592,7 @@ pub fn markdown(results: &[Placement], hash_block: u32, realtime_tokens: u64) ->
         previous = Some((p.gpu.name, p.token_scale));
         writeln!(
             text,
-            "| {gpu} | {} | {:.1} / {:.1} | {:.1} | {:.2} | {} | {:.0} | {:.0} / {:.0} | {} | {} | {} | {} |",
+            "| {gpu} | {} | {:.1} / {:.1} | {:.1} | {:.2} | {} | {:.0} | {} / {} | {} | {} | {} | {} |",
             p.result.cell.sessions,
             mean(&|q| lru(q).regime.kv_pressure_mean),
             mean(&|q| lru(q).regime.kv_pressure_peak),
@@ -602,8 +603,8 @@ pub fn markdown(results: &[Placement], hash_block: u32, realtime_tokens: u64) ->
                 _ => "–".into(),
             },
             mean(&|q| chunk_ms(&steps, lru(q).regime.median_prompt_tokens.round() as u64)),
-            mean(&|q| q.result.resume(Arm::LruCpu, 50)),
-            mean(&|q| q.result.resume(Arm::LruCpu, 90)),
+            ms(50),
+            ms(90),
             gains(Arm::Clairvoyant),
             gains(Arm::OraclePrefetch),
             gains(Arm::HistoryPrefetch),
@@ -940,6 +941,7 @@ mod tests {
             rows[0].contains("| 100 / 20% |") && rows[0].contains("| +0 / +20% |"),
             "{map}"
         );
+        assert!(rows[0].contains("| 100 / 1,000 |"), "{map}");
         let gpus = profiles(&GPUS);
         assert!(
             gpus.contains("| RTX 5060 Ti 16 GB | measured | 16 GiB | 448 GB/s |"),
