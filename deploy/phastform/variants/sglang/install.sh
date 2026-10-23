@@ -7,8 +7,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 uv=${UV:-$HOME/.local/bin/uv}
 venv=$HOME/leaseholder/venvs/sglang
 [[ -x $venv/bin/python ]] || "$uv" venv -q --python 3.12 "$venv"
-# torch's CUDA 13.0 wheels come from PyTorch's index. FlashInfer's JIT needs ninja, which the lock includes.
+# torch's CUDA 13.0 wheels come from PyTorch's index. FlashInfer's JIT needs ninja, which the lock includes. The
+# lock pins its one pre-release (cuda-tile) exactly, so sync needs no pre-release flag (and does not accept one).
 "$uv" pip sync -q --python "$venv/bin/python" --extra-index-url https://download.pytorch.org/whl/cu130 \
-  --index-strategy unsafe-best-match --prerelease=allow "$here/requirements.txt"
+  --index-strategy unsafe-best-match "$here/requirements.txt"
 mkdir -p "$HOME/leaseholder/cache/flashinfer-sglang"
 "$venv/bin/python" -c 'import sglang, torch; print("install: sglang", sglang.__version__, "torch", torch.__version__)'
