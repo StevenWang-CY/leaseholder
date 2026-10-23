@@ -1,0 +1,23 @@
+[Unit]
+Description=Leaseholder SSH tunnel from cyan to Gray's loopback services, the second GPU node
+Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
+
+# Not enabled at boot: Gray serves in booked windows, and E2's two-node points start this unit.
+[Service]
+Type=exec
+# lh-tunnel-phastform's forwards for Gray: TCP on 28000, 28100, 28880 and 25558, and the sockets gray-*.sock. Gray
+# authorizes the same key for these ports only (deploy/authorize-tunnel.sh). The SSH target lives outside the
+# repository, as LH_TUNNEL_TARGET in tunnel-gray.env.
+EnvironmentFile=%h/.config/leaseholder/tunnel-gray.env
+ExecStartPre=/usr/bin/mkdir -p %t/lh
+ExecStart=/usr/bin/ssh -N -T -i %h/.ssh/lh_tunnel_ed25519 \
+  -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -o StreamLocalBindUnlink=yes \
+  -L 127.0.0.1:28000:127.0.0.1:8000 -L 127.0.0.1:28100:127.0.0.1:8100 -L 127.0.0.1:28880:127.0.0.1:8880 \
+  -L 127.0.0.1:25558:127.0.0.1:5558 \
+  -L %t/lh/gray-engine.sock:127.0.0.1:8000 -L %t/lh/gray-stt.sock:127.0.0.1:8100 \
+  -L %t/lh/gray-tts.sock:127.0.0.1:8880 \
+  ${LH_TUNNEL_TARGET}
+Restart=always
+RestartSec=5
