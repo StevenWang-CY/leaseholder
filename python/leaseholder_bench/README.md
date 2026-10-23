@@ -244,7 +244,7 @@ When evicted blocks were idle for less time than blocks typically wait between r
 
 ## E2 points
 
-`lh-bench e2 run ARM.toml --out DIR` measures one point of E2 on cyan: the measurement calls beside the AIPerf agentic replay, through the gateway, on the engine the GPU node runs. [`benchmarks/e2`](../../benchmarks/e2/README.md) holds the arm files and `campaign.sh`, which measures a list of them from a workstation and switches the GPU node's engine between them.
+`lh-bench e2 run ARM.toml --out DIR` measures one point of E2 on cyan: the measurement calls beside the AIPerf agentic replay, through the gateway, on the engine the GPU node runs, or on several GPU nodes. [`benchmarks/e2`](../../benchmarks/e2/README.md) holds the arm files and `campaign.sh`, which measures a list of them from a workstation and switches the GPU node's engine between them.
 
 ```bash
 lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/a1-voice.toml --out ~/leaseholder/runs/e2/w2/a1-voice
@@ -266,6 +266,8 @@ A point runs in this order:
 5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them. With `--save-audio`, a run option rather than the arm's, the callers also save each call's audio for the demo video (`lh-voice bots --save-audio`), which measures nothing differently.
 6. **The end.** AIPerf gets SIGINT, cancels its requests and writes its exports. The gateway's request lines for the window go to `gateway.jsonl`, and the voice worker's journal from the start of the calls to `voice-worker.log`, once every call's session has logged its end (at most 30 s). Then `summary.json` is written.
 
+**A point on several GPU nodes.** An arm whose `[gateway]` names GPU nodes (`[gateway.nodes.<name>]`, each with the cyan end of its tunnel as `upstream`, and `[gateway.placement]`) runs on all of them, each on the arm's `[engine]`. First the run starts each node's tunnel, `lh-tunnel-<name>`, and waits up to 60 s for the node's engine to answer `/health` through it; a tunnel that runs is left alone, and none is stopped after the point. Each engine is then checked (step 1), emptied (step 3) and snapshotted (step 5). The gateway serves the nodes in place of `gateway.toml`'s `upstream`, and the voice worker gets them as `LH_NODES` from a drop-in the run writes, `variant-nodes.conf`, so that each call's STT and TTS follow its node; the next point on one node, or `lh-bench e2 reset`, removes it. A node is named after its host's first label (`phastform`, `gray`), which also names its tunnel unit, its sockets on cyan and its files in the run directory.
+
 **The arm file.** Unknown keys and wrong types are errors. The point is named after the file.
 
 | Key | Default | Meaning |
@@ -286,6 +288,7 @@ A point runs in this order:
 | `[agents] seed` | 11 | AIPerf's seed |
 | `[agents] send_priority` | `true` | The plugin's body `priority`. The gateway strips it, so it reaches only an engine targeted directly |
 | `[gateway]` | none | Merged into `gateway.toml` as it is, tables key by key: `upstream`, `upstream_priority`, `[gateway.admission]` and any other key of [`lh-gateway`'s configuration](../../crates/lh-gateway/README.md) |
+| `[gateway.nodes.<name>]`, `[gateway.placement]` | none | A point on several GPU nodes: two or more, each with an `http://` `upstream`, and how the gateway places sessions on them ([placement](../../crates/lh-gateway/README.md#placement)). Its agents go through the gateway, and it takes no `router` |
 | `[engine] variant` | `"frozen"` | A directory of [`deploy/phastform/variants`](../../deploy/phastform/variants/README.md), or `frozen` |
 | `[engine] flags` | `[]` | Engine flags, each a plain word, added to its command line |
 
@@ -294,15 +297,15 @@ A point runs in this order:
 | File | Contents |
 |---|---|
 | `arm.toml` | The arm file as run |
-| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; `save_audio`, the run option; versions (the deployed commit from `~/leaseholder/src/DEPLOYED`, `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked); what cyan ran (which units restarted, the gateway's configuration without key digests); the window; AIPerf's exit status |
+| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; `save_audio`, the run option; versions (the deployed commit from `~/leaseholder/src/DEPLOYED`, `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked; by node on several GPU nodes); what cyan ran (which units restarted, the gateway's configuration without key digests, the worker's nodes); the window; AIPerf's exit status |
 | `run.log` | Each step, timestamped |
-| `engine.json` | The engine's whole configuration from `/server_info`, without credentials |
+| `engine.json` | The engine's whole configuration from `/server_info`, without credentials; `engine-NODE.json` for each node on several |
 | `aiperf.log`, `aiperf/` | AIPerf's output and artifacts: `profile_export.jsonl` holds one record per request |
 | `bots.log`, `bots/` | The callers' output and run directory (`turns.jsonl`, `summary.json`, and with `--save-audio` each call's `call-<i>.wav` and `call-<i>.json`) |
-| `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom` |
-| `gateway.jsonl` | The gateway's request lines for the window (`journalctl --user -u lh-gateway --since --until`, the JSON lines whose message is `request`): class, status, outcome, `first_byte_ms`, `total_ms`, `admission_wait_ms` and tokens of each request. Absent when the gateway logs text |
-| `voice-worker.log` | The voice worker's journal from the start of the calls: a line per turn with its stage times, and a line per session at its end with its lifecycle-event counts ([`leaseholder-voice`](../leaseholder_voice/README.md#lifecycle-events-and-turn-lines)) |
-| `gpu.csv` | Written by `campaign.sh`, not by `e2 run`: the GPU node's `nvidia-smi` samples, once a second while the point ran (timestamps in UTC, SM and memory clocks, temperature, power, clock event reasons) |
+| `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom`; `engine-NODE-start.prom` and `engine-NODE-end.prom` for each node on several |
+| `gateway.jsonl` | The gateway's request lines for the window (`journalctl --user -u lh-gateway --since --until`, the JSON lines whose message is `request`): class, status, outcome, `first_byte_ms`, `total_ms`, `admission_wait_ms`, tokens and, on several GPU nodes, the `node` of each request. Absent when the gateway logs text |
+| `voice-worker.log` | The voice worker's journal from the start of the calls: a line per turn with its stage times, a line per session at its end with its lifecycle-event counts ([`leaseholder-voice`](../leaseholder_voice/README.md#lifecycle-events-and-turn-lines)) and, on several GPU nodes, a line per call placed, with its room and node |
+| `gpu.csv` | Written by `campaign.sh`, not by `e2 run`: the GPU node's `nvidia-smi` samples, once a second while the point ran (timestamps in UTC, SM and memory clocks, temperature, power, clock event reasons); `gpu-NODE.csv` for each node on several |
 | `summary.json` | The point's E2 metrics |
 
 A component that fails fails the point: `run.json` keeps `failed` and the error, and a tool's error gives its exit status and the last lines of its log. AIPerf and the callers run in process groups of their own and are stopped through them, with SIGINT and then SIGKILL for whatever is left, also when the point fails or `lh-bench e2 run` gets SIGINT or SIGTERM. Closing the SSH session that started it does not stop a point. A complete point is never overwritten; an incomplete one is moved aside to `DIR.incomplete-<UTC time>`, and a directory that holds anything else is refused. One `e2 run` or `e2 reset` runs at a time; the lock file, `~/leaseholder/runs/.lh-bench-e2.lock`, holds its pid.

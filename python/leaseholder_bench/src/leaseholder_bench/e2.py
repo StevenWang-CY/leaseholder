@@ -18,7 +18,13 @@ gateway's configuration and the engine the GPU node runs. The point is named aft
 5. it stops AIPerf, keeps the gateway's request log of the calls and the voice worker's journal of
    them (its turn lines and its sessions' event counts), and writes ``summary.json``.
 
-The GPU node's engine is switched by ``benchmarks/e2/campaign.sh`` (``variant.sh use``), never here.
+An arm whose ``[gateway]`` names GPU nodes (``[gateway.nodes.<name>]``, with ``[gateway.placement]``)
+is a point on several nodes, each running the arm's ``[engine]``: the run starts each node's tunnel
+(``lh-tunnel-<name>``), checks, resets and snapshots each node's engine, tells the voice worker the
+nodes (``LH_NODES``, so that each call's STT and TTS follow its node), and reports each node and the
+total.
+
+The GPU nodes' engines are switched by ``benchmarks/e2/campaign.sh`` (``variant.sh use``), never here.
 A failure ends the point: ``run.json`` keeps ``"status": "failed"`` and the error, and every process
 the run started is stopped by its process group. ``lh-bench e2 report`` (:mod:`.frontier`) builds the
 frontier from the run directories.
@@ -80,10 +86,16 @@ when its room is deleted, and its job's shutdown, which sends the last events, m
 SMG = "lh-smg"
 GATEWAY = "lh-gateway"
 WORKER = "lh-voice-worker"
+TUNNEL = "lh-tunnel-{}"
+"""A GPU node's tunnel unit on cyan (deploy/cyan/systemd), by the node's name."""
 E2_GATEWAY = "e2-gateway"
 NO_PREEMPTIVE = "no-preemptive-generation"
 NO_EVENTS = "no-events"
 """Drop-ins under deploy/cyan/variants/ that e2 run links into cyan's units as ``variant-NAME.conf``."""
+NODES = "nodes"
+"""The worker drop-in e2 run writes for a point on several GPU nodes, ``variant-nodes.conf``."""
+ENGINE_UP_S = 60.0
+"""How long a node's engine may take to answer through a tunnel that was just started."""
 
 SGLANG = "sglang"
 """The one engine variant that serves SGLang; every other variant serves vLLM."""
@@ -91,6 +103,8 @@ SGLANG = "sglang"
 _FLAG = re.compile(r"[A-Za-z0-9._:/=,+-]+")
 """Engine flags travel through ssh and a systemd environment line, so each is one plain word."""
 _ARM = re.compile(r"(10|[1-9])[a-z]?(-[a-z0-9]+)*")
+_NODE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+"""The gateway's rule for node names, which unit, file and socket names carry."""
 
 
 class E2Error(Exception):
@@ -216,6 +230,26 @@ def _engine(top: _Table) -> Engine:
     return Engine(variant, tuple(flags))
 
 
+def gpu_nodes(arm: Arm) -> dict[str, str]:
+    """The GPU nodes of a point on several, by name, with their engines' URLs (the ``upstream`` of each of
+    ``[gateway.nodes]``, the cyan end of its tunnel); empty for a point on one."""
+    nodes = arm.gateway.get("nodes")
+    if nodes is None:
+        return {}
+    where = f"{arm.name}.toml [gateway.nodes]"
+    if not isinstance(nodes, Mapping) or len(nodes) < 2:
+        raise E2Error(f"{where} names two GPU nodes or more, as tables")
+    urls = {}
+    for name, node in nodes.items():
+        url = node.get("upstream") if isinstance(node, Mapping) else None
+        if not _NODE.fullmatch(name) or not isinstance(url, str) or not url.startswith("http://"):
+            raise E2Error(
+                f"{where}: {name!r} needs a name from [A-Za-z0-9._-] and an http:// upstream"
+            )
+        urls[name] = url.rstrip("/")
+    return urls
+
+
 def load_arm(path: Path) -> Arm:
     """Read and check an arm file; the point is named after the file (``a2-stock-s16.toml``)."""
     try:
@@ -246,6 +280,13 @@ def load_arm(path: Path) -> Arm:
     ):
         if not ok:
             raise E2Error(f"{path.name}: {what}")
+    if gpu_nodes(arm):
+        for ok, what in (
+            (arm.router is None, "a router fronts one engine, not several GPU nodes"),
+            (agents.target == "gateway", "[agents] go through the gateway to several GPU nodes"),
+        ):
+            if not ok:
+                raise E2Error(f"{path.name}: {what}")
     return arm
 
 
@@ -347,25 +388,33 @@ def configure_cyan(arm: Arm, host: Host, systemd: Systemd) -> dict[str, Any]:
             f"{WORKER} ends turns with LiveKit's end-of-turn model; E2 points need fixed endpointing: "
             "link deploy/cyan/variants/vad-turns (ops/RUNBOOK.md)"
         )
-    applied = _apply(host, systemd, arm.router, arm.gateway, arm.voice)
+    applied = _apply(host, systemd, arm.router, arm.gateway, arm.voice, tuple(gpu_nodes(arm)))
     return applied | {"llm_path": env.get("LH_LLM_UDS")}
 
 
 def reset_cyan(host: Host, systemd: Systemd) -> dict[str, Any]:
     """Undo what e2 run changes on cyan: SMG stopped, the gateway back on gateway.toml, preemptive
-    generation and lifecycle events on."""
+    generation and lifecycle events on, and the voice worker on one GPU node."""
     with _exclusive(host):
-        return _apply(host, systemd, None, {}, Voice())
+        return _apply(host, systemd, None, {}, Voice(), ())
 
 
 def _apply(
-    host: Host, systemd: Systemd, router: str | None, overlay: Mapping[str, Any], voice: Voice
+    host: Host,
+    systemd: Systemd,
+    router: str | None,
+    overlay: Mapping[str, Any],
+    voice: Voice,
+    nodes: tuple[str, ...],
 ) -> dict[str, Any]:
     if router == "smg":
         systemd("start", SMG)  # returns once SMG answers /health
     elif systemd.active(SMG):
         systemd("stop", SMG)
-    config = _merge(_read_toml(host.config / "gateway.toml"), overlay)
+    base = _read_toml(host.config / "gateway.toml")
+    if nodes:
+        base.pop("upstream", None)  # the arm's nodes replace the one engine
+    config = _merge(base, overlay)
     gateway = _link(host, GATEWAY, E2_GATEWAY, bool(overlay))
     if overlay:
         gateway |= _write_private(
@@ -374,6 +423,7 @@ def _apply(
     links = [
         _link(host, WORKER, NO_PREEMPTIVE, not voice.preemptive_generation),
         _link(host, WORKER, NO_EVENTS, not voice.events),
+        _name_nodes(host, nodes),
     ]
     worker = any(links)
     if gateway or worker:
@@ -396,14 +446,15 @@ def _apply(
             90.0,
             f"{WORKER} did not register with LiveKit within 90 s (journalctl --user -u {WORKER})",
         )
+    record = {
+        "restarted": worker,
+        "preemptive_generation": voice.preemptive_generation,
+        "events": voice.events,
+    }
     return {
         "router": router,
         "gateway": {"restarted": gateway, "config": _redacted(config)},
-        "worker": {
-            "restarted": worker,
-            "preemptive_generation": voice.preemptive_generation,
-            "events": voice.events,
-        },
+        "worker": record | ({"nodes": list(nodes)} if nodes else {}),
     }
 
 
@@ -425,6 +476,27 @@ def _link(host: Host, unit: str, variant: str, wanted: bool) -> bool:
     if wanted:
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(target)
+    return True
+
+
+def _name_nodes(host: Host, nodes: tuple[str, ...]) -> bool:
+    """Write the voice worker's drop-in that names the GPU nodes (``LH_NODES``), or remove it for a point
+    on one; returns whether that changed."""
+    path = host.units / f"{WORKER}.service.d" / f"variant-{NODES}.conf"
+    if not nodes:
+        if not (path.is_symlink() or path.exists()):
+            return False
+        path.unlink()
+        return True
+    text = (
+        "# Generated by lh-bench e2 run for a point on several GPU nodes.\n"
+        f"[Service]\nEnvironment=LH_NODES={','.join(nodes)}\n"
+    )
+    if path.is_file() and not path.is_symlink() and path.read_text() == text:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    path.write_text(text)
     return True
 
 
@@ -782,11 +854,11 @@ def _measure(
     running: contextlib.ExitStack,
     save_audio: bool,
 ) -> dict[str, Any]:
-    info = describe_engine(host.engine_url)
-    _write_json(out / "engine.json", _redacted(info.config))
-    engine = {"server": info.server, "version": info.version, "pool_tokens": info.pool_tokens}
-    record["engine"] = engine  # recorded before the check, which fails on a wrong engine
-    record["engine"] = engine | {"flags": check_engine(arm.engine, info)}
+    nodes = gpu_nodes(arm)
+    engines: dict[str | None, str] = dict(nodes) or {None: host.engine_url}
+    if nodes:
+        _start_tunnels(nodes, systemd, record)
+    servers = _check_engines(arm, engines, out, record)
     record.say(f"configuring cyan for {arm.name}")
     record["cyan"] = configure_cyan(arm, host, systemd)
     _until(
@@ -794,11 +866,12 @@ def _measure(
         60.0,
         f"{host.gateway_url}/ready did not answer within 60 s: the engine or the router is down",
     )
-    reset_prefix_cache(host.engine_url, info.server)
+    for node, url in engines.items():
+        reset_prefix_cache(url, servers[node])
     aiperf = _start_aiperf(arm, host, out, record, running) if arm.agents.sessions else None
-    start = _snapshot(host, out, "start")
+    start = _snapshot(host, out, "start", engines)
     end = _call(arm, host, out, record, running, aiperf, save_audio)
-    _snapshot(host, out, "end")
+    _snapshot(host, out, "end", engines)
     record["window"] = {"start": start, "end": end}
     if aiperf is not None:
         record.say("stopping AIPerf")
@@ -808,13 +881,37 @@ def _measure(
     _gateway_log(systemd, out, start, end)
     _worker_journal(systemd, out, start, arm.voice.callers)
     try:
-        metrics = summarize_point(out, start, end, agents=bool(arm.agents.sessions))
+        metrics = summarize_point(
+            out, start, end, agents=bool(arm.agents.sessions), nodes=tuple(nodes)
+        )
     except ValueError as exc:
         raise E2Error(str(exc)) from None
     summary = {"name": arm.name, "arm": arm.arm, "label": arm.label} | metrics
     _write_json(out / "summary.json", summary)
     record.say(render(summary))
     return summary
+
+
+def _check_engines(
+    arm: Arm, engines: Mapping[str | None, str], out: Path, record: _Record
+) -> dict[str | None, str]:
+    """Record each engine (``engine.json``, ``engine-NODE.json`` on several GPU nodes, and run.json's
+    ``engine``, by node on several) and check it against the arm's; returns each engine's server."""
+    recorded: dict[str | None, dict[str, Any]] = {}
+
+    def keep(node: str | None, engine: dict[str, Any]) -> None:
+        recorded[node] = engine
+        record["engine"] = engine if node is None else recorded
+
+    servers = {}
+    for node, url in engines.items():
+        info = describe_engine(url)
+        servers[node] = info.server
+        _write_json(out / _engine_file(node, "json"), _redacted(info.config))
+        engine = {"server": info.server, "version": info.version, "pool_tokens": info.pool_tokens}
+        keep(node, engine)  # recorded before the check, which fails on a wrong engine
+        keep(node, engine | {"flags": check_engine(arm.engine, info)})
+    return servers
 
 
 def _start_aiperf(
@@ -901,19 +998,40 @@ def _worker_journal(systemd: Systemd, out: Path, since: float, calls: int) -> No
     (out / "voice-worker.log").write_text(journal)
 
 
-def _ready(url: str) -> bool:
+def _ready(url: str, path: str = "/ready") -> bool:
     with contextlib.suppress(httpx.HTTPError):
-        return httpx.get(f"{url}/ready", timeout=5).status_code == 200
+        return httpx.get(f"{url}{path}", timeout=5).status_code == 200
     return False
 
 
-def _snapshot(host: Host, out: Path, when: str) -> float:
-    """Save the gateway's and the engine's ``/metrics``; returns the time it finished."""
+def _start_tunnels(nodes: Mapping[str, str], systemd: Systemd, record: _Record) -> None:
+    """Start each GPU node's tunnel (one that runs is left alone; none is stopped after the point) and
+    wait until the node's engine answers through it."""
+    record.say(f"GPU nodes: {', '.join(nodes)}")
+    for node, url in nodes.items():
+        systemd("start", TUNNEL.format(node))
+        _until(
+            lambda url=url: _ready(url, "/health"),
+            ENGINE_UP_S,
+            f"the engine of GPU node {node} did not answer at {url} within {ENGINE_UP_S:.0f} s: "
+            f"is the node running, and {TUNNEL.format(node)} up?",
+        )
+
+
+def _engine_file(node: str | None, suffix: str, when: str | None = None) -> str:
+    """An engine's file: ``engine[-NODE][-WHEN].SUFFIX``, without a node for a point's one engine."""
+    return "-".join(part for part in ("engine", node, when) if part) + f".{suffix}"
+
+
+def _snapshot(host: Host, out: Path, when: str, engines: Mapping[str | None, str]) -> float:
+    """Save the gateway's and each engine's ``/metrics``; returns the time it finished."""
     metrics = out / "metrics"
     metrics.mkdir(exist_ok=True)
-    for name, url in (("gateway", host.gateway_url), ("engine", host.engine_url)):
+    files = {f"gateway-{when}.prom": host.gateway_url}
+    files |= {_engine_file(node, "prom", when): url for node, url in engines.items()}
+    for name, url in files.items():
         try:
-            (metrics / f"{name}-{when}.prom").write_text(fetch(f"{url}/metrics"))
+            (metrics / name).write_text(fetch(f"{url}/metrics"))
         except httpx.HTTPError as exc:
             raise E2Error(f"GET {url}/metrics: {exc}") from None
     return time.time()

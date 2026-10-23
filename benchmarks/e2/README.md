@@ -1,6 +1,6 @@
 # E2 campaigns
 
-An E2 point is one arm file in [`arms/`](arms): the calls, the agent replay beside them, the gateway's configuration and the engine ([the arm-file reference](../../python/leaseholder_bench/README.md#e2-points)). `lh-bench e2 run` measures one point on cyan. A campaign file lists arm files, and `campaign.sh` measures them in order from a workstation with SSH to both hosts, the way `deploy/deploy.sh` deploys.
+An E2 point is one arm file in [`arms/`](arms): the calls, the agent replay beside them, the gateway's configuration and the engine ([the arm-file reference](../../python/leaseholder_bench/README.md#e2-points)). `lh-bench e2 run` measures one point on cyan. A campaign file lists arm files, and `campaign.sh` measures them in order from a workstation with SSH to the hosts, the way `deploy/deploy.sh` deploys.
 
 ```sh
 export LH_SSH="ssh -F $HOME/.ssh/penn_config"                  # your SSH command for the hosts, as for deploy.sh
@@ -70,6 +70,38 @@ The other arms take an earlier arm's winner, so their files are written from its
 [`upstream.campaign`](upstream.campaign) measures the engine as the vLLM PRs propose it, without the reserve and behind the gateway without an admission policy: the KV preemption alone, with the budget cap, and with a 48-token window. [`upstream-r1.campaign`](upstream-r1.campaign) and [`upstream-r2.campaign`](upstream-r2.campaign) repeat these three and arm 9's 48-token window, so that each has three runs, as each of arm 9's ablations has: a configuration that misses the SLO moved by up to 1.2 s in p95 from round to round.
 
 The `[admission]` keys are those of `lh-gateway`'s configuration ([its README](../../crates/lh-gateway/README.md)); `lh-bench e2 run` passes the `[gateway]` table through as it is.
+
+## Two GPU nodes: dedicate vs pool
+
+A point on two GPU nodes (PLAN §3.4) names them in its arm file's `[gateway]`, with the cyan end of each node's tunnel, and how the gateway places sessions on them ([placement](../../crates/lh-gateway/README.md#placement)). Every node runs the arm's `[engine]`.
+
+```toml
+[gateway.nodes.phastform]
+upstream = "http://127.0.0.1:18000"   # lh-tunnel-phastform
+[gateway.nodes.gray]
+upstream = "http://127.0.0.1:28000"   # lh-tunnel-gray
+
+[gateway.placement]
+policy = "least-loaded"
+```
+
+`LH_GPU` names the nodes' hosts, separated by commas, and `campaign.sh` then switches the engine on each node for every point, samples each node's GPU into `gpu-<node>.csv`, and with `--pause` pauses each. A node is named after its host's first label, as the arm file names it:
+
+```sh
+LH_GPU=phastform.cis.upenn.edu,gray.cis.upenn.edu benchmarks/e2/campaign.sh --pause benchmarks/e2/NAME.campaign
+```
+
+`lh-bench e2 run` starts each node's tunnel and leaves it running (stop `lh-tunnel-gray` after the window), checks, empties and snapshots each node's engine, and tells the voice worker the nodes, so that each call's STT and TTS follow it. The summary keeps the totals a point on one node has, the engines' counters added up, and each node's share; the report places the point by its totals and gives each node's share in a table of its own ([the summary and the report](../../python/leaseholder_bench/README.md#e2-points)).
+
+The three ways to run voice and agents on two equal GPUs, at equal load: 4 callers and 32 session trees of `weka-x32` (twice the 16 of one node), 3 repeats each.
+
+| Point | `[gateway.placement] policy` | The nodes | `[gateway.admission]` | `[engine]` |
+|---|---|---|---|---|
+| A, dedicate | `"dedicated"` | `classes = ["realtime"]` on phastform, `classes = ["interactive", "background"]` on gray | as configured | frozen |
+| B, pool under tuned stock | `"least-loaded"` | every class on both | as configured | frozen |
+| C, pool under Leaseholder | `"leaseholder"` | every class on both | arm 9's: `policy = "leaseholder"`, `headroom_tokens = 1024`, `critical_prefill_budget_ms = 150`, `degrade_max_tokens = 16` | `variant = "make-room"` |
+
+Before the first two-node campaign: Gray is deployed (`deploy/deploy.sh gray.cis.upenn.edu`) and authorizes cyan's tunnel key; cyan has Gray's SSH target in `~/.config/leaseholder/tunnel-gray.env` (`LH_TUNNEL_TARGET`), runs an `lh-gateway` build that knows `[nodes]`, and runs the voice worker from a deployed source that knows `LH_NODES` (restart `lh-voice-worker` after deploying).
 
 **SMG as shipped (arm 8b).** `lh-smg.service` runs SMG 1.13.0's priority scheduler with its defaults. A vLLM worker behind its `openai` backend reports no capacity, so SMG sizes its pool at 64 slots, and its built-in reservations (system 32, interactive at least 128, default 10%) do not fit: it scales them down to system 19, interactive 39 and default 4, which leaves 2 slots for the bulk class, where the gateway sends background requests. Measured against `lh-bench mock-server`, 40 concurrent bulk requests went through 2 at a time, and the others wait in SMG's bulk queue (1,024 deep, 503 after 300 s). As shipped, arm 8b therefore caps the agents at 2 requests in flight; reservations that fit the pool take a `--priority-scheduler-config` file.
 

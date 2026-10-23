@@ -74,6 +74,33 @@ flags = ["--scheduling-policy", "fcfs", "--max-num-batched-tokens", "2048", "--l
 
 VOICE_ALONE = 'arm = 1\nlabel = "voice alone"\n'
 
+TWO_NODES = """\
+arm = "4-pool"
+label = "two GPU nodes pooled, least-loaded"
+
+[voice]
+callers = 4
+turns = 2
+
+[agents]
+sessions = 4
+warmup = 0.2
+data = "corpus"
+
+[gateway.nodes.phastform]
+upstream = "{phastform}"
+
+[gateway.nodes.gray]
+upstream = "{gray}"
+
+[gateway.placement]
+policy = "least-loaded"
+"""
+NODES = (
+    '[gateway.nodes.a]\nupstream = "http://127.0.0.1:1"\n'
+    '[gateway.nodes.b]\nupstream = "http://127.0.0.1:2"\n'
+)
+
 
 def write(directory: Path, name: str, text: str) -> Path:
     path = directory / name
@@ -136,6 +163,11 @@ def test_an_arm_file_says_everything_about_its_point(tmp_path: Path) -> None:
         ('arm = 2\nlabel = "x"\n[engine]\nflags = ["512"]\n', "follows no flag"),
         ('arm = 2\nlabel = "x"\n[engine]\nflags = "--a"\n', "flags must be list"),
         ("arm = \n", "a2.toml"),
+        ('arm = 2\nlabel = "x"\n' + NODES.split("[gateway.nodes.b]")[0], "two GPU nodes or more"),
+        ('arm = 2\nlabel = "x"\n' + NODES.replace("nodes.b", 'nodes."b c"'), "'b c' needs a name"),
+        ('arm = 2\nlabel = "x"\n' + NODES.replace("http://", "unix:"), "an http:// upstream"),
+        ('arm = 2\nlabel = "x"\nrouter = "smg"\n' + NODES, "a router fronts one engine"),
+        ('arm = 2\nlabel = "x"\n[agents]\ntarget = "engine"\n' + NODES, "go through the gateway"),
     ],
 )
 def test_a_wrong_arm_file_says_what_is_wrong(tmp_path: Path, text: str, error: str) -> None:
@@ -365,6 +397,22 @@ def engine_metrics(n: int) -> tuple[int, str]:
     )
 
 
+def fake_engine(scheduler: dict[str, Any]) -> Service:
+    """vLLM on a GPU node: ``scheduler`` is what its /server_info reports, as variant.sh use would
+    leave it."""
+    vllm_config = {"scheduler_config": scheduler, "model_config": {"hf_token": "hf_secret"}}
+    return Service(
+        {
+            "/health": lambda n: (200, ""),
+            "/metrics": engine_metrics,
+            "/server_info": lambda n: (200, {"vllm_config": vllm_config}),
+            "/version": lambda n: (200, {"version": "0.32.0"}),
+            # Busy at first, as vLLM is while KV transfers finish.
+            "/reset_prefix_cache": lambda n: (200, {"success": n > 1}),
+        }
+    )
+
+
 @dataclass(frozen=True)
 class FakeHost(Host):
     def aiperf(self) -> list[str]:
@@ -430,17 +478,8 @@ def cyan(tmp_path: Path) -> Iterator[Cyan]:
     (config / "livekit.env").write_text("LIVEKIT_API_KEY=k\nLIVEKIT_API_SECRET=s\n")
     (home / "leaseholder" / "data" / "corpus").mkdir(parents=True)
     scheduler = dict(FROZEN_SCHEDULER)
-    vllm_config = {"scheduler_config": scheduler, "model_config": {"hf_token": "hf_secret"}}
     gateway = Service({"/metrics": gateway_metrics, "/ready": lambda n: (200, "")})
-    engine = Service(
-        {
-            "/metrics": engine_metrics,
-            "/server_info": lambda n: (200, {"vllm_config": vllm_config}),
-            "/version": lambda n: (200, {"version": "0.32.0"}),
-            # Busy at first, as vLLM is while KV transfers finish.
-            "/reset_prefix_cache": lambda n: (200, {"success": n > 1}),
-        }
-    )
+    engine = fake_engine(scheduler)
     host = FakeHost(home=home, gateway_url=gateway.url, engine_url=engine.url)
     arms = tmp_path / "arms"
     arms.mkdir()
@@ -594,6 +633,7 @@ def worker_line(name: str, message: str, **fields: Any) -> str:
 
 
 TURNS, SESSIONS = "leaseholder_voice.turns", "leaseholder_voice.events"
+PLACEMENT = "leaseholder_voice.placement"
 
 
 def test_a_point_keeps_the_gateways_requests_and_the_workers_lines(cyan: Cyan) -> None:
@@ -685,6 +725,100 @@ def test_the_callers_save_their_audio_when_the_run_asks(cyan: Cyan) -> None:
     run_point(arm_file, out, cyan.host, cyan.systemd, save_audio=True)
     assert "--save-audio" in json.loads((out / "bots.args").read_text())
     assert record(cyan, "a1-voice")["save_audio"] is True  # a run option, not the arm's
+
+
+def test_a_point_on_two_gpu_nodes_checks_resets_and_reports_each_node(cyan: Cyan) -> None:
+    gray = fake_engine(cyan.scheduler)
+
+    def gateway(since: float, until: float | None) -> str:
+        served = {"prompt_tokens": 1000, "completion_tokens": 10}
+        return "\n".join(
+            [
+                logged_request(since + 0.01, "realtime", 120.0, node="phastform"),
+                logged_request(since + 0.02, "realtime", 180.0, node="gray"),
+                *(
+                    logged_request(since + 0.03, "background", 900.0, node="gray", **served)
+                    for _ in range(3)
+                ),
+                # refused by the node's admission point
+                logged_request(
+                    since + 0.04, "background", None, node="phastform", status=429, outcome=None
+                ),
+            ]
+        )
+
+    def worker(since: float, until: float | None) -> str:
+        nodes = ("phastform", "gray", "phastform", "gray")
+        return "\n".join(
+            [
+                "registered worker",
+                *(
+                    # the callers' rooms, named after the run id of fakes/fake_bots.py
+                    worker_line(PLACEMENT, "session placed", room=f"lh-bot-f00df00d-{c}", node=node)
+                    for c, node in enumerate(nodes)
+                ),
+            ]
+        )
+
+    cyan.systemd.journals = {"lh-gateway": gateway, "lh-voice-worker": worker}
+    try:
+        summary = run(cyan, "a4-pool", TWO_NODES.format(phastform=cyan.engine.url, gray=gray.url))
+    finally:
+        gray.shutdown()
+    out = cyan.host.root / "runs" / "a4-pool"
+    # Each node's tunnel starts first; each engine is checked, recorded and emptied.
+    assert cyan.systemd.calls == [
+        ("start", "lh-tunnel-phastform"),
+        ("start", "lh-tunnel-gray"),
+        ("daemon-reload",),
+        ("restart", "lh-gateway"),
+        ("restart", "lh-voice-worker"),
+    ]
+    assert cyan.engine.hits["/reset_prefix_cache"] == gray.hits["/reset_prefix_cache"] == 2
+    run_json = record(cyan, "a4-pool")
+    assert list(run_json["engine"]) == ["phastform", "gray"]
+    assert run_json["engine"]["gray"]["flags"]["unchecked"] == []
+    assert {p.name for p in out.glob("engine*.json")} == {
+        "engine-phastform.json",
+        "engine-gray.json",
+    }
+    assert {p.name for p in (out / "metrics").glob("engine*.prom")} == {
+        f"engine-{node}-{when}.prom" for node in ("phastform", "gray") for when in ("start", "end")
+    }
+    # The gateway serves the nodes in place of gateway.toml's upstream, and the worker knows them.
+    config = tomllib.loads((cyan.host.config / "gateway-e2.toml").read_text())
+    assert "upstream" not in config and config["nodes"]["gray"] == {"upstream": gray.url}
+    assert config["placement"] == {"policy": "least-loaded"}
+    dropin = cyan.host.units / "lh-voice-worker.service.d" / "variant-nodes.conf"
+    assert dropin.read_text().endswith("[Service]\nEnvironment=LH_NODES=phastform,gray\n")
+    assert run_json["cyan"]["worker"]["nodes"] == ["phastform", "gray"]
+    # The totals, as on one node, with the engines' counters added up; then each node's share.
+    assert summary["voice"]["turns"] == 8 and summary["background"]["requests"] > 0
+    assert summary["engine"]["preemptions"] == 2  # one scrape apart, on each engine
+    phastform, on_gray = summary["nodes"]["phastform"], summary["nodes"]["gray"]
+    assert (phastform["voice"]["calls"], phastform["voice"]["turns"]) == (2, 4)
+    assert phastform["voice"]["v2v_ms"]["p50"] == 1600.0  # callers 0 and 2: 1500 and 1700 ms
+    assert on_gray["voice"]["v2v_ms"]["p50"] == 1700.0  # callers 1 and 3: 1600 and 1800 ms
+    assert (on_gray["background"]["requests"], on_gray["background"]["errors"]) == (3, 0)
+    assert (phastform["background"]["requests"], phastform["background"]["errors"]) == (0, 1)
+    assert on_gray["realtime_first_byte_ms"]["p50"] == 180.0
+    assert phastform["engine"]["preemptions"] == on_gray["engine"]["preemptions"] == 1
+    assert "; gray: 2 calls, V2V p95 " in (out / "run.log").read_text()
+    # The worker goes back to one node with the next point on one, or with lh-bench e2 reset.
+    reset_cyan(cyan.host, cyan.systemd)
+    assert not dropin.exists()
+    assert not any(cyan.host.units.glob("*.service.d/variant-*.conf"))
+
+
+def test_a_gpu_node_that_does_not_answer_fails_the_point(
+    cyan: Cyan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(e2, "ENGINE_UP_S", 0.2)
+    arm = TWO_NODES.format(phastform=cyan.engine.url, gray="http://127.0.0.1:9")
+    with pytest.raises(E2Error, match=r"GPU node gray did not answer .* lh-tunnel-gray up"):
+        run(cyan, "a4-pool", arm)
+    assert record(cyan, "a4-pool")["status"] == "failed"
+    assert ("restart", "lh-gateway") not in cyan.systemd.calls
 
 
 def test_smg_runs_only_for_the_points_that_route_through_it(cyan: Cyan) -> None:

@@ -11,7 +11,9 @@ Type=exec
 EnvironmentFile=%h/.config/leaseholder/livekit.env
 # The namespace reaches the GPU node only through these sockets. LH_LLM_UDS is the control plane's socket;
 # point it at %t/lh/phastform-engine.sock to bypass the control plane. The lifecycle events go to it as well
-# (LH_EVENTS, on by default; the no-events variant turns them off), and stop on the bypass.
+# (LH_EVENTS, on by default; the no-events variant turns them off), and stop on the bypass. When the control plane
+# fronts several GPU nodes, LH_NODES names them (phastform,gray) and each call's STT and TTS go to its node's sockets,
+# %t/lh/<node>-stt.sock and -tts.sock; lh-bench e2 run sets it for a point on two nodes (variant-nodes.conf).
 Environment=LH_LLM_UDS=%t/lh/gateway.sock
 Environment=LH_STT_UDS=%t/lh/phastform-stt.sock
 Environment=LH_TTS_UDS=%t/lh/phastform-tts.sock

@@ -2,7 +2,8 @@
 Description=Leaseholder SSH tunnel from cyan to Gray's loopback services, the second GPU node
 Documentation=https://github.com/StevenWang-CY/leaseholder/blob/main/ops/RUNBOOK.md
 
-# Not enabled at boot: Gray serves in booked windows, and E2's two-node points start this unit.
+# Not enabled at boot: Gray serves in booked windows. lh-bench e2 run starts this unit for each point on two GPU nodes
+# and leaves it running; stop it after the window.
 [Service]
 Type=exec
 # lh-tunnel-phastform's forwards for Gray: TCP on 28000, 28100, 28880 and 25558, and the sockets gray-*.sock. Gray
