@@ -316,6 +316,7 @@ A component that fails fails the point: `run.json` keeps `failed` and the error,
 The background goodput comes from AIPerf's records rather than from the gateway's request outcomes, whose `completed` counts a response relayed in full whatever its status: it cannot tell a request the engine refused from one it served. The gateway's token rate stays beside it as a check.
 
 **The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
+- **Repeats.** Points measured from the same arm file in several campaigns, under the same point name, are repeats of one configuration. `frontier.md` keeps a row per run, named by its campaign (`frontier.csv`'s `campaign`: the directory that holds the run directory), then gives the configuration's median and range (min–max) of V2V p50/p95/p99, background tokens/s, the realtime first byte p95 and failed turns, with its run count. The frontier places the configuration at its medians, and `frontier.svg` draws it there with whiskers over its runs' range on both axes: one marker per configuration keeps each frontier a line through what `frontier.md` marks, and a run that collapsed still shows as a long whisker. A configuration measured once is shown as before.
 - **The realtime first byte** is exact from the run directory's `gateway.jsonl`, even one fetched after the run (from the journal, for the window in `run.json`), and otherwise the summary's; `realtime_first_byte_source` says which, and `frontier.md` marks an interpolated value with `~`.
 - **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts, and, from `gpu.csv`, the GPU's median SM clock and highest temperature during the calls.
 
@@ -393,5 +394,6 @@ processes (`tests/fakes/`): the sequence, the units each arm restarts, the engin
 at each step with every process stopped, the point directory's rules, the committed arm files, and
 the logs a point keeps: the gateway's request lines and the worker's journal, waiting for its
 sessions to end only when they will. `tests/test_frontier.py` covers the summary over the window,
-the exact first bytes from a request log, the Pareto marking, the report's columns that only some
-points have, and the names of the lines the voice worker writes.
+the exact first bytes from a request log, the Pareto marking, repeated points placed at their
+medians with every run kept, the report's columns that only some points have, and the names of the
+lines the voice worker writes.

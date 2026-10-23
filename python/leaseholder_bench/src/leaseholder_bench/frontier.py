@@ -10,7 +10,8 @@ that went down (its process restarted during the calls) is an error.
 :func:`write_report` places the points on E2's frontier: background goodput on x, voice-to-voice
 p95 on y, one frontier per arm. A point is on its arm's frontier when no other point of the arm
 harvests at least as much background goodput at a V2V p95 at least as low, and one of the two
-strictly better.
+strictly better. Points measured from the same arm file in several campaigns are repeats of one
+configuration, which the frontier places at their medians; the tables keep every run.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import csv
 import re
 import statistics
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -333,6 +335,7 @@ def render(summary: Mapping[str, Any]) -> str:
 COLUMNS = (
     "arm",
     "point",
+    "campaign",
     "label",
     "frontier",
     "callers",
@@ -358,10 +361,12 @@ COLUMNS = (
     "resubmitted",
     "gateway_background_tokens_per_s",
 )
-"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. The
-realtime first byte is the gateway's, from its request log ("log", exact) or its histogram
-("histogram", interpolated). Refused adds up the gateway's admission point and the engine's queue
-limits; the gateway's own count of the background tokens it served checks AIPerf's goodput."""
+"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. A run's
+campaign is the directory that holds its run directory (campaign.sh measures a campaign's points
+into CAMPAIGN/POINT). The realtime first byte is the gateway's, from its request log ("log",
+exact) or its histogram ("histogram", interpolated). Refused adds up the gateway's admission point
+and the engine's queue limits; the gateway's own count of the background tokens it served checks
+AIPerf's goodput."""
 WORKER_COLUMNS = (
     *(f"{stage.removesuffix('_ms')}_{q}_ms" for stage in WATERFALL for q in ("p50", "p95")),
     "events_sent",
@@ -376,7 +381,8 @@ calls."""
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
     """One row per complete point, with its arm's frontier marked, and the run directories whose
-    point did not complete."""
+    point did not complete. The runs of a configuration measured in several campaigns go together,
+    and the frontier places the configuration at their medians."""
     rows, incomplete = [], []
     for run_dir in run_dirs:
         run_file = run_dir / "run.json"
@@ -385,8 +391,17 @@ def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Pa
             incomplete.append(run_dir)
             continue
         rows.append(_row(run_dir, run, orjson.loads((run_dir / "summary.json").read_bytes())))
-    mark_frontier(rows)
-    rows.sort(key=lambda r: (_arm_order(r["arm"]), r["background_tokens_per_s"], r["point"]))
+    groups = configurations(rows)
+    mark_frontier(groups)
+    placed = {(g["arm"], g["point"]): g for g in groups}
+    for row in rows:
+        row["frontier"] = placed[row["arm"], row["point"]]["frontier"]
+
+    def order(r: Mapping[str, Any]) -> tuple[Any, ...]:
+        goodput = placed[r["arm"], r["point"]]["background_tokens_per_s"]
+        return (_arm_order(r["arm"]), goodput, r["point"], r["campaign"])
+
+    rows.sort(key=order)
     return rows, incomplete
 
 
@@ -407,6 +422,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     row = {
         "arm": str(arm["arm"]),
         "point": run["name"],
+        "campaign": run_dir.absolute().parent.name,
         "label": arm["label"],
         "frontier": False,
         "callers": arm["voice"]["callers"],
@@ -480,6 +496,38 @@ def _added(*counts: int | None) -> int | None:
     return sum(measured) if measured else None
 
 
+REPEATED = (
+    "background_tokens_per_s",
+    "v2v_p50_ms",
+    "v2v_p95_ms",
+    "v2v_p99_ms",
+    "realtime_first_byte_p95_ms",
+    "voice_errors",
+)
+"""The columns a configuration measured in several campaigns takes the median of over its runs, and
+frontier.md gives with their range."""
+
+
+def configurations(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The configurations the rows measured, in the order of their first runs: each arm file's runs,
+    one per campaign that measured it, with the median of each REPEATED column over the runs that
+    measured it (the run's own value for a configuration measured once)."""
+    runs: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        runs.setdefault((row["arm"], row["point"]), []).append(row)
+    return [
+        {"arm": arm, "point": point, "runs": measured}
+        | {"frontier": all(r["frontier"] for r in measured)}
+        | {column: _median(r[column] for r in measured) for column in REPEATED}
+        for (arm, point), measured in runs.items()
+    ]
+
+
+def _median(values: Iterable[float | None]) -> float | None:
+    measured = [v for v in values if v is not None]
+    return statistics.median(measured) if measured else None
+
+
 def mark_frontier(rows: Sequence[dict[str, Any]]) -> None:
     """Mark the points that no other point of their arm dominates."""
 
@@ -526,6 +574,7 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     times when the points have them."""
     measured = _measured(rows)
     gpu_columns = GPU_COLUMNS in measured
+    groups = {(g["arm"], g["point"]): g for g in configurations(rows)}
     intro = (
         "Background goodput (prompt and completion tokens per second of the agent requests that "
         "completed during the calls) against voice-to-voice latency in ms. • marks the points on "
@@ -534,6 +583,11 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "counts the gateway's admission point and the engine's queue limits; — is a count the "
         "point's gateway or engine does not keep."
     )
+    if any(len(g["runs"]) > 1 for g in groups.values()):
+        intro += (
+            " A point measured in several campaigns lists each run by its campaign, then the median "
+            "and range (min\N{EN DASH}max) over its runs, where the frontier places it."
+        )
     if gpu_columns:
         intro += " SM clock (MHz) and temperature (°C) are the GPU's during the calls."
     lines = ["# E2 frontier", "", intro]
@@ -550,13 +604,18 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     for arm in arms:
         lines += ["", f"## Arm {arm}", "", header, align]
         for r in (r for r in rows if r["arm"] == arm):
+            runs = groups[r["arm"], r["point"]]["runs"]
             counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
             ttft = f"{_cell(r['agent_ttft_p50_ms'])} / {_cell(r['agent_ttft_p99_ms'])}"
             first_byte = _cell(r["realtime_first_byte_p95_ms"])
             if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
                 first_byte = f"~{first_byte}"
+            # A repeated configuration's frontier mark goes on its medians' line.
+            name, mark = f"{r['point']}: {r['label']}", "•" if r["frontier"] else ""
+            if len(runs) > 1:
+                name, mark = f"{r['point']} ({r['campaign']})", ""
             line = (
-                f"| {r['point']}: {r['label']} | {'•' if r['frontier'] else ''} | {r['sessions']} "
+                f"| {name} | {mark} | {r['sessions']} "
                 f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
                 f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
                 f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
@@ -567,9 +626,39 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
                     f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
                 )
             lines.append(line)
+            if len(runs) > 1 and r is runs[-1]:
+                lines.append(_spread(groups[r["arm"], r["point"]], gpu_columns))
     if WORKER_COLUMNS in measured:
         lines += _stages(rows)
     return "\n".join(lines) + "\n"
+
+
+def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
+    """A repeated configuration's line in its arm's table: the median and range of each REPEATED
+    column over its runs, and its frontier mark."""
+    runs = group["runs"]
+
+    def spread(column: str) -> str:
+        values = [r[column] for r in runs if r[column] is not None]
+        if not values:
+            return "—"
+        median = group[column]
+        # A median between two counts of failed turns keeps its half.
+        digits = 1 if column == "voice_errors" and not float(median).is_integer() else 0
+        return f"{_cell(median, digits)} ({_cell(min(values))}\N{EN DASH}{_cell(max(values))})"
+
+    first_byte = spread("realtime_first_byte_p95_ms")
+    if any(r["realtime_first_byte_source"] == "histogram" for r in runs) and first_byte != "—":
+        first_byte = f"~{first_byte}"
+    first = runs[0]
+    line = (
+        f"| {first['point']}: {first['label']}; median (range) of {len(runs)} runs "
+        f"| {'•' if group['frontier'] else ''} | {first['sessions']} "
+        f"| {spread('background_tokens_per_s')} | | {spread('v2v_p50_ms')} "
+        f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} | "
+        f"| {first_byte} | | |"
+    )
+    return line + (" | |" if gpu_columns else "")
 
 
 def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -589,13 +678,15 @@ def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         "| Turn to first sentence | TTS first audio | End to end | Events sent / dropped / failed |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
+    runs = Counter((r["arm"], r["point"]) for r in rows)
     for r in rows:
         stages = [
             " / ".join(_cell(r[f"{stage.removesuffix('_ms')}_{q}_ms"]) for q in ("p50", "p95"))
             for stage in WATERFALL
         ]
         events = " / ".join(_cell(r[f"events_{kind}"]) for kind in ("sent", "dropped", "failed"))
-        lines.append(f"| {r['point']} | {' | '.join(stages)} | {events} |")
+        name = f"{r['point']} ({r['campaign']})" if runs[r["arm"], r["point"]] > 1 else r["point"]
+        lines.append(f"| {name} | {' | '.join(stages)} | {events} |")
     return lines
 
 
@@ -614,8 +705,11 @@ _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9
 
 
 def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
-    """frontier.svg: each arm's frontier as a line, its dominated points as open markers. Arms
-    past the eighth take the colors again with another marker. False without matplotlib."""
+    """frontier.svg: each arm's frontier as a line, its dominated points as open markers. A point
+    measured in several campaigns sits at its runs' medians, with whiskers over their range on both
+    axes: one marker per configuration keeps each frontier a line through what frontier.md marks,
+    and the whiskers still show a run that collapsed. Arms past the eighth take the colors again
+    with another marker. False without matplotlib."""
     try:
         import matplotlib
     except ImportError:
@@ -624,12 +718,13 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
     import matplotlib.pyplot as plt
     from matplotlib.ticker import StrMethodFormatter
 
-    arms = sorted({r["arm"] for r in rows if r["v2v_p95_ms"] is not None}, key=_arm_order)
+    groups = configurations(rows)
+    arms = sorted({g["arm"] for g in groups if g["v2v_p95_ms"] is not None}, key=_arm_order)
     fig, ax = plt.subplots(figsize=(7.5, 4.5), facecolor=_SURFACE)
     ax.set_facecolor(_SURFACE)
     for i, arm in enumerate(arms):
         color, marker = _SERIES[i % len(_SERIES)], _MARKERS[i // len(_SERIES) % len(_MARKERS)]
-        points = [r for r in rows if r["arm"] == arm and r["v2v_p95_ms"] is not None]
+        points = [g for g in groups if g["arm"] == arm and g["v2v_p95_ms"] is not None]
         front = sorted(
             (r for r in points if r["frontier"]), key=lambda r: r["background_tokens_per_s"]
         )
@@ -653,9 +748,27 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
             edgecolors=color,
             linewidths=1.5,
         )
+        for g in (g for g in points if len(g["runs"]) > 1):
+            x, y = g["background_tokens_per_s"], g["v2v_p95_ms"]
+            xs = [r["background_tokens_per_s"] for r in g["runs"]]
+            ys = [r["v2v_p95_ms"] for r in g["runs"] if r["v2v_p95_ms"] is not None]
+            ax.errorbar(
+                x,
+                y,
+                xerr=[[x - min(xs)], [max(xs) - x]],
+                yerr=[[y - min(ys)], [max(ys) - y]],
+                fmt="none",
+                ecolor=color,
+                elinewidth=1,
+                alpha=0.6,
+                zorder=1,
+            )
+    title = "E2 frontier: open markers are dominated points"
+    if any(len(g["runs"]) > 1 for g in groups):
+        title += ", whiskers span repeated runs"
     ax.set_xlabel("Background goodput (tokens/s)", color=_INK)
     ax.set_ylabel("Voice V2V p95 (ms)", color=_INK)
-    ax.set_title("E2 frontier: open markers are dominated points", color=_INK, loc="left")
+    ax.set_title(title, color=_INK, loc="left")
     ax.grid(color=_GRID, linewidth=0.75)
     ax.set_axisbelow(True)
     ax.tick_params(colors=_MUTED)

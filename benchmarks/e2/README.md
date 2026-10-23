@@ -67,4 +67,4 @@ The `[admission]` keys are those of `lh-gateway`'s configuration ([its README](.
 
 ## Results
 
-`lh-bench e2 report RUN_DIR... --out DIR` builds a frontier from any set of run directories, across campaigns too. Results that go into the repository are curated into `benchmarks/results/<date>-<name>/`, as the earlier ones are.
+`lh-bench e2 report RUN_DIR... --out DIR` builds a frontier from any set of run directories, across campaigns too. A point measured in several campaigns (W4's rounds of the discriminating scenario reuse w2c's and a9's arm files) is one configuration: the report keeps each run, gives the configuration's median and range, and places it on the frontier at its medians. Results that go into the repository are curated into `benchmarks/results/<date>-<name>/`, as the earlier ones are.

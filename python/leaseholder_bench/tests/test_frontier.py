@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import csv
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from leaseholder_bench.frontier import (
     WATERFALL,
     WORKER_COLUMNS,
     background,
+    configurations,
     engine_counts,
     first_byte_ms,
     gateway_counts,
@@ -398,6 +400,75 @@ def test_the_report_shows_stages_and_clocks_only_for_points_that_have_them(tmp_p
     assert "| a2-s8 | — / — |" in table
 
 
+def rewrite(run_dir: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    summary = json.loads((run_dir / "summary.json").read_text())
+    change(summary)
+    (run_dir / "summary.json").write_text(json.dumps(summary))
+
+
+def spread(median: str, low: str, high: str) -> str:
+    """A repeated configuration's cell in frontier.md: its median, then its runs' range."""
+    return f"{median} ({low}\N{EN DASH}{high})"
+
+
+def test_repeats_of_a_point_are_one_configuration_placed_at_their_medians(tmp_path: Path) -> None:
+    # Three runs of disc-frozen; one of them alone would beat disc-wide, their medians do not.
+    dirs = [
+        point(tmp_path / "w2c", "disc-frozen", "4", 5000, 2000),
+        point(tmp_path / "r1", "disc-frozen", "4", 3000, 4000),
+        point(tmp_path / "r2", "disc-frozen", "4", 4000, 3000),
+        point(tmp_path / "w2c", "disc-wide", "4", 4500, 2500),
+        point(tmp_path / "w2c", "disc-cap2", "6", 2000, 2200),
+    ]
+    rewrite(dirs[1], lambda s: s["voice"].update(errors=3))
+    rewrite(dirs[2], lambda s: s["voice"].update(errors=2))
+    stages = {s: {"n": 50, "mean": 100.0, "p50": 100.0, "p95": 150.0} for s in WATERFALL}
+    rewrite(dirs[0], lambda s: s.update(worker={"turns": 50, "waterfall": stages}))
+    rows, _ = load_points(dirs)
+    assert [(r["point"], r["campaign"], r["frontier"]) for r in rows] == [
+        ("disc-frozen", "r1", False),  # the configuration's runs together, at its median goodput
+        ("disc-frozen", "r2", False),
+        ("disc-frozen", "w2c", False),
+        ("disc-wide", "w2c", True),
+        ("disc-cap2", "w2c", True),
+    ]
+    [frozen, wide, cap2] = configurations(rows)
+    assert (frozen["background_tokens_per_s"], frozen["v2v_p95_ms"], frozen["voice_errors"]) == (
+        4000,
+        3000,
+        2,
+    )
+    assert (len(wide["runs"]), wide["v2v_p95_ms"], cap2["frontier"]) == (1, 2500, True)
+    out = tmp_path / "report"
+    write_report(rows, out)
+    with (out / "frontier.csv").open() as f:
+        assert [r["campaign"] for r in csv.DictReader(f)] == ["r1", "r2", "w2c", "w2c", "w2c"]
+    table = (out / "frontier.md").read_text()
+    assert "lists each run by its campaign, then the median and range" in table
+    # Each run by its campaign, every one of them kept, then the configuration's medians and range.
+    assert "| disc-frozen (r1) |  | 16 | 3,000 | 3.00 | 1,600 | 4,000 | 4,500 | 3 of 50 |" in table
+    assert "| disc-frozen (w2c) |  | 16 | 5,000 | 5.00 | 1,600 | 2,000 | 2,500 | 0 of 50 |" in table
+    medians = (
+        f"| disc-frozen: disc-frozen label; median (range) of 3 runs |  | 16 "
+        f"| {spread('4,000', '3,000', '5,000')} | | {spread('1,600', '1,600', '1,600')} "
+        f"| {spread('3,000', '2,000', '4,000')} | {spread('3,500', '2,500', '4,500')} "
+        f"| {spread('2', '0', '3')} | | ~{spread('120', '120', '120')} | | |"
+    )
+    lines = table.splitlines()
+    assert lines[lines.index(medians) - 1].startswith("| disc-frozen (w2c) |")  # after its runs
+    assert "| disc-wide: disc-wide label | • | 16 | 4,500 |" in table  # measured once: as before
+    assert "| disc-frozen (w2c) | 100 / 150 |" in table and "| disc-wide | — / — |" in table
+
+
+def test_a_median_between_two_runs_keeps_its_half(tmp_path: Path) -> None:
+    dirs = [point(tmp_path / c, "disc-frozen", "4", 4000, 3000) for c in ("w2c", "r1")]
+    rewrite(dirs[1], lambda s: s["voice"].update(errors=1))
+    rows, _ = load_points(dirs)
+    table = write_report(rows, tmp_path / "report")[1].read_text()
+    assert f"| {spread('0.5', '0', '1')} |" in table
+    assert f"| • | 16 | {spread('4,000', '4,000', '4,000')} |" in table
+
+
 def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:
     source = VOICE_EVENTS.read_text()
     [stages] = [
@@ -423,7 +494,12 @@ def test_the_figure_needs_matplotlib(tmp_path: Path) -> None:
     rows, _ = load_points(dirs)
     written = write_report(rows, tmp_path / "report")
     assert (tmp_path / "report" / "frontier.svg") in written
-    assert "<svg" in (tmp_path / "report" / "frontier.svg").read_text()
+    figure = (tmp_path / "report" / "frontier.svg").read_text()
+    assert "<svg" in figure and "whiskers" not in figure
+    repeated = point(tmp_path / "r1", "a2-s16", "2", 4000, 3000)
+    rows, _ = load_points([*dirs, repeated])
+    write_report(rows, tmp_path / "report")
+    assert "whiskers span repeated runs" in (tmp_path / "report" / "frontier.svg").read_text()
 
 
 def test_a_point_summary_reads_its_run_directory(tmp_path: Path) -> None:
