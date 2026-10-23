@@ -103,11 +103,16 @@ Parking KV during a tool call and prefetching it before the return is published 
 |---|---|
 | vLLM killed mid-stream | A typed error to the client, epoch revocation, recovery time |
 | Control-plane restart under load | Lease table rebuilt from KV-event replay, with no stale-holder routing |
-| Node loss (in the Gray window) | Sessions moved, re-prefill time, SLO impact |
+| Node loss (in the Gray window) | Sessions moved (the gateway's `node_down` placements), re-prefill time, SLO impact |
 
 CPU-tier exhaustion is a test: grants degrade to `floor = NONE`, violations are counted, nothing runs out of memory.
 
-**Dedicate vs pool.** On two GPUs of equal hardware: one voice node plus one agent node; two mixed nodes under tuned stock; two mixed nodes under Leaseholder with sticky sessions and lease-aware placement of new calls. KV never moves between nodes, so the 1 GbE link does not matter.
+**Dedicate vs pool** (W4; [`benchmarks/e2`](../benchmarks/e2/README.md#two-gpu-nodes-dedicate-vs-pool)). Two GPUs of equal hardware, Phastform and Gray, at equal load: 4 callers and 32 agent session trees of the 32× replay, twice one node's 16; 3 repeats each.
+- **A, dedicate:** placement `dedicated`, Phastform serving the calls and Gray the agents, both on the frozen box (tuned stock).
+- **B, pool under tuned stock:** placement `least-loaded`, both nodes on the frozen box: sticky sessions, each new session on the node with the fewest requests in flight.
+- **C, pool under Leaseholder:** placement `leaseholder`, both nodes running arm 9 (the gateway's `leaseholder` admission policy on each node, the engine's `make-room`): a new call goes to the node with the fewest calls, then the fewest armed for a turn, then the most free KV; a new agent session to the node holding the least background KV.
+
+Each point is placed on the frontier by its totals (every call's V2V, every agent request's goodput, the engines' counters added up) and reported by node as well: the calls placed there and their V2V, the agent goodput the gateway sent there, each engine's counters and each GPU's clocks. KV never moves between nodes, so the 1 GbE link does not matter. A node that fails readiness takes no new session, and its sessions are placed again on their next request (`lh_gateway_placements_total{reason="node_down"}`): the node-loss drill measures those moves.
 
 ## How runs are made
 

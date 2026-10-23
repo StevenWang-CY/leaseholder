@@ -65,7 +65,7 @@ A unit counts as started only once its server answers its health endpoint (`wait
 
 ## The gateway
 
-`lh-gateway` serves the OpenAI routes and `/v1/events` on 127.0.0.1:18080, with an API key, and on `/run/user/$UID/lh/gateway.sock`, the voice plane's way in, without one. Its own `/health`, `/ready` and `/metrics` need no key. Its configuration reference and metrics list are in the [`lh-gateway` README](../crates/lh-gateway/README.md), including the E2 settings: `upstream_priority` (where each class's priority goes upstream: `X-Vllm-Priority`, the body's `priority`, or `X-SMG-Priority`) and the `[admission]` policies. Configuration changes take a restart.
+`lh-gateway` serves the OpenAI routes and `/v1/events` on 127.0.0.1:18080, with an API key, and on `/run/user/$UID/lh/gateway.sock`, the voice plane's way in, without one. Its own `/health`, `/ready` and `/metrics` need no key. Its configuration reference and metrics list are in the [`lh-gateway` README](../crates/lh-gateway/README.md), including the E2 settings: `upstream_priority` (where each class's priority goes upstream: `X-Vllm-Priority`, the body's `priority`, or `X-SMG-Priority`), the `[admission]` policies, and `[nodes]` and `[placement]` for the points on two GPU nodes. Configuration changes take a restart.
 
 ```sh
 curl -s 127.0.0.1:18080/health                    # the process is up
@@ -76,6 +76,8 @@ systemctl --user restart lh-gateway               # rereads gateway.toml; drains
 ```
 
 E2 reads each point's request lines from this journal, so `gateway.toml` keeps `log_format = "json"`, as the example does.
+
+With `[nodes]`, as a two-node point's `gateway-e2.toml` has, `/ready` answers 200 while any node takes sessions; the start line (`"lh-gateway serving"`) names each node with its upstream, and the placement policy; and `curl -s 127.0.0.1:18080/metrics | grep -E 'lh_gateway_(node_ready|sessions|placements_total)'` shows which nodes take sessions, the sessions on each, and the placements by reason.
 
 ## The voice plane
 
@@ -124,9 +126,10 @@ An E2 point is one arm file (`benchmarks/e2/arms/`); `lh-bench e2 run ARM --out 
 - **The gateway.** An arm with a `[gateway]` table runs the gateway from `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in) through the `e2-gateway` drop-in.
 - **The worker.** `preemptive_generation = false` links the `no-preemptive-generation` worker drop-in, and `[voice] events = false` the `no-events` one.
 - **SMG.** An arm with `router = "smg"` starts `lh-smg`, and every other arm stops it.
-- **Undo.** `~/leaseholder/venvs/bench/bin/lh-bench e2 reset` puts the gateway back on `gateway.toml`, preemptive generation and the events on, and SMG stopped. A campaign runs it at its end.
+- **Two GPU nodes.** An arm with `[gateway.nodes.<name>]` runs on every node it names. `lh-bench e2 run` starts each node's tunnel (`lh-tunnel-gray` for Gray) and leaves it running, runs the gateway on the nodes in place of `gateway.toml`'s `upstream`, and writes the worker drop-in `variant-nodes.conf` (`LH_NODES=phastform,gray`), so that each call's STT and TTS go to its node. Such a campaign runs with both hosts in `LH_GPU` (`LH_GPU=phastform.cis.upenn.edu,gray.cis.upenn.edu`): `campaign.sh` switches the engine on each, samples each GPU into `gpu-<node>.csv`, and with `--pause` pauses each.
+- **Undo.** `~/leaseholder/venvs/bench/bin/lh-bench e2 reset` puts the gateway back on `gateway.toml`, preemptive generation and the events on, the worker on one node (it removes `variant-nodes.conf`), and SMG stopped. A campaign runs it at its end. After a two-node window, stop Gray's tunnel as well: `systemctl --user stop lh-tunnel-gray`.
 
-Beside AIPerf's and the callers' records, each point keeps the gateway's request lines (`gateway.jsonl`, the exact first bytes), the worker's journal (`voice-worker.log`: turn lines and event counts) and the GPU's clocks and temperature (`gpu.csv`, which `campaign.sh` samples over SSH once a second while the point runs). The [`leaseholder-bench` README](../python/leaseholder_bench/README.md#e2-points) lists every file.
+Beside AIPerf's and the callers' records, each point keeps the gateway's request lines (`gateway.jsonl`, the exact first bytes), the worker's journal (`voice-worker.log`: turn lines and event counts) and the GPU's clocks and temperature (`gpu.csv`, which `campaign.sh` samples over SSH once a second while the point runs). The [`leaseholder-bench` README](../python/leaseholder_bench/README.md#e2-points) lists every file. A point on two nodes keeps each engine's files by node (`engine-<node>.json`, `metrics/engine-<node>-start.prom` and `-end.prom`) and each GPU's samples in `gpu-<node>.csv`; its summary gives the totals and each node's share.
 
 One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.lh-bench-e2.lock` on cyan, and SIGINT to it stops AIPerf and the callers and marks the point failed.
 
@@ -166,6 +169,10 @@ One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.
 | `lh-engine` fails at start with "make_room.reserve_tokens leaves no room for a request of max_model_len tokens" | The `make-room` reserve and one `max_model_len` request do not fit in the KV pool together | Lower `make_room.reserve_tokens` below the pool less `max_model_len`: about 3,600 tokens on the frozen box |
 | The voice worker logs "lifecycle events do not reach the control plane" | The gateway is down or restarting, or `LH_LLM_UDS` is not the gateway's socket | `systemctl --user status lh-gateway`. The worker logs when events reach the gateway again; those lost meanwhile are not resent, and the gateway's session states time out after `state_timeout_s` |
 | The engine's `/server_info` answers 500 | vLLM collects its environment with `uv pip list` and cannot find uv | The unit's `PATH` must include `~/.local/bin` and `VIRTUAL_ENV` must name the engine venv (as `lh-engine.service` does) |
+| `lh-bench e2 run`: "the engine of GPU node gray did not answer" | Gray's box is paused, or its tunnel cannot connect | On Gray, `systemctl --user start leaseholder.target` (in a booked window); on cyan, `journalctl --user -u lh-tunnel-gray` and `curl 127.0.0.1:28000/health` |
+| The gateway answers 503 `no_ready_node`, or `/ready` is 503 with `[nodes]` | No ready node serves the request's class: a node's probe failed three times in a row | `lh_gateway_node_ready` names the node; `curl` its tunnel's `/health` (18000 for Phastform, 28000 for Gray); see the tunnel row |
+| `lh_gateway_placements_total{reason="node_down"}` grows | A node failed readiness and its sessions were placed again, their KV lost | Expected in the node-loss drill; otherwise check that node's engine and tunnel |
+| The voice worker logs "the call has no node" | `POST /v1/sessions` failed: no ready node, a gateway without `[nodes]`, or a node not in `LH_NODES` | The call goes on with the default STT and TTS sockets; check `LH_NODES` against the gateway's `[nodes]` |
 
 ## Pausing
 
