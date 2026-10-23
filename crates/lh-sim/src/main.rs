@@ -11,6 +11,7 @@ use lh_core::{
 use lh_sim::aiperf::{ConvKind, PlanOptions, reference};
 use lh_sim::corpus::Corpus;
 use lh_sim::engine::Engine;
+use lh_sim::hardware::{self, Gpu};
 use lh_sim::replay::{Pauses, ReplayConfig, Service};
 use lh_sim::replay_log;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
@@ -41,6 +42,10 @@ enum Command {
     /// Runs the E1 information ladder over a grid of session counts, CPU tier sizes and pause
     /// sources: a CSV of every arm in every cell, and a Markdown regime map.
     Regime(RegimeArgs),
+    /// Places other GPUs on the regime map, with costs modeled from their published peaks: the
+    /// E1 arms at each GPU's pool and session counts, and how long the agents leave a realtime
+    /// tier short of KV.
+    Hardware(HardwareArgs),
     /// Dumps AIPerf's replay structure and lane plan as the simulator builds it, in the format of
     /// scripts/aiperf_reference.py, to check the port against AIPerf.
     #[command(hide = true)]
@@ -320,6 +325,48 @@ struct RegimeArgs {
 }
 
 #[derive(Args)]
+struct HardwareArgs {
+    /// The workload; --concurrency and --seed give way to --sessions and --seeds. Unlike regime's,
+    /// --token-scale scales no pool: each GPU has its own.
+    #[command(flatten)]
+    replay: ReplayArgs,
+    /// GPUs: rtx-5060-ti (the frozen box, measured), l4 and h100-sxm (modeled).
+    #[arg(long, value_delimiter = ',', default_value = "rtx-5060-ti,l4,h100-sxm")]
+    gpus: Vec<Gpu>,
+    /// Replay the corpus on each GPU as close to the traces' original token counts as it can serve:
+    /// at the least power-of-two scaling whose longest request fits its pool and the model's
+    /// 262,144-token context, as the 32x corpus fits the box.
+    #[arg(long, conflicts_with = "token_scale")]
+    fit: bool,
+    /// Session counts. A GPU whose pool holds r times the box's, in the replay's tokens, runs those
+    /// up to 40·r.
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "5,8,12,16,24,32,40,64,96,128,192,256"
+    )]
+    sessions: Vec<usize>,
+    /// Seeds; the Markdown gives each cell's mean over them.
+    #[arg(long, value_delimiter = ',', default_value = "11,12,13")]
+    seeds: Vec<u64>,
+    /// The CPU tier as a multiple of each GPU's pool.
+    #[arg(long, default_value_t = 4.0)]
+    cpu_ratio: f64,
+    /// Voice calls the realtime tier needs KV free for, 1,024 tokens each.
+    #[arg(long, default_value_t = 2)]
+    calls: u64,
+    /// Cells to run at once. Default: the machine's cores.
+    #[arg(long)]
+    jobs: Option<usize>,
+    /// Write one row per cell and arm to this CSV file.
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Write the GPUs and their placements to this Markdown file.
+    #[arg(long)]
+    markdown: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct LogArgs {
     /// The Weka traces the run replayed.
     traces: PathBuf,
@@ -374,6 +421,7 @@ fn main() -> ExitCode {
         Command::Mrc(args) => mrc(args),
         Command::ReplayLog(args) => replay_log(args),
         Command::Regime(args) => regime(args),
+        Command::Hardware(args) => hardware(args),
         Command::AiperfPlan(args) => aiperf_plan(args),
     };
     match result {
@@ -704,6 +752,83 @@ fn regime(args: RegimeArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn hardware(args: HardwareArgs) -> Result<(), String> {
+    let geometry = KvGeometry::QWEN3_4B_BF16;
+    let replay = ReplayConfig {
+        realtime_tokens: args.calls * hardware::TOKENS_PER_CALL,
+        ..args.replay.config()
+    };
+    let mut corpus = args.replay.corpus()?;
+    let hash_block = corpus.plan(0)?.block_size;
+    let gpus: Vec<(Gpu, u32)> = if args.fit {
+        // The original traces have 64-token hash blocks.
+        if 64 % hash_block != 0 {
+            return Err(format!(
+                "hash blocks of {hash_block} tokens do not divide the original 64"
+            ));
+        }
+        let longest = hardware::longest_request(&mut corpus)?;
+        args.gpus
+            .iter()
+            .map(|&g| {
+                let k = hardware::fitted_token_scale(&g, &geometry, longest, 64 / hash_block);
+                k.map(|k| (g, k)).ok_or_else(|| {
+                    format!(
+                        "no scaling of the corpus fits {}: its longest request is {longest} tokens, \
+                         its pool {} and the model's context {}",
+                        g.name,
+                        g.pool_tokens(&geometry),
+                        hardware::MODEL_CONTEXT
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?
+    } else {
+        args.gpus.iter().map(|&g| (g, replay.token_scale)).collect()
+    };
+    drop(corpus);
+    let cells = hardware::cells(
+        &gpus,
+        &args.sessions,
+        &args.seeds,
+        replay.pauses,
+        args.cpu_ratio,
+    );
+    if cells.is_empty() {
+        return Err("no GPU runs any of the session counts".into());
+    }
+    let jobs = args.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    });
+    let start = std::time::Instant::now();
+    let results = hardware::sweep(
+        &args.replay.traces,
+        args.replay.plan_options(),
+        &replay,
+        &cells,
+        jobs,
+    )?;
+    let map = format!(
+        "{}\n{}",
+        hardware::profiles(&args.gpus),
+        hardware::markdown(&results, hash_block, replay.realtime_tokens)
+    );
+    print!("{map}");
+    println!(
+        "{} cells x {} arms in {:.1} s on {jobs} threads",
+        cells.len(),
+        Arm::E1.len(),
+        start.elapsed().as_secs_f64()
+    );
+    if let Some(path) = &args.csv {
+        write(path, &hardware::csv(&results))?;
+    }
+    if let Some(path) = &args.markdown {
+        write(path, &map)?;
+    }
+    Ok(())
+}
+
 fn replay_log(args: LogArgs) -> Result<(), String> {
     if args.arm == Arm::Clairvoyant {
         return Err("replay-log runs a stock arm".into());
@@ -816,4 +941,59 @@ fn aiperf_plan(args: PlanArgs) -> Result<(), String> {
     );
     println!("{dump}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(["lh-sim"].iter().chain(args))
+    }
+
+    fn hardware_args(args: &[&str]) -> HardwareArgs {
+        match parse(args).unwrap().command {
+            Command::Hardware(h) => h,
+            _ => panic!("not the hardware command"),
+        }
+    }
+
+    #[test]
+    fn the_command_line_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn hardware_takes_its_gpus_sessions_and_seeds() {
+        let h = hardware_args(&[
+            "hardware",
+            "DATA",
+            "--gpus",
+            "l4,h100-sxm",
+            "--sessions",
+            "5,64",
+            "--seeds",
+            "11",
+            "--fit",
+            "--calls",
+            "4",
+        ]);
+        assert_eq!(h.gpus, [hardware::L4, hardware::H100_SXM]);
+        assert_eq!(
+            (h.sessions, h.seeds, h.fit, h.calls),
+            (vec![5, 64], vec![11], true, 4)
+        );
+        // By default every GPU, the regime map's counts and more, three seeds, the CPU tier at 4x
+        // and two calls.
+        let d = hardware_args(&["hardware", "DATA"]);
+        assert_eq!(d.gpus, hardware::GPUS);
+        assert_eq!(d.sessions[..7], [5, 8, 12, 16, 24, 32, 40]);
+        assert_eq!((d.seeds, d.cpu_ratio, d.calls), (vec![11, 12, 13], 4.0, 2));
+        assert!(!d.fit && d.replay.config().token_scale == 1);
+        // --fit takes the place of --token-scale, and an unknown GPU is refused.
+        assert!(parse(&["hardware", "DATA", "--fit", "--token-scale", "2"]).is_err());
+        assert!(parse(&["hardware", "DATA", "--gpus", "a100"]).is_err());
+    }
 }
