@@ -44,7 +44,7 @@ Unknown keys are errors, so a misspelled setting fails at start instead of silen
 |---|---|---|
 | `upstream` | required | The engine, `http://host:port` |
 | `upstream_idle_timeout_s` | 4 | How long an idle upstream connection is kept for reuse. Keep it below the engine's keep-alive (`VLLM_HTTP_TIMEOUT_KEEP_ALIVE`, 5 s by default), or a request can go out on a connection the engine is closing |
-| `upstream_priority` | `["vllm-header"]` | Where the class's priority goes upstream: any of `"vllm-header"`, `"body"` and `"smg-header"`. The empty list sends none, which vLLM's FCFS scheduling needs: it rejects any priority but 0 |
+| `upstream_priority` | `["vllm-header"]` | Where the class's priority goes upstream: any of `"vllm-header"`, `"body"` and `"smg-header"`. The empty list sends none, as a plain client does: E2's stock arm. vLLM 0.32's FCFS scheduler ignores priorities rather than rejecting them |
 | `max_body_bytes` | 33554432 (32 MiB) | Larger request bodies get 413 |
 | `stream_buffer_frames` | 64 | Frames buffered between the upstream and a client |
 | `stall_timeout_s` | 30 | How long that buffer may stay full before the stream is aborted |

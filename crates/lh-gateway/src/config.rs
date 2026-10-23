@@ -74,7 +74,7 @@ pub struct Tenant {
 }
 
 /// `upstream_priority`: where the class's priority goes in each upstream request. Engines and routers read it
-/// in different places, and vLLM's FCFS scheduling rejects any priority but 0, so each is a choice.
+/// in different places, and a stock deployment sends none, so each is a choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PrioritySignals {
     /// `X-Vllm-Priority`, the class's engine priority (realtime 0, interactive 1, background 2), which vLLM's
