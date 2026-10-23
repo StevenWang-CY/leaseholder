@@ -459,6 +459,7 @@ def test_voice_alone_runs_the_calls_against_the_box_as_it_is(cyan: Cyan) -> None
     assert (out / "arm.toml").read_text().startswith("arm = 1")
     args = json.loads((out / "bots.args").read_text())
     assert args[args.index("--turns") + 1] == "25" and args[args.index("--callers") + 1] == "2"
+    assert "--save-audio" not in args and run_json["save_audio"] is False
     assert summary["name"] == "a1-voice" and summary["background"] is None
     assert summary["voice"]["v2v_ms"]["p95"] == 1800.0
     assert summary["engine"]["preemptions"] == 1  # one scrape apart
@@ -648,6 +649,14 @@ def test_the_worker_journal_waits_only_for_sessions_that_end(
     summary = run(cyan, "a1-voice", VOICE_ALONE, out="again")
     assert len(reads) >= 3
     assert (summary["worker"]["sessions"], summary["worker"]["events"]) == (1, None)
+
+
+def test_the_callers_save_their_audio_when_the_run_asks(cyan: Cyan) -> None:
+    arm_file = write(cyan.arms, "a1-voice.toml", VOICE_ALONE)
+    out = cyan.host.root / "runs" / "a1-voice"
+    run_point(arm_file, out, cyan.host, cyan.systemd, save_audio=True)
+    assert "--save-audio" in json.loads((out / "bots.args").read_text())
+    assert record(cyan, "a1-voice")["save_audio"] is True  # a run option, not the arm's
 
 
 def test_smg_runs_only_for_the_points_that_route_through_it(cyan: Cyan) -> None:

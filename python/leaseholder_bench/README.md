@@ -248,6 +248,8 @@ When evicted blocks were idle for less time than blocks typically wait between r
 
 ```bash
 lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/a1-voice.toml --out ~/leaseholder/runs/e2/w2/a1-voice
+lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/disc-a9-s24.toml --out ~/leaseholder/runs/e2/demo/disc-a9-s24 \
+  --save-audio                           # the callers save each call's audio, for the demo video
 lh-bench e2 engine a2-stock-s16.toml     # the engine an arm needs, as variant.sh use takes it
 lh-bench e2 report ~/leaseholder/runs/e2/w2/{a1-voice,a2-stock-s16} --out ~/leaseholder/runs/e2/first
 lh-bench e2 report ~/leaseholder/runs/e2/{w2c,a9,r1,r2}/disc-* --out ~/leaseholder/runs/e2/disc \
@@ -261,7 +263,7 @@ A point runs in this order:
 2. **cyan's units.** SMG runs only for `router = "smg"`. With a `[gateway]` table the gateway runs on `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in, mode 600) through the `e2-gateway` drop-in, and without one on `gateway.toml`. The voice worker's preemptive generation is switched with the `no-preemptive-generation` drop-in, and its lifecycle events with `no-events`. Only a unit whose configuration changes restarts, and the worker must register again within 90 s. The worker must end turns with fixed endpointing (`vad-turns`), or nothing runs.
 3. **A cold start.** The engine's prefix cache, and vLLM's CPU tier, are emptied.
 4. **The replay.** With agent sessions, AIPerf starts on cores 16–23 and the calls wait for its profiling phase plus the warm-up.
-5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them.
+5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them. With `--save-audio`, a run option rather than the arm's, the callers also save each call's audio for the demo video (`lh-voice bots --save-audio`), which measures nothing differently.
 6. **The end.** AIPerf gets SIGINT, cancels its requests and writes its exports. The gateway's request lines for the window go to `gateway.jsonl`, and the voice worker's journal from the start of the calls to `voice-worker.log`, once every call's session has logged its end (at most 30 s). Then `summary.json` is written.
 
 **The arm file.** Unknown keys and wrong types are errors. The point is named after the file.
@@ -292,11 +294,11 @@ A point runs in this order:
 | File | Contents |
 |---|---|
 | `arm.toml` | The arm file as run |
-| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; versions (the deployed commit from `~/leaseholder/src/DEPLOYED`, `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked); what cyan ran (which units restarted, the gateway's configuration without key digests); the window; AIPerf's exit status |
+| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; `save_audio`, the run option; versions (the deployed commit from `~/leaseholder/src/DEPLOYED`, `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked); what cyan ran (which units restarted, the gateway's configuration without key digests); the window; AIPerf's exit status |
 | `run.log` | Each step, timestamped |
 | `engine.json` | The engine's whole configuration from `/server_info`, without credentials |
 | `aiperf.log`, `aiperf/` | AIPerf's output and artifacts: `profile_export.jsonl` holds one record per request |
-| `bots.log`, `bots/` | The callers' output and run directory (`turns.jsonl`, `summary.json`) |
+| `bots.log`, `bots/` | The callers' output and run directory (`turns.jsonl`, `summary.json`, and with `--save-audio` each call's `call-<i>.wav` and `call-<i>.json`) |
 | `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom` |
 | `gateway.jsonl` | The gateway's request lines for the window (`journalctl --user -u lh-gateway --since --until`, the JSON lines whose message is `request`): class, status, outcome, `first_byte_ms`, `total_ms`, `admission_wait_ms` and tokens of each request. Absent when the gateway logs text |
 | `voice-worker.log` | The voice worker's journal from the start of the calls: a line per turn with its stage times, and a line per session at its end with its lifecycle-event counts ([`leaseholder-voice`](../leaseholder_voice/README.md#lifecycle-events-and-turn-lines)) |

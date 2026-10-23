@@ -390,7 +390,7 @@ def _e2(args: argparse.Namespace) -> int:
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, _interrupted)
             try:
-                summary = run_point(args.arm, args.out)
+                summary = run_point(args.arm, args.out, save_audio=args.save_audio)
             except KeyboardInterrupt:
                 print(f"lh-bench e2: {args.arm.stem} interrupted", file=sys.stderr)
                 return 130
@@ -446,6 +446,12 @@ def _add_e2(commands: Commands) -> None:
     )
     run.add_argument("arm", type=Path, help="arm file (TOML); the point is named after the file")
     run.add_argument("--out", type=Path, required=True, help="run directory")
+    run.add_argument(
+        "--save-audio",
+        action="store_true",
+        help="have the callers save each call's audio (lh-voice bots --save-audio), for the demo "
+        "video; recorded in run.json",
+    )
     report = actions.add_parser(
         "report",
         help="build the frontier from run directories",

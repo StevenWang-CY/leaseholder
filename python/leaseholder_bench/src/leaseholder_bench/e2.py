@@ -13,7 +13,8 @@ gateway's configuration and the engine the GPU node runs. The point is named aft
    agent sessions, starts AIPerf's ``agentic_replay`` (``configs/agentic_replay.yaml``) on the
    load-generator cores and waits for its profiling phase and a warm-up;
 4. it snapshots the gateway's and the engine's ``/metrics``, runs ``lh-voice bots`` inside the
-   voice-plane namespace and snapshots again: the calls are the measurement window;
+   voice-plane namespace (``--save-audio`` has them save each call's audio, for the demo video) and
+   snapshots again: the calls are the measurement window;
 5. it stops AIPerf, keeps the gateway's request log of the calls and the voice worker's journal of
    them (its turn lines and its sessions' event counts), and writes ``summary.json``.
 
@@ -712,11 +713,17 @@ def _until(done: Any, timeout: float, message: str) -> None:
 
 
 def run_point(
-    arm_file: Path, out: Path, host: Host | None = None, systemd: Systemd | None = None
+    arm_file: Path,
+    out: Path,
+    host: Host | None = None,
+    systemd: Systemd | None = None,
+    *,
+    save_audio: bool = False,
 ) -> dict[str, Any]:
     """Measure the point of ``arm_file`` into the directory ``out``; returns the summary. A
     directory with a complete point is never overwritten, and an earlier attempt that did not
-    complete is kept beside it."""
+    complete is kept beside it. ``save_audio``, a run option rather than the arm's, has the callers
+    save each call's audio (``lh-voice bots --save-audio``)."""
     arm = load_arm(arm_file)
     host = host or Host()
     systemd = systemd or Systemd()
@@ -724,9 +731,10 @@ def run_point(
         _fresh(out)
         shutil.copyfile(arm_file, out / "arm.toml")
         record = _Record(out, arm, host)
+        record["save_audio"] = save_audio
         try:
             with contextlib.ExitStack() as running:
-                summary = _measure(arm, out, host, systemd, record, running)
+                summary = _measure(arm, out, host, systemd, record, running, save_audio)
         except BaseException as exc:
             record.fail(exc)
             raise
@@ -741,6 +749,7 @@ def _measure(
     systemd: Systemd,
     record: _Record,
     running: contextlib.ExitStack,
+    save_audio: bool,
 ) -> dict[str, Any]:
     info = describe_engine(host.engine_url)
     _write_json(out / "engine.json", _redacted(info.config))
@@ -757,7 +766,7 @@ def _measure(
     reset_prefix_cache(host.engine_url, info.server)
     aiperf = _start_aiperf(arm, host, out, record, running) if arm.agents.sessions else None
     start = _snapshot(host, out, "start")
-    end = _call(arm, host, out, record, running, aiperf)
+    end = _call(arm, host, out, record, running, aiperf, save_audio)
     _snapshot(host, out, "end")
     record["window"] = {"start": start, "end": end}
     if aiperf is not None:
@@ -808,6 +817,7 @@ def _call(
     record: _Record,
     running: contextlib.ExitStack,
     aiperf: Process | None,
+    save_audio: bool,
 ) -> float:
     """Run the calls; returns when they ended. The replay must outlast them."""
     voice = arm.voice
@@ -821,6 +831,8 @@ def _call(
         "--out": out / "bots",
     }
     command = [*host.bots(), *(str(word) for option in options.items() for word in option)]
+    if save_audio:
+        command.append("--save-audio")
     env = os.environ | read_env(host.config / "livekit.env")
     bots = Process("lh-voice bots", command, out / "bots.log", env)
     running.callback(bots.stop, 30.0)

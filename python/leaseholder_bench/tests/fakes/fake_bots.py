@@ -12,6 +12,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 for option in ("--corpus", "--callers", "--turns", "--barge-in", "--seed", "--out"):
     parser.add_argument(option, required=True)
+parser.add_argument("--save-audio", action="store_true")
 args = parser.parse_args()
 out = Path(args.out)
 out.parent.mkdir(parents=True, exist_ok=True)
