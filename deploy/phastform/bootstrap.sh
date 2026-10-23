@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# bootstrap.sh: build the Phastform frozen-box environment under ~/leaseholder. Safe to re-run.
+# bootstrap.sh: build a GPU node's frozen-box environment under ~/leaseholder (Phastform; Gray reuses it). Safe to
+# re-run.
 #   venvs/engine            vLLM 0.32.0 with the audio extra, serving the LLM and Whisper
 #   venvs/tts               Kokoro-FastAPI 0.9.1-rc1 (torch 2.8.0+cu128)
 #   vendor/Kokoro-FastAPI   source checkout and model weights
 #   cache/                  FlashInfer JIT workspace and the curand header links
+#   ~/.cache/huggingface    the LLM and Whisper weights, at pinned revisions
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$HOME/leaseholder
@@ -28,6 +30,13 @@ git -C "$kokoro" checkout -q ebd4ec9
 if [[ ! -f $kokoro/api/src/models/v1_0/kokoro-v1_0.pth ]]; then
   (cd "$kokoro" && "$root/venvs/tts/bin/python" docker/scripts/download_model.py --output api/src/models/v1_0)
 fi
+
+# The units run offline (HF_HUB_OFFLINE=1), so the models are fetched here, at the revisions every result was
+# measured with.
+for model in Qwen/Qwen3-4B-Instruct-2507-FP8@8591804019c8b22094c3b5b4454e0edc05dffc98 \
+  openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9; do
+  "$root/venvs/engine/bin/hf" download -q "${model%@*}" --revision "${model#*@}" >/dev/null
+done
 
 # FlashInfer's JIT needs curand headers that /usr/local/cuda-13.0 lacks on this host; expose the venv's copies.
 ln -sf "$root"/venvs/engine/lib/python3.12/site-packages/nvidia/cu13/include/curand*.h "$root/cache/curand_include/"
