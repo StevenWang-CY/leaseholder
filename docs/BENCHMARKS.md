@@ -253,26 +253,31 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 
 `deploy/phastform/variants/make-room/probe.py` reproduces the KV case of vLLM [#40004](https://github.com/vllm-project/vllm/issues/40004) on the frozen box's image, on Gray (the second RTX 5060 Ti, with the same units, pins and pool), on 2026-10-23. Two priority-2 requests of 17,999 prompt tokens, each decoding up to 4,096 tokens, fill the 36,400-token pool. Once the engine reports both running and at most 24 blocks free, a priority-0 chat request of about 750 tokens is sent, and its time to first token is measured.
 
-| Scheduler | KV blocks free when it is sent | Priority-0 TTFT | Then |
-|---|---|---|---|
-| Stock vLLM 0.32.0, priority scheduling | 22 of 2,274 | 4,923 ms | 2 running, 1 waiting |
-| `make-room`: at most 2 preemptions a step, the budget cap, no reserve | 22 of 2,274 | 268 ms | 2 running, 1 waiting |
-| Either, on an idle pool | — | 107–137 ms | — |
+The rows name `make-room`'s switches: the KV preemption (at most 2 victims a step), the budget cap and the 2,048-token reserve. vLLM [#63350](https://github.com/vllm-project/vllm/pull/63350) proposes the KV preemption and [#63351](https://github.com/vllm-project/vllm/pull/63351) the budget cap, without the reserve. The KV case runs without the reserve, which would keep the second priority-2 request out of the full pool; 22 of 2,274 blocks were free when the request was sent, in every run on a full pool.
 
-- **Why stock waits.** A KV timeline of the same load on the stock scheduler (`/metrics` every half second) shows the two prefills filling the pool to 98.7% at 7.7 s, then decoding into its last free blocks until 12.6 s, when one of them cannot grow and vLLM preempts the later one, and use falls to 50%. A priority-0 request that arrives in between waits: the waiting loop stops at its failed allocation, and running requests are preempted only for each other's growth. Here it waited 4.9 s.
-- **What make-room does.** It preempts one priority-2 request at once, through the stock preemption path; with the OffloadingConnector the victim's KV is in the CPU tier for its resume. Both runs end in the same state, one agent request waiting, but the voice turn's first token comes 4.7 s sooner.
+| Scheduler | Runs | Priority-0 TTFT | Then |
+|---|---:|---|---|
+| Stock vLLM 0.32.0, priority scheduling | 3 | 4,923, 5,069, 5,077 ms | 2 running, 1 waiting |
+| `make-room`, the KV preemption alone (#63350) | 2 | 247, 321 ms | 2 running, 1 waiting |
+| `make-room`, the KV preemption and the budget cap (#63350 and #63351) | 2 | 225, 297 ms | 2 running, 1 waiting |
+| Either, on an idle pool | 4 | 107–137 ms | — |
+
+- **Why stock waits.** A KV timeline of the same load on the stock scheduler (`/metrics` every half second) shows the two prefills filling the pool to 98.7% at 7.7 s, then decoding into its last free blocks until 12.6 s, when one of them cannot grow and vLLM preempts the later one, and use falls to 50%. A priority-0 request that arrives in between waits: the waiting loop stops at its failed allocation, and running requests are preempted only for each other's growth. Here it waited 4.9 to 5.1 s.
+- **What make-room does.** It preempts one priority-2 request at once, through the stock preemption path; with the OffloadingConnector the victim's KV is in the CPU tier for its resume. Both runs end in the same state, one agent request waiting, but the voice turn's first token comes 4.6 to 4.9 s sooner. The budget cap changes nothing here, since the priority-2 requests are decoding rather than prefilling: the 16th token came after 535 and 610 ms with the KV preemption alone, and 514 and 586 ms with the budget cap.
 - **An instrument note.** `vllm:num_preemptions_total` stayed 0 through the stock timeline's preemption: vLLM counts a preemption when the victim's next output reaches the frontend, so a victim still waiting is not counted yet. E2's per-point engine counters therefore miss victims that resume after a point's window, and the probe reads the running and waiting counts instead.
 
-**The prefill case.** The probe's `prefill` case sends three priority-2 requests of 10,000 prompt tokens, which prefill beside each other with room left in the pool, and the voice turn once all three run. It times the turn's first token and its 16th, a reply's first sentence (two runs each, on Gray, 2026-10-23):
+**The prefill case.** The probe's `prefill` case sends three priority-2 requests of 10,000 prompt tokens, which prefill beside each other with room left in the pool, and the voice turn once all three run. It times the turn's first token and its 16th, a reply's first sentence (on Gray, 2026-10-23; the median and range where a row has four runs or more):
 
-| Scheduler | Priority-0 TTFT | 16th token |
-|---|---|---|
-| Stock vLLM 0.32.0, priority scheduling | 290, 302 ms | 1,226, 1,226 ms |
-| `make-room` as first built (e0d8ac7: the budget cap only leaves a waiting request its first chunk) | 324, 339 ms | 1,248, 1,277 ms |
-| `make-room`: the budget cap keeps lower-priority prefill out of the steps of a request's first tokens | 282, 354 ms | 578, 651 ms |
+| Scheduler | Runs | Priority-0 TTFT | 16th token |
+|---|---:|---|---|
+| Stock vLLM 0.32.0, priority scheduling | 6 | 361 ms (290–596) | 1,395 ms (1,226–1,683) |
+| `make-room` as first built (e0d8ac7: the budget cap only leaves a waiting request its first chunk) | 2 | 324, 339 ms | 1,248, 1,277 ms |
+| `make-room`, the KV preemption alone (#63350) | 4 | 381 ms (329–589) | 1,423 ms (1,370–1,674) |
+| `make-room`, the KV preemption and the budget cap (#63350 and #63351) | 4 | 320 ms (263–328) | 573 ms (564–618) |
+| `make-room` as arm 9 runs it, with the reserve | 2 | 282, 354 ms | 578, 651 ms |
 
-- **Why.** Every step of the reply carried the agents' prefill chunks, up to 512 tokens, so its tokens came about 60 ms apart; with the budget cap they come about 18 ms apart. The first token still waits for the step in flight when the turn arrives. E2's first arm-9 point, on the first module, showed the same loss at scale: its waterfall put it in the reply's first sentence (1,335 ms at the median against 536 ms to the first token).
-- **The KV case on the final module:** 225 and 297 ms to the first token, 514 and 586 ms to the 16th.
+- **Why.** Every step of the reply carried the agents' prefill chunks, up to 512 tokens, so its tokens came 62 to 73 ms apart, on stock vLLM as with the KV preemption alone, which finds KV to spare here and changes nothing; with the budget cap they come 16 to 20 ms apart. The first token still waits for the step in flight when the turn arrives. E2's first arm-9 point, on the first module, showed the same loss at scale: its waterfall put it in the reply's first sentence (1,335 ms at the median against 536 ms to the first token).
+- **Spread.** The case varies with how far the three prefills have got when the turn arrives: stock vLLM's first two runs gave 1,226 ms each, four later ones 1,367–1,683 ms. With two runs a row, the KV preemption alone would have looked slower than stock.
 
 **The calls' first-token tail.** `deploy/phastform/variants/make-room/tail.py` runs 12 closed-loop agent sessions at priority 2 beside two calls at priority 0 for 240 s and gives the calls' time to first token. The agents' prompts are 6–30k tokens, either fresh each turn, as E2's discriminating replay computes 98% of its prompt tokens, or growing by a tool result each turn, so that they reuse the CPU tier; a call turns every 4–8 s with 16 output tokens. On Gray, 2026-10-23:
 
@@ -280,14 +285,19 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 |---|---|---:|---|
 | Stock vLLM 0.32.0, priority scheduling (the frozen box) | fresh | 47 | 3,081 / 6,894 / 9,067 / 11,094 ms |
 | Stock vLLM 0.32.0, priority scheduling (the frozen box) | growing | 50 | 1,359 / 6,894 / 7,942 / 8,692 ms |
-| `make-room` before its KV-load rule | fresh | 68 | 361 / 1,897 / 3,176 / 4,120 ms |
-| `make-room` before its KV-load rule | growing | 70 | 424 / 619 / 3,311 / 3,544 ms |
-| `make-room` | fresh | 73 | 202 / 291 / 324 / 398 ms |
-| `make-room` | growing | 73 | 202 / 291 / 336 / 678 ms |
+| `make-room`, the KV preemption alone (#63350) | fresh | 60 | 643 / 1,900 / 2,980 / 6,298 ms |
+| `make-room`, the KV preemption alone (#63350) | growing | 60 | 540 / 1,226 / 2,342 / 3,325 ms |
+| `make-room` with the reserve, before its KV-load rule | fresh | 68 | 361 / 1,897 / 3,176 / 4,120 ms |
+| `make-room` with the reserve, before its KV-load rule | growing | 70 | 424 / 619 / 3,311 / 3,544 ms |
+| `make-room`, the KV preemption and the budget cap (#63350 and #63351) | fresh | 73 | 257 / 347 / 357 / 370 ms |
+| `make-room`, the KV preemption and the budget cap (#63350 and #63351) | growing | 73 | 261 / 403 / 439 / 604 ms |
+| `make-room` as arm 9 runs it, with the reserve | fresh | 73 | 202 / 291 / 324 / 398 ms |
+| `make-room` as arm 9 runs it, with the reserve | growing | 73 | 202 / 291 / 336 / 678 ms |
 
-The rows before the KV-load rule ran with the scheduler's state logged for each call that waited over 0.3 s; the stock rows' p95 is that of E2's frozen box in the discriminating scenario (the realtime first byte, 8,556 ms).
+The rows before the KV-load rule ran with the scheduler's state logged for each call that waited over 0.3 s; the stock rows' p95 is that of E2's frozen box in the discriminating scenario (the realtime first byte, 8,556 ms). Each row is one run.
 
 - **Why.** Between a call's turns, the agents' prefills cycle the GPU's free blocks, so the turn's prefix is evicted and loads back from the CPU tier, asynchronously. Every slow turn was in `WAITING_FOR_REMOTE_KVS` (the scheduler's state logged each step), with KV to spare. Once its load is done, a request waits for the waiting loop to promote it, and the waiting loop runs only on budget the running loop leaves; the agents' 512-token chunks left none. The budget cap now holds lower-priority prefill while a higher-priority request loads, as while it prefills.
+- **Each switch's share.** The KV preemption alone takes the calls' p95 from 7.9–9.1 s to 2.3–3.0 s, since a turn no longer waits for an agent request to finish; the budget cap takes it under 0.5 s. With the reserve as well, the median is lower (202 against 257 and 261 ms).
 - **E2's points show the same tail:** disc-a9-s24 on the module before this rule had its first token after 334 ms at the median and 2,146 ms at p95, against preempt-resubmit's 251 and 394 ms; its turns loaded about 40k tokens from the CPU tier, about their own prefixes.
 
 ## Agent replay on the frozen box: a first retention-headroom signal
