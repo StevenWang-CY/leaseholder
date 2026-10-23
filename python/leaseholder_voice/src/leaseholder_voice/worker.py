@@ -26,6 +26,10 @@ control plane over the LLM's socket, and logs a line per turn with its stage tim
 without them; they stop as well when the LLM bypasses the control plane, whose socket alone takes
 them.
 
+When the control plane fronts several GPU nodes, ``LH_NODES`` names them, and each call's STT and
+TTS go to the node the control plane places the call on (:mod:`.placement`), through that node's
+tunnel sockets beside ``LH_STT_UDS`` and ``LH_TTS_UDS``. Without it, every call uses those two.
+
 The worker runs inside the voice-plane network namespace, where the only route to the servers is
 a Unix socket each. The environment, set by ``lh-voice-worker.service``, configures it:
 
@@ -39,11 +43,13 @@ a Unix socket each. The environment, set by ``lh-voice-worker.service``, configu
 | ``LH_TURN_DETECTION`` | ``model`` (default: the end-of-turn model) or ``vad`` (fixed endpointing, for experiments) |
 | ``LH_PREEMPTIVE_GENERATION`` | ``true`` (default, LiveKit's) or ``false`` |
 | ``LH_EVENTS`` | ``on`` (default: lifecycle events to the control plane) or ``off`` |
+| ``LH_NODES`` | The GPU nodes the control plane places calls on, ``phastform,gray``; unset with one |
 """
 
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from livekit.agents import (
@@ -60,7 +66,7 @@ from livekit.agents import (
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import silero
 
-from . import events, plugins
+from . import events, placement, plugins
 from .protocol import AGENT_NAME, room_session_id
 
 BASE_URL = "http://lh.invalid/v1"
@@ -68,6 +74,9 @@ BASE_URL = "http://lh.invalid/v1"
 
 ENGINE_TUNNEL = "-engine.sock"
 """How the tunnel names its forward to an engine (``phastform-engine.sock``), the bypass's LLM path."""
+
+NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+"""The control plane's rule for node names, which the tunnels' socket names carry."""
 
 INSTRUCTIONS = (
     "You are Ava, the phone assistant of a small neighborhood restaurant. You take reservations, "
@@ -117,16 +126,40 @@ def events_socket() -> str | None:
     return None if setting == "off" or uds.endswith(ENGINE_TUNNEL) else uds
 
 
+def placement_nodes() -> tuple[str, ...]:
+    """The GPU nodes the control plane places calls on (``LH_NODES``): none with one node, or when the LLM
+    bypasses the control plane through an engine's tunnel, where nothing places calls."""
+    setting = os.environ.get("LH_NODES", "").strip()
+    if not setting:
+        return ()
+    nodes = tuple(name.strip() for name in setting.split(","))
+    if len(nodes) < 2 or len(set(nodes)) < len(nodes) or not all(map(NODE_NAME.fullmatch, nodes)):
+        raise ValueError(
+            "LH_NODES lists the GPU nodes calls are placed on: two or more names from [A-Za-z0-9._-], "
+            f"separated by commas, got {setting!r}"
+        )
+    return () if os.environ["LH_LLM_UDS"].endswith(ENGINE_TUNNEL) else nodes
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     session_id = room_session_id(ctx.job.room.sid)
     llm_timeout = float(os.environ.get("LH_LLM_TIMEOUT", "30"))
     events_uds = events_socket()
+    # The call's node, before anything of it runs: its STT and TTS are built on that node's sockets.
+    sockets = await placement.place(
+        session_id,
+        ctx.job.room.name,
+        nodes=placement_nodes(),
+        control_plane=os.environ["LH_LLM_UDS"],
+        stt=os.environ["LH_STT_UDS"],
+        tts=os.environ["LH_TTS_UDS"],
+    )
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        stt=plugins.make_stt(BASE_URL, uds=os.environ["LH_STT_UDS"]),
+        stt=plugins.make_stt(BASE_URL, uds=sockets.stt),
         llm=plugins.make_llm(BASE_URL, session_id, uds=os.environ["LH_LLM_UDS"]),
-        tts=plugins.make_tts(BASE_URL, uds=os.environ["LH_TTS_UDS"]),
+        tts=plugins.make_tts(BASE_URL, uds=sockets.tts),
         turn_handling=turn_handling(),
         aec_warmup_duration=None,
         conn_options=SessionConnectOptions(
