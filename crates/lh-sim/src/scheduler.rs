@@ -19,7 +19,8 @@
 //!   loop stalls for `restore_stall` of it, charged to the first step that starts during the load.
 //!   The engine learns that a load has finished from the output of the step in flight, and has
 //!   already scheduled the step after that one: the request computes from the second step that
-//!   starts after its load, or at once when nothing else runs.
+//!   starts after its load, or at once when nothing else runs. A prefetch ([`Scheduler::load`]) is a
+//!   load that no request waits for.
 //! - **Timing.** A step lasts what [`StepCost`] says for its load. At its end a request whose prompt
 //!   is complete has its first token, a decode one more, and a request with all its output tokens
 //!   finishes: the engine writes its blocks through and frees them. A request that arrives during a
@@ -87,10 +88,11 @@ impl Request {
     }
 }
 
-/// The load of an admitted request's CPU-tier blocks.
+/// A load of CPU-tier blocks: an admitted request's, or a prefetch.
 #[derive(Debug)]
 struct Load {
-    id: u64,
+    /// The request waiting for it.
+    id: Option<u64>,
     start: u64,
     end: u64,
     /// The stall it causes the step loop, in ms, until a step is charged with it.
@@ -119,7 +121,7 @@ pub struct Scheduler {
     /// How many requests at the front of `waiting` are waiting for free blocks: those queued when
     /// the head did not fit.
     blocked: usize,
-    /// The loads of admitted requests waiting for them, in the order they run.
+    /// Loads not yet done with, in the order they run.
     loads: Vec<Load>,
     /// In the order they started computing.
     running: Vec<u64>,
@@ -160,6 +162,22 @@ impl Scheduler {
         let start = self.host_free.max(now);
         self.host_free = start + ns(self.cost.host_ms(prompt_tokens, decoding as u64));
         self.host_free - now
+    }
+
+    /// Loads `tokens` tokens from the CPU tier for no request, issued at `now`: after the loads
+    /// before it, stalling the steps beside it as a restore does. Returns when it ends.
+    pub fn load(&mut self, now: u64, tokens: u64) -> u64 {
+        let restore_ms = self.tier.restore_ms(tokens);
+        let start = self.loads.last().map_or(now, |l| l.end.max(now));
+        let end = start + ns(restore_ms);
+        self.loads.push(Load {
+            id: None,
+            start,
+            end,
+            stall_ms: Some(self.cost.restore_stall * restore_ms),
+            steps_after: 0,
+        });
+        end
     }
 
     /// Request `id` reaches the scheduler; it is considered from the next step on.
@@ -209,7 +227,7 @@ impl Scheduler {
             if r.output_left == 0 {
                 self.requests.remove(&id);
                 self.running.retain(|&x| x != id);
-                engine.finish(id);
+                engine.finish(id, step.end);
                 out.push(Outcome::Finished(id));
             }
         }
@@ -217,7 +235,8 @@ impl Scheduler {
 
     fn start_step(&mut self, now: u64, engine: &mut Engine, out: &mut Vec<Outcome>) -> Option<u64> {
         let mut budget = self.budget.max_batched_tokens;
-        let cap = if self.running.len() + self.loads.len() + self.waiting.len() > 1 {
+        let restoring = self.loads.iter().filter(|l| l.id.is_some()).count();
+        let cap = if self.running.len() + restoring + self.waiting.len() > 1 {
             self.budget.long_prefill_threshold
         } else {
             budget
@@ -255,15 +274,20 @@ impl Scheduler {
         }
         let alone = self.running.is_empty();
         let mut i = 0;
-        while budget > 0 && i < self.loads.len() {
+        while i < self.loads.len() {
             let l = &self.loads[i];
-            if l.end > now || (!alone && l.steps_after < 2) {
-                i += 1;
-                continue;
+            let done = l.end <= now;
+            match l.id {
+                None if done => {
+                    self.loads.remove(i);
+                }
+                Some(id) if done && (alone || l.steps_after >= 2) && budget > 0 => {
+                    self.loads.remove(i);
+                    schedule(id, &self.requests[&id], &mut budget);
+                    self.running.push(id);
+                }
+                _ => i += 1,
             }
-            let id = self.loads.remove(i).id;
-            schedule(id, &self.requests[&id], &mut budget);
-            self.running.push(id);
         }
         let mut restores = Vec::new();
         while budget > 0
@@ -315,7 +339,7 @@ impl Scheduler {
         for (id, restore_ms) in restores {
             let start = self.loads.last().map_or(end, |l| l.end.max(end));
             self.loads.push(Load {
-                id,
+                id: Some(id),
                 start,
                 end: start + ns(restore_ms),
                 stall_ms: Some(self.cost.restore_stall * restore_ms),
@@ -601,6 +625,27 @@ mod tests {
             .filter(|o| matches!(o, Outcome::Finished(_)))
             .count();
         assert_eq!(finished, 2);
+    }
+
+    #[test]
+    fn a_prefetch_runs_with_the_loads_and_stalls_the_steps_beside_it() {
+        let cost = StepCost {
+            restore_stall: 0.5,
+            ..flat()
+        };
+        let tier = TierCost::frozen_box();
+        let mut e = engine(64, 0);
+        let mut s = Scheduler::new(StepBudget::FROZEN_BOX, cost, tier.clone());
+        let mut out = Vec::new();
+        s.arrive(1, req(100, 16, 3));
+        let t1 = s.run(0, &mut e, &mut out).unwrap();
+        // Two prefetches issued during the first step: the second starts when the first ends.
+        let restore = ns(tier.restore_ms(64));
+        assert_eq!(s.load(MS, 64), MS + restore);
+        assert_eq!(s.load(MS, 64), MS + 2 * restore);
+        // The next step starts during the first and carries its stall.
+        let t2 = s.run(t1, &mut e, &mut out).unwrap();
+        assert_eq!(t2 - t1, ns(10.01 + 0.5 * tier.restore_ms(64)));
     }
 
     #[test]

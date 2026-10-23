@@ -3,6 +3,10 @@
 //! The pool ([`super::Engine`]) owns reference counts and the prefix-cache map; a policy only orders
 //! the free blocks. A block whose last reference is dropped joins the free list but keeps its contents
 //! (and stays a cache hit) until the policy hands it out again.
+//!
+//! - [`LruQueue`]: vLLM's free queue.
+//! - [`ClairvoyantFree`]: Belady's MIN over the recorded request sequence.
+//! - [`IdleRanked`]: MORI's idleness ranking: the block whose session is expected back last.
 
 use std::collections::BinaryHeap;
 use std::fmt;
@@ -14,10 +18,13 @@ use crate::prefix::BlockId;
 /// Orders the free blocks of the GPU pool.
 pub trait GpuPolicy: fmt::Debug {
     /// A block lost its last reference. `cached` is its identity when it holds a full block (it stays
-    /// hittable); `position` is the block's index in its prompt.
-    fn free(&mut self, slot: u32, cached: Option<BlockId>, position: u32);
+    /// hittable); `position` is the block's index in its prompt; `next_use` is when its session is
+    /// expected back (ns), when the replay predicts it.
+    fn free(&mut self, slot: u32, cached: Option<BlockId>, position: u32, next_use: Option<u64>);
     /// A free cached block was hit and is in use again.
     fn reuse(&mut self, slot: u32);
+    /// The free cached block in `slot` is to be reused before every other cached block.
+    fn demote(&mut self, slot: u32);
     /// A request needed the free cached block in `slot` (`id`, at `position` of its prompt) but could
     /// not hit it, because an earlier block of its prompt missed. Only policies that rank blocks by
     /// their next use care.
@@ -90,7 +97,7 @@ impl LruQueue {
 }
 
 impl GpuPolicy for LruQueue {
-    fn free(&mut self, slot: u32, cached: Option<BlockId>, _position: u32) {
+    fn free(&mut self, slot: u32, cached: Option<BlockId>, _position: u32, _next_use: Option<u64>) {
         if cached.is_some() {
             let last = self.prev[self.tail() as usize];
             self.link_after(last, slot);
@@ -101,6 +108,11 @@ impl GpuPolicy for LruQueue {
 
     fn reuse(&mut self, slot: u32) {
         self.unlink(slot);
+    }
+
+    fn demote(&mut self, slot: u32) {
+        self.unlink(slot);
+        self.link_after(self.head(), slot);
     }
 
     fn take(&mut self) -> u32 {
@@ -164,7 +176,7 @@ impl ClairvoyantFree {
 }
 
 impl GpuPolicy for ClairvoyantFree {
-    fn free(&mut self, slot: u32, cached: Option<BlockId>, position: u32) {
+    fn free(&mut self, slot: u32, cached: Option<BlockId>, position: u32, _next_use: Option<u64>) {
         self.len += 1;
         self.rank(slot, cached, position);
     }
@@ -173,9 +185,97 @@ impl GpuPolicy for ClairvoyantFree {
         self.claim(slot);
     }
 
+    // The reference knows every next use; nothing to demote.
+    fn demote(&mut self, _slot: u32) {}
+
     // The block's ranked next use has passed without a hit; rank it by the following one.
     fn refresh(&mut self, slot: u32, id: BlockId, position: u32) {
         self.rank(slot, Some(id), position);
+    }
+
+    fn take(&mut self) -> u32 {
+        while let Some((slot, version)) = self.empty.pop() {
+            if self.version[slot as usize] == version {
+                return self.claim(slot);
+            }
+        }
+        while let Some((_, _, slot, version)) = self.heap.pop() {
+            if self.version[slot as usize] == version {
+                return self.claim(slot);
+            }
+        }
+        panic!("no free GPU block");
+    }
+
+    fn free_blocks(&self) -> usize {
+        self.len
+    }
+}
+
+/// MORI's idleness ranking (arXiv 2606.00866) as an eviction order: reuse the free
+/// block whose session is expected back last (blocks without contents first; a block with no
+/// expected return, or demoted, before any expected one; within a session, the deepest block of its
+/// prompt first). MORI also moves KV between HBM and DRAM ahead of use; here only the ranking.
+#[derive(Debug)]
+pub struct IdleRanked {
+    /// (expected return, position, slot, version): the latest return is reused first.
+    heap: BinaryHeap<(u64, u32, u32, u32)>,
+    /// Free blocks without contents: (slot, version).
+    empty: Vec<(u32, u32)>,
+    /// Bumped on every state change; an entry is valid only at its slot's current version.
+    version: Vec<u32>,
+    position: Vec<u32>,
+    len: usize,
+}
+
+impl IdleRanked {
+    pub fn new(blocks: u32) -> Self {
+        Self {
+            heap: BinaryHeap::new(),
+            empty: (0..blocks).rev().map(|s| (s, 0)).collect(),
+            version: vec![0; blocks as usize],
+            position: vec![0; blocks as usize],
+            len: blocks as usize,
+        }
+    }
+
+    fn rank(&mut self, slot: u32, next_use: u64) {
+        self.version[slot as usize] += 1;
+        let version = self.version[slot as usize];
+        self.heap
+            .push((next_use, self.position[slot as usize], slot, version));
+        if self.heap.len() > 2 * self.version.len() + 1024 {
+            let current = &self.version;
+            self.heap.retain(|e| current[e.2 as usize] == e.3);
+            self.empty.retain(|e| current[e.0 as usize] == e.1);
+        }
+    }
+
+    fn claim(&mut self, slot: u32) -> u32 {
+        self.version[slot as usize] += 1;
+        self.len -= 1;
+        slot
+    }
+}
+
+impl GpuPolicy for IdleRanked {
+    fn free(&mut self, slot: u32, cached: Option<BlockId>, position: u32, next_use: Option<u64>) {
+        self.len += 1;
+        if cached.is_none() {
+            self.version[slot as usize] += 1;
+            self.empty.push((slot, self.version[slot as usize]));
+            return;
+        }
+        self.position[slot as usize] = position;
+        self.rank(slot, next_use.unwrap_or(u64::MAX));
+    }
+
+    fn reuse(&mut self, slot: u32) {
+        self.claim(slot);
+    }
+
+    fn demote(&mut self, slot: u32) {
+        self.rank(slot, u64::MAX);
     }
 
     fn take(&mut self) -> u32 {
@@ -219,14 +319,36 @@ mod tests {
         let taken: Vec<u32> = (0..4).map(|_| q.take()).collect();
         assert_eq!(taken, vec![0, 1, 2, 3]);
         // A request frees its blocks tail first: 2 (partial, uncached), then 1 and 0 (cached).
-        q.free(2, None, 2);
-        q.free(1, Some(11), 1);
-        q.free(0, Some(10), 0);
-        q.free(3, Some(30), 0);
+        q.free(2, None, 2, None);
+        q.free(1, Some(11), 1, None);
+        q.free(0, Some(10), 0, None);
+        q.free(3, Some(30), 0, None);
         assert_eq!(order(&q), vec![2, 1, 0, 3]);
         q.reuse(0);
         assert_eq!(order(&q), vec![2, 1, 3]);
-        assert_eq!((q.take(), q.take(), q.free_blocks()), (2, 1, 1));
+        q.demote(3);
+        assert_eq!(order(&q), vec![3, 2, 1]);
+        assert_eq!((q.take(), q.take(), q.free_blocks()), (3, 2, 1));
+    }
+
+    #[test]
+    fn idle_ranked_reuses_the_session_expected_back_last() {
+        let mut p = IdleRanked::new(5);
+        let slots: Vec<u32> = (0..5).map(|_| p.take()).collect();
+        // Session A (back at 30) frees blocks 0 and 1; session B (back at 10) frees 2 and 3; 4 holds
+        // no full block.
+        p.free(slots[1], Some(11), 1, Some(30));
+        p.free(slots[0], Some(10), 0, Some(30));
+        p.free(slots[3], Some(21), 1, Some(10));
+        p.free(slots[2], Some(20), 0, Some(10));
+        p.free(slots[4], None, 2, Some(10));
+        assert_eq!(p.take(), slots[4]);
+        // A's deepest block first, then B's after B's start is demoted.
+        assert_eq!(p.take(), slots[1]);
+        p.demote(slots[2]);
+        assert_eq!(p.take(), slots[2]);
+        p.reuse(slots[0]);
+        assert_eq!((p.take(), p.free_blocks()), (slots[3], 0));
     }
 
     #[test]
@@ -236,12 +358,12 @@ mod tests {
         let mut p = ClairvoyantFree::new(3, oracle.clone());
         let slots: Vec<u32> = (0..3).map(|_| p.take()).collect();
         oracle.set_position(1);
-        p.free(slots[0], Some(10), 0); // next use 1
-        p.free(slots[1], Some(11), 1); // next use 2
-        p.free(slots[2], Some(99), 0); // never
+        p.free(slots[0], Some(10), 0, None); // next use 1
+        p.free(slots[1], Some(11), 1, None); // next use 2
+        p.free(slots[2], Some(99), 0, None); // never
         assert_eq!(p.take(), slots[2]);
         assert_eq!(p.take(), slots[1]);
-        p.free(slots[1], Some(11), 1);
+        p.free(slots[1], Some(11), 1, None);
         p.reuse(slots[1]);
         assert_eq!((p.take(), p.free_blocks()), (slots[0], 0));
     }

@@ -272,7 +272,7 @@ pub fn clairvoyant(
                 }
             }
             TimelineEvent::Finish(i) => {
-                engine.finish(i as u64);
+                engine.finish(i as u64, 0);
             }
         }
     }

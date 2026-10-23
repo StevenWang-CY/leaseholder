@@ -183,7 +183,7 @@ pub fn replay(
     events.sort_unstable();
     let mut admitted = vec![false; out.requests.len()];
     let mut finish_pending = vec![false; out.requests.len()];
-    for (_, admit, i) in events {
+    for (t, admit, i) in events {
         if admit {
             let r = &out.requests[i];
             let req = EngineRequest {
@@ -201,7 +201,7 @@ pub fn replay(
         } else {
             let mut finishing = vec![i];
             while let Some(j) = finishing.pop() {
-                for (q, a) in engine.finish(j as u64) {
+                for (q, a) in engine.finish(j as u64, t) {
                     let q = q as usize;
                     admitted[q] = true;
                     out.requests[q].sources = a.sources;

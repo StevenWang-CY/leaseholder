@@ -1118,7 +1118,7 @@ impl<'a> Replay<'a> {
         }
         if self.scheduler.is_none() {
             // The idle engine queues a request only while it waits for blocks.
-            for (qid, adm) in self.engine.finish(id) {
+            for (qid, adm) in self.engine.finish(id, self.now) {
                 let blocked = self.now - self.in_flight[&qid].issued;
                 self.admitted(qid, adm, blocked);
             }

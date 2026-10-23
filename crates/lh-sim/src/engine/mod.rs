@@ -19,19 +19,23 @@
 //!   requests free enough; vLLM's scheduler stops at the first waiting request that does not fit.
 //!   Requests reserve their whole footprint at admission, so a running request never needs to be
 //!   preempted.
+//! - **Retention.** The E1 arms act on a pausing session's KV between its requests: a hold pins the
+//!   pool's cached start of a prompt, a prefetch loads the rest from the CPU tier ahead of the next
+//!   request and holds it, and a demotion queues free cached blocks to be reused first. Holds give way
+//!   to requests: one that does not fit releases holds, oldest first, before it waits.
 
 pub mod cpu;
 pub mod gpu;
 pub mod oracle;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use lh_core::PromptSources;
 use serde::Serialize;
 
 use self::cpu::{CpuClairvoyant, CpuLru, CpuPolicy, CpuS3Fifo};
-use self::gpu::{ClairvoyantFree, GpuPolicy, LruQueue};
+use self::gpu::{ClairvoyantFree, GpuPolicy, IdleRanked, LruQueue};
 use self::oracle::Oracle;
 use crate::prefix::{BlockId, IdMap, UNIQUE_BIT};
 
@@ -44,6 +48,8 @@ pub enum GpuPolicyKind {
     Lru,
     /// Belady's MIN over the recorded request sequence.
     Clairvoyant,
+    /// MORI: the free block whose session is expected back last ([`Engine::expect_pause`]).
+    IdleRanked,
 }
 
 /// Which [`CpuPolicy`] decides what the CPU tier keeps.
@@ -114,6 +120,12 @@ pub struct EngineStats {
     pub step_tokens: u64,
     #[serde(skip_serializing_if = "is_zero")]
     pub step_ns: u64,
+    /// Blocks loaded from the CPU tier ahead of a request; zero, and left out, without prefetch.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub prefetched_blocks: u64,
+    /// Holds released because a request needed their blocks; zero, and left out, without holds.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub holds_released: u64,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -127,6 +139,8 @@ struct Running {
     gpu_blocks: usize,
     cpu_blocks: usize,
     full_blocks: usize,
+    /// How long its session is expected to pause after it.
+    pause_ns: Option<u64>,
 }
 
 /// The GPU pool, the optional CPU tier and the wait queue.
@@ -143,6 +157,9 @@ pub struct Engine {
     oracle: Option<Rc<Oracle>>,
     queue: VecDeque<(u64, EngineRequest)>,
     running: IdMap<Running>,
+    /// Blocks held for pausing sessions, `(slot, position)` in prefix order, oldest hold first.
+    holds: BTreeMap<u64, Vec<(u32, u32)>>,
+    next_hold: u64,
     next_unique: u64,
     pinned: usize,
     pub stats: EngineStats,
@@ -160,6 +177,7 @@ impl Engine {
         let gpu: Box<dyn GpuPolicy> = match cfg.gpu_policy {
             GpuPolicyKind::Lru => Box::new(LruQueue::new(usable)),
             GpuPolicyKind::Clairvoyant => Box::new(ClairvoyantFree::new(usable, need_oracle())),
+            GpuPolicyKind::IdleRanked => Box::new(IdleRanked::new(usable)),
         };
         let cpu: Option<Box<dyn CpuPolicy>> = match (cfg.cpu_blocks, cfg.cpu_policy) {
             (0, _) => None,
@@ -180,6 +198,8 @@ impl Engine {
             oracle,
             queue: VecDeque::new(),
             running: IdMap::default(),
+            holds: BTreeMap::new(),
+            next_hold: 0,
             next_unique: 0,
             pinned: 0,
             stats: EngineStats::default(),
@@ -189,6 +209,10 @@ impl Engine {
     /// GPU blocks that can hold KV (vLLM's pool minus the null block).
     pub fn gpu_capacity(&self) -> usize {
         self.refs.len()
+    }
+
+    pub fn has_cpu_tier(&self) -> bool {
+        self.cpu.is_some()
     }
 
     /// Admits `req` now, or queues it behind earlier waiting requests. A request larger than the
@@ -225,9 +249,9 @@ impl Engine {
         self.try_admit(id, req)
     }
 
-    /// Ends request `id`: writes its blocks through to the CPU tier, frees its GPU blocks, and
-    /// returns the waiting requests admitted into the freed space, in order.
-    pub fn finish(&mut self, id: u64) -> Vec<(u64, Admission)> {
+    /// Ends request `id` at `now` (ns): writes its blocks through to the CPU tier, frees its GPU
+    /// blocks, and returns the waiting requests admitted into the freed space, in order.
+    pub fn finish(&mut self, id: u64, now: u64) -> Vec<(u64, Admission)> {
         let run = self
             .running
             .remove(&id)
@@ -257,16 +281,111 @@ impl Engine {
             touched.extend(offer.iter().map(|&(b, _)| b));
             cpu.on_finish(&touched);
         }
+        let next_use = run.pause_ns.map(|pause| now + pause);
         for (j, &slot) in run.slots.iter().enumerate().rev() {
-            let s = slot as usize;
-            self.refs[s] -= 1;
-            if self.refs[s] == 0 {
-                self.pinned -= 1;
-                let id = self.ids[s];
-                self.gpu
-                    .free(slot, (id != NO_BLOCK).then_some(id), j as u32);
+            self.unpin(slot, j as u32, next_use);
+        }
+        self.admit_queued()
+    }
+
+    /// The pause expected after running request `id`, before its session sends again, for a GPU
+    /// policy that ranks blocks by when they are expected back ([`GpuPolicyKind::IdleRanked`]).
+    pub fn expect_pause(&mut self, id: u64, pause_ns: u64) {
+        if let Some(run) = self.running.get_mut(&id) {
+            run.pause_ns = Some(pause_ns);
+        }
+    }
+
+    /// KV tokens the running requests hold in the pool.
+    pub fn running_tokens(&self) -> u64 {
+        let blocks: usize = self.running.values().map(|r| r.slots.len()).sum();
+        blocks as u64 * self.block_tokens
+    }
+
+    /// Pins the blocks at the start of `prefix` that the pool caches until [`release`](Self::release).
+    /// `None` when it caches none of them.
+    pub fn hold(&mut self, prefix: &[BlockId]) -> Option<u64> {
+        let (g, _) = self.lookup(prefix, prefix.len());
+        let slots = (0..g).map(|j| (self.pin(prefix[j]), j as u32)).collect();
+        self.add_hold(slots)
+    }
+
+    /// Blocks of `prefix` after its start cached in the pool that the CPU tier holds: what
+    /// [`prefetch`](Self::prefetch) loads.
+    pub fn prefetchable(&self, prefix: &[BlockId]) -> u32 {
+        let (g, c) = self.lookup(prefix, prefix.len());
+        (c - g) as u32
+    }
+
+    /// Loads the [`prefetchable`](Self::prefetchable) blocks of `prefix` into free GPU blocks (as
+    /// many as are free) and holds them with the cached start until [`release`](Self::release).
+    /// `None` when nothing is held.
+    pub fn prefetch(&mut self, prefix: &[BlockId]) -> Option<u64> {
+        let (g, c) = self.lookup(prefix, prefix.len());
+        let mut slots: Vec<(u32, u32)> = (0..g).map(|j| (self.pin(prefix[j]), j as u32)).collect();
+        let loaded = (c - g).min(self.gpu.free_blocks());
+        for (j, &b) in prefix.iter().enumerate().skip(g).take(loaded) {
+            let slot = self.allocate();
+            self.cache(slot, b);
+            slots.push((slot, j as u32));
+        }
+        if loaded > 0 {
+            if let Some(cpu) = &mut self.cpu {
+                cpu.on_load(&prefix[g..g + loaded]);
+            }
+            self.stats.prefetched_blocks += loaded as u64;
+        }
+        self.add_hold(slots)
+    }
+
+    /// Ends hold `hold`, unless a request has released it already, and returns the waiting requests
+    /// admitted into the freed space, in order.
+    pub fn release(&mut self, hold: u64) -> Vec<(u64, Admission)> {
+        if self.unhold(hold) {
+            self.admit_queued()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Queues the free cached copies of `prefix`'s blocks to be reused before every other cached
+    /// block.
+    pub fn demote(&mut self, prefix: &[BlockId]) {
+        for b in prefix {
+            let Some(&primary) = self.cached.get(b) else {
+                continue;
+            };
+            let others = self.copies.get(b).map_or(&[][..], Vec::as_slice);
+            for &slot in std::iter::once(&primary).chain(others) {
+                if self.refs[slot as usize] == 0 {
+                    self.gpu.demote(slot);
+                }
             }
         }
+    }
+
+    fn add_hold(&mut self, slots: Vec<(u32, u32)>) -> Option<u64> {
+        if slots.is_empty() {
+            return None;
+        }
+        self.next_hold += 1;
+        self.holds.insert(self.next_hold, slots);
+        self.stats.peak_pinned_blocks = self.stats.peak_pinned_blocks.max(self.pinned);
+        Some(self.next_hold)
+    }
+
+    fn unhold(&mut self, hold: u64) -> bool {
+        let Some(slots) = self.holds.remove(&hold) else {
+            return false;
+        };
+        for &(slot, position) in slots.iter().rev() {
+            self.unpin(slot, position, None);
+        }
+        true
+    }
+
+    /// Admits waiting requests, first come first served, while they fit.
+    fn admit_queued(&mut self) -> Vec<(u64, Admission)> {
         let mut admitted = Vec::new();
         while let Some((qid, req)) = self.queue.pop_front() {
             match self.try_admit(qid, req) {
@@ -280,30 +399,91 @@ impl Engine {
         admitted
     }
 
-    fn try_admit(&mut self, id: u64, req: EngineRequest) -> Result<Admission, EngineRequest> {
-        let bt = self.block_tokens;
-        let full = req.prompt.len();
-        let max_hit = full.min((req.prompt_tokens.saturating_sub(1) / bt) as usize);
+    /// The run of `prompt`'s first `max_hit` blocks that the pool caches, and how far the CPU tier
+    /// extends it.
+    fn lookup(&self, prompt: &[BlockId], max_hit: usize) -> (usize, usize) {
         let mut g = 0;
-        while g < max_hit && self.cached.contains_key(&req.prompt[g]) {
+        while g < max_hit && self.cached.contains_key(&prompt[g]) {
             g += 1;
         }
         let mut c = g;
         if let Some(cpu) = &self.cpu {
-            while c < full && cpu.contains(req.prompt[c]) {
+            while c < prompt.len() && cpu.contains(prompt[c]) {
                 c += 1;
             }
         }
+        (g, c)
+    }
+
+    /// Takes a reference to the copy of cached block `b` a hit takes.
+    fn pin(&mut self, b: BlockId) -> u32 {
+        let slot = self.hit_slot(b);
+        if self.refs[slot as usize] == 0 {
+            self.gpu.reuse(slot);
+            self.pinned += 1;
+        }
+        self.refs[slot as usize] += 1;
+        slot
+    }
+
+    fn unpin(&mut self, slot: u32, position: u32, next_use: Option<u64>) {
+        let s = slot as usize;
+        self.refs[s] -= 1;
+        if self.refs[s] == 0 {
+            self.pinned -= 1;
+            let id = self.ids[s];
+            self.gpu
+                .free(slot, (id != NO_BLOCK).then_some(id), position, next_use);
+        }
+    }
+
+    /// Takes the free block the GPU policy hands out, pinned, evicting what it cached.
+    fn allocate(&mut self) -> u32 {
+        let slot = self.gpu.take();
+        let old = self.ids[slot as usize];
+        if old != NO_BLOCK {
+            self.stats.gpu_evictions += 1;
+            self.forget(slot, old);
+        }
+        self.refs[slot as usize] = 1;
+        self.pinned += 1;
+        slot
+    }
+
+    /// `slot` holds prompt block `b`: a hit takes it, or another copy running requests pin.
+    fn cache(&mut self, slot: u32, b: BlockId) {
+        if let Some(&primary) = self.cached.get(&b) {
+            debug_assert_ne!(primary, slot);
+            self.copies.entry(b).or_default().push(slot);
+        } else {
+            self.cached.insert(b, slot);
+        }
+        self.ids[slot as usize] = b;
+    }
+
+    fn try_admit(&mut self, id: u64, req: EngineRequest) -> Result<Admission, EngineRequest> {
+        let bt = self.block_tokens;
+        let full = req.prompt.len();
+        let max_hit = full.min((req.prompt_tokens.saturating_sub(1) / bt) as usize);
         let kv_tokens = req.prompt_tokens + req.output_tokens.max(1) - 1;
         let total_blocks = kv_tokens.div_ceil(bt) as usize;
         let full_blocks = (kv_tokens / bt) as usize;
-        let free_hits = req.prompt[..g]
-            .iter()
-            .filter(|&&b| self.refs[self.hit_slot(b) as usize] == 0)
-            .count();
-        if total_blocks - g > self.gpu.free_blocks() - free_hits {
-            return Err(req);
-        }
+        let (g, c) = loop {
+            let (g, c) = self.lookup(&req.prompt, max_hit);
+            let free_hits = req.prompt[..g]
+                .iter()
+                .filter(|&&b| self.refs[self.hit_slot(b) as usize] == 0)
+                .count();
+            if total_blocks - g <= self.gpu.free_blocks() - free_hits {
+                break (g, c);
+            }
+            // Holds give way to a request that needs their blocks.
+            let Some(&oldest) = self.holds.keys().next() else {
+                return Err(req);
+            };
+            self.unhold(oldest);
+            self.stats.holds_released += 1;
+        };
 
         self.stats.admitted += 1;
         if let Some(o) = &self.oracle {
@@ -327,40 +507,18 @@ impl Engine {
         }
         let mut slots = Vec::with_capacity(total_blocks);
         for &b in &req.prompt[..g] {
-            let slot = self.hit_slot(b);
-            if self.refs[slot as usize] == 0 {
-                self.gpu.reuse(slot);
-                self.pinned += 1;
-            }
-            self.refs[slot as usize] += 1;
-            slots.push(slot);
+            slots.push(self.pin(b));
         }
         for j in g..total_blocks {
-            let slot = self.gpu.take();
-            let s = slot as usize;
-            let old = self.ids[s];
-            if old != NO_BLOCK {
-                self.stats.gpu_evictions += 1;
-                self.forget(slot, old);
-            }
-            let block = if j < full {
-                let b = req.prompt[j];
-                if let Some(&primary) = self.cached.get(&b) {
-                    debug_assert_ne!(primary, slot);
-                    self.copies.entry(b).or_default().push(slot);
-                } else {
-                    self.cached.insert(b, slot);
-                }
-                b
+            let slot = self.allocate();
+            if j < full {
+                self.cache(slot, req.prompt[j]);
             } else if j < full_blocks {
                 self.next_unique += 1;
-                UNIQUE_BIT | self.next_unique
+                self.ids[slot as usize] = UNIQUE_BIT | self.next_unique;
             } else {
-                NO_BLOCK
-            };
-            self.ids[s] = block;
-            self.refs[s] = 1;
-            self.pinned += 1;
+                self.ids[slot as usize] = NO_BLOCK;
+            }
             slots.push(slot);
         }
         self.stats.peak_pinned_blocks = self.stats.peak_pinned_blocks.max(self.pinned);
@@ -389,6 +547,7 @@ impl Engine {
                 gpu_blocks: g,
                 cpu_blocks: c - g,
                 full_blocks,
+                pause_ns: None,
             },
         );
         Ok(admission)
@@ -467,11 +626,11 @@ mod tests {
                 computed: 69
             }
         );
-        e.finish(1);
+        e.finish(1, 0);
         // Same 4 blocks plus 3 new ones.
         let b = e.submit(2, req(100, 7, 0, 1)).unwrap();
         assert_eq!((b.gpu_blocks, b.sources.computed), (4, 48));
-        e.finish(2);
+        e.finish(2, 0);
         // A block-aligned prompt that is fully cached still computes its last block.
         let c = e.submit(3, req(100, 7, 0, 1)).unwrap();
         assert_eq!((c.gpu_blocks, c.sources.computed), (6, 16));
@@ -482,10 +641,10 @@ mod tests {
         // 8 usable blocks.
         let mut e = engine(9, 0);
         e.submit(1, req(100, 6, 0, 1)).unwrap();
-        e.finish(1);
+        e.finish(1, 0);
         // A 4-block request reuses the 2 never-used blocks, then the cached tail 105 and 104.
         e.submit(2, req(200, 4, 0, 1)).unwrap();
-        e.finish(2);
+        e.finish(2, 0);
         assert_eq!(e.stats.gpu_evictions, 2);
         let again = e.submit(3, req(100, 6, 0, 1)).unwrap();
         assert_eq!(
@@ -503,7 +662,7 @@ mod tests {
         // A later small request waits behind it (vLLM stops at the first that does not fit).
         assert!(e.submit(3, req(300, 1, 0, 1)).is_none());
         assert_eq!((e.stats.stalls, e.queue.len()), (2, 2));
-        let admitted = e.finish(1);
+        let admitted = e.finish(1, 0);
         assert_eq!(
             admitted.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec![2, 3]
@@ -525,13 +684,13 @@ mod tests {
     fn evicted_blocks_are_restored_from_the_cpu_tier() {
         let mut e = engine(9, 64);
         e.submit(1, req(100, 6, 0, 1)).unwrap();
-        e.finish(1);
+        e.finish(1, 0);
         assert_eq!(
             e.stats.cpu_stored_blocks, 6,
             "write-through of every full block"
         );
         e.submit(2, req(200, 8, 0, 1)).unwrap();
-        e.finish(2);
+        e.finish(2, 0);
         // The GPU lost 100..105, the CPU tier still has them.
         let back = e.submit(3, req(100, 7, 0, 1)).unwrap();
         assert_eq!((back.gpu_blocks, back.cpu_blocks), (0, 6));
@@ -544,7 +703,7 @@ mod tests {
             }
         );
         assert_eq!(e.stats.restored_blocks, 6);
-        e.finish(3);
+        e.finish(3, 0);
         // After a restore only the blocks past the restored prefix are offered: one new block.
         assert_eq!(e.stats.cpu_stored_blocks, 6 + 8 + 1);
     }
@@ -554,14 +713,14 @@ mod tests {
         // 4 usable blocks.
         let mut e = engine(5, 0);
         e.submit(1, req(100, 2, 0, 1)).unwrap();
-        e.finish(1);
+        e.finish(1, 0);
         // Fully cached and block aligned: 101 is recomputed into a second copy.
         let again = e.submit(2, req(100, 2, 0, 1)).unwrap();
         assert_eq!(again.gpu_blocks, 1);
-        e.finish(2);
+        e.finish(2, 0);
         // A new prompt evicts the never-used block and then the first copy of 101.
         e.submit(3, req(200, 2, 0, 1)).unwrap();
-        e.finish(3);
+        e.finish(3, 0);
         assert_eq!(e.stats.gpu_evictions, 1);
         let back = e.submit(4, req(100, 2, 1, 1)).unwrap();
         assert_eq!(back.gpu_blocks, 2, "the second copy of 101 still hits");
@@ -572,7 +731,7 @@ mod tests {
         // 5 usable blocks.
         let mut e = engine(6, 0);
         e.submit(1, req(100, 2, 0, 1)).unwrap();
-        e.finish(1);
+        e.finish(1, 0);
         // Running: 100 and a pinned second copy of 101; the first copy of 101 is free.
         e.submit(2, req(100, 2, 0, 1)).unwrap();
         let b = e.submit(3, req(100, 2, 1, 1)).unwrap();
@@ -587,7 +746,7 @@ mod tests {
         // 2 prompt blocks and 40 output tokens: 32 + 39 KV tokens = 4 full blocks and a partial one.
         e.submit(1, req(100, 2, 0, 40)).unwrap();
         assert_eq!(e.stats.peak_pinned_blocks, 5);
-        e.finish(1);
+        e.finish(1, 0);
         assert_eq!(e.stats.cpu_stored_blocks, 4);
         // Output blocks are never shared.
         let again = e.submit(2, req(100, 2, 0, 1)).unwrap();
@@ -663,7 +822,7 @@ mod tests {
                     )
                     .unwrap();
                 hits += a.gpu_blocks as usize;
-                e.finish(i as u64);
+                e.finish(i as u64, 0);
             }
             assert_eq!(
                 hits,
@@ -677,13 +836,111 @@ mod tests {
     fn a_gpu_only_engine_recomputes_what_it_evicted() {
         let mut e = engine(9, 0);
         e.submit(1, req(100, 6, 0, 1)).unwrap();
-        e.finish(1);
+        e.finish(1, 0);
         e.submit(2, req(200, 8, 0, 1)).unwrap();
-        e.finish(2);
+        e.finish(2, 0);
         let back = e.submit(3, req(100, 6, 0, 1)).unwrap();
         assert_eq!(
             (back.gpu_blocks, back.cpu_blocks, back.sources.computed),
             (0, 0, 96)
         );
+    }
+
+    fn prefix(base: u64, blocks: u64) -> Vec<BlockId> {
+        (base..base + blocks).collect()
+    }
+
+    #[test]
+    fn a_hold_keeps_a_paused_prefix_through_other_requests() {
+        // 8 usable blocks. Request 1 leaves 4 cached prompt blocks; held, they survive a request
+        // that takes the other 4.
+        let mut e = engine(9, 0);
+        e.submit(1, req(100, 4, 1, 1)).unwrap();
+        e.finish(1, 0);
+        let hold = e.hold(&prefix(100, 4)).unwrap();
+        e.submit(2, req(200, 3, 1, 1)).unwrap();
+        e.finish(2, 0);
+        let back = e.submit(3, req(100, 4, 1, 1)).unwrap();
+        assert_eq!(back.gpu_blocks, 4);
+        assert!(e.release(hold).is_empty());
+        assert_eq!(e.stats.holds_released, 0);
+        // Nothing cached, nothing held.
+        assert_eq!(e.hold(&prefix(900, 2)), None);
+    }
+
+    #[test]
+    fn holds_give_way_to_a_request_that_needs_their_blocks() {
+        let mut e = engine(9, 0);
+        e.submit(1, req(100, 4, 1, 1)).unwrap();
+        e.finish(1, 0);
+        let hold = e.hold(&prefix(100, 4)).unwrap();
+        // 6 blocks do not fit beside the 4 held: the hold is released and the request admitted.
+        assert!(e.submit(2, req(200, 5, 1, 1)).is_some());
+        assert_eq!(e.stats.holds_released, 1);
+        assert!(e.release(hold).is_empty());
+    }
+
+    #[test]
+    fn a_prefetch_turns_a_restore_into_a_gpu_hit() {
+        let mut e = engine(9, 64);
+        e.submit(1, req(100, 4, 1, 1)).unwrap();
+        e.finish(1, 0);
+        // An 8-block request pushes request 1's blocks out of the pool; the CPU tier has them.
+        e.submit(2, req(200, 7, 1, 1)).unwrap();
+        e.finish(2, 0);
+        assert_eq!(e.prefetchable(&prefix(100, 4)), 4);
+        let hold = e.prefetch(&prefix(100, 4)).unwrap();
+        assert_eq!(
+            (e.stats.prefetched_blocks, e.prefetchable(&prefix(100, 4))),
+            (4, 0)
+        );
+        let back = e.submit(3, req(100, 4, 1, 1)).unwrap();
+        assert_eq!((back.gpu_blocks, back.cpu_blocks), (4, 0));
+        e.release(hold);
+        e.finish(3, 0);
+        assert_eq!(e.stats.restored_blocks, 0);
+    }
+
+    #[test]
+    fn demoted_blocks_are_reused_first() {
+        // 4 usable blocks: requests 1 and 2 leave 2 cached blocks each, 1's the older.
+        let mut e = engine(5, 0);
+        e.submit(1, req(100, 2, 0, 1)).unwrap();
+        e.finish(1, 0);
+        e.submit(2, req(200, 2, 0, 1)).unwrap();
+        e.finish(2, 0);
+        e.demote(&prefix(200, 2));
+        e.submit(3, req(300, 2, 0, 1)).unwrap();
+        e.finish(3, 0);
+        assert_eq!(e.submit(4, req(100, 2, 0, 1)).unwrap().gpu_blocks, 1);
+        e.finish(4, 0);
+        assert_eq!(e.submit(5, req(200, 2, 0, 1)).unwrap().gpu_blocks, 0);
+    }
+
+    #[test]
+    fn idleness_ranking_evicts_the_session_expected_back_last() {
+        let mut e = Engine::new(
+            &EngineConfig {
+                gpu_blocks: 5,
+                cpu_blocks: 0,
+                block_tokens: 16,
+                gpu_policy: GpuPolicyKind::IdleRanked,
+                cpu_policy: CpuPolicyKind::Lru,
+            },
+            None,
+        );
+        // Request 2 finishes first (LRU would evict its blocks first), but its session is expected
+        // back in 1 s, request 1's in 100 s.
+        e.submit(1, req(100, 2, 0, 1)).unwrap();
+        e.submit(2, req(200, 2, 0, 1)).unwrap();
+        e.expect_pause(1, 100_000_000_000);
+        e.expect_pause(2, 1_000_000_000);
+        e.finish(2, 0);
+        e.finish(1, 0);
+        e.submit(3, req(300, 2, 0, 1)).unwrap();
+        e.finish(3, 0);
+        assert_eq!(e.submit(4, req(200, 2, 0, 1)).unwrap().gpu_blocks, 1);
+        e.finish(4, 0);
+        assert_eq!(e.submit(5, req(100, 2, 0, 1)).unwrap().gpu_blocks, 0);
     }
 }
