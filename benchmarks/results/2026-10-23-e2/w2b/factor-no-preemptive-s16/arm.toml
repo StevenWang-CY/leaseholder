@@ -1,0 +1,10 @@
+# E2 factor: the frozen box beside 16 agent session trees with LiveKit's preemptive generation off, so the LLM
+# request starts only once the end of turn is confirmed.
+arm = "4-no-preemptive"
+label = "frozen box, preemptive generation off"
+
+[voice]
+preemptive_generation = false
+
+[agents]
+sessions = 16

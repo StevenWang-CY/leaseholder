@@ -1,0 +1,13 @@
+# E2 arm 8b: SMG 1.13.0's priority scheduler as shipped between the gateway and the frozen box (lh-smg.service). The
+# gateway sends each class as X-SMG-Priority. As shipped, SMG's built-in reservations leave 2 slots for the bulk
+# class, where background requests go (benchmarks/e2/README.md). Beside 16 agent session trees.
+arm = "8b"
+label = "frozen box behind SMG 1.13.0, as shipped"
+router = "smg"
+
+[agents]
+sessions = 16
+
+[gateway]
+upstream = "http://127.0.0.1:18090"
+upstream_priority = ["smg-header"]

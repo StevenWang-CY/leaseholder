@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from leaseholder_bench.cli import main
+from leaseholder_bench.e2 import SECRETS
 from leaseholder_bench.frontier import (
     COLUMNS,
     GPU_COLUMNS,
@@ -37,8 +38,10 @@ from leaseholder_bench.frontier import (
 )
 
 T0 = 1_800_000_000.0  # the calls run from T0 to T0 + 100 s
-VOICE = Path(__file__).resolve().parents[3] / "python" / "leaseholder_voice"
+REPO = Path(__file__).resolve().parents[3]
+VOICE = REPO / "python" / "leaseholder_voice"
 VOICE_EVENTS = VOICE / "src" / "leaseholder_voice" / "events.py"
+RESULTS = REPO / "benchmarks" / "results" / "2026-10-23-e2"
 
 
 def record(end: float, *, phase: str = "profiling", ttft: float = 100.0, **extra: Any) -> str:
@@ -612,6 +615,35 @@ def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, 
         assert a.read_bytes() == b.read_bytes(), a.name  # the figures too: same bytes every time
     assert main(["e2", "export", str(dirs[3]), "--out", str(out)]) == 1
     assert "no complete point to export" in capsys.readouterr().err
+
+
+def unredacted(data: Any) -> list[str]:
+    """The credential settings (e2.SECRETS) in a JSON document that hold anything but a redaction."""
+    if isinstance(data, list):
+        return [key for item in data for key in unredacted(item)]
+    if not isinstance(data, dict):
+        return []
+    found = [
+        key
+        for key, value in data.items()
+        if key in SECRETS and value and value not in ("<redacted>", ["<redacted>"] * len(value))
+    ]
+    return found + [key for value in data.values() for key in unredacted(value)]
+
+
+def test_the_committed_records_give_the_report_and_hold_no_credential(tmp_path: Path) -> None:
+    assert unredacted({"tenants": {"a": {"keys_sha256": ["<sha256>"]}}}) == ["keys_sha256"]
+    dirs = sorted(run.parent for run in RESULTS.glob("*/*/run.json"))  # as make reproduce-e2 does
+    assert dirs
+    rows, incomplete = load_points(dirs)
+    assert len(rows) == len(dirs) and not incomplete
+    for run_dir in dirs:
+        kept = sorted(str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file())
+        assert kept == sorted([*RECORD, "summary.json"]), run_dir
+        for path in run_dir.rglob("*.json"):
+            assert not unredacted(json.loads(path.read_text())), path
+    write_report(rows, tmp_path)
+    assert (tmp_path / "frontier.md").read_text().startswith("# E2 frontier")
 
 
 def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:

@@ -1,0 +1,64 @@
+{
+  "name": "calls4-s0",
+  "arm": "1-calls",
+  "label": "frozen box, 4 callers, voice alone",
+  "window_s": 309.0,
+  "voice": {
+    "turns": 100,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 119,
+      "p50": 1655.0,
+      "p95": 2017.2,
+      "p99": 2109.7
+    },
+    "barge_in_to_silence_ms": {
+      "n": 16,
+      "p50": 447.4,
+      "p95": 675.2,
+      "p99": 677.8
+    },
+    "barge_ins": 19
+  },
+  "background": null,
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 124,
+      "mean": 85.03,
+      "p50": 71.62,
+      "p95": 154.17,
+      "p99": 175.34,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 0.0,
+    "counters": {
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 123,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"cancelled\"}": 1,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 4,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 124,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 74532,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 2318,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"cached\"}": 71248
+    },
+    "background_first_byte_ms": {
+      "n": 0,
+      "source": "log"
+    }
+  },
+  "engine": {
+    "preemptions": 0,
+    "prompt_tokens_by_source": {
+      "local_compute": 3300,
+      "local_cache_hit": 71728,
+      "external_kv_transfer": 0
+    },
+    "refused": {
+      "max_num_queued_reqs": 0,
+      "max_num_queued_tokens": 0
+    }
+  }
+}

@@ -6,8 +6,12 @@ VLLM_REF := v0.32.0
 VLLM_SRC ?= $(HOME)/.cache/leaseholder/vllm-$(VLLM_REF)
 # Every Python package except the engine plugins (tested by test-vllm); each one has a `test` extra.
 PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,%,$(wildcard python/*/pyproject.toml)))
+# E2's committed records (lh-bench e2 export), one directory per point under its campaign, and where
+# reproduce-e2 writes their report.
+E2_RESULTS := benchmarks/results/2026-10-23-e2
+E2_REPORT ?= build/reproduce-e2
 
-.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema
+.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e2
 
 check: lint test
 
@@ -47,3 +51,9 @@ test-python:
 
 schema:
 	cargo run -q -p lh-proto --bin lh-proto-schema
+
+# E2's report (frontier.md, frontier.csv, frontier.svg, waterfall.svg) from the committed records, with the bench
+# venv; it prints the files it writes.
+reproduce-e2:
+	@cd python/leaseholder_bench && uv run -q lh-bench e2 report \
+	  $(abspath $(dir $(wildcard $(E2_RESULTS)/*/*/run.json))) --out $(abspath $(E2_REPORT))

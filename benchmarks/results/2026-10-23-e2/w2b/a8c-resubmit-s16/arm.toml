@@ -1,0 +1,12 @@
+# E2 arm 8c: abort-and-resubmit at the gateway in front of the frozen box. When a realtime request arrives, background
+# requests that have not produced a first byte are cancelled upstream and resent after the realtime request's first
+# byte. Beside 16 agent session trees.
+arm = "8c"
+label = "frozen box + preempt-resubmit before the first byte"
+
+[agents]
+sessions = 16
+
+[gateway.admission]
+policy = "preempt-resubmit"
+queue_timeout_s = 240
