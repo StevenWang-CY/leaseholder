@@ -98,6 +98,80 @@ In stock mode the reply keeps streaming for the whole barge-in.
 - Whisper large-v3-turbo on vLLM took 144 / 166 / 221 ms for 2 / 5 / 10 s utterances at concurrency 1;
 - Kokoro-82M reached first audio for one sentence in 154–179 ms.
 
+## Voice under agent load (E2)
+
+Each point: two callers (`lh-voice bots`, 25 turns each, a barge-in on a quarter of the turns) through LiveKit to the stock voice agent, beside the AIPerf replay of the 32× Claude Code corpus at a number of session trees, through `lh-gateway`, one run per point ([EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load) has the arms, [`benchmarks/e2`](../benchmarks/e2) the arm files and campaigns). V2V is read from waveforms at the callers, with fixed endpointing. Background goodput is the prompt and completion tokens per second of the agent requests that completed during the calls. The realtime first byte is the gateway's, exact from its request log. The voice SLO is V2V p95 at most 250 ms above voice alone: 1,744 ms alone in this batch, so 1,994 ms. With 50 turns a point, a p95 lies between the third- and fourth-largest turn, so single runs differ by a few hundred milliseconds at p95; the discriminating scenario is repeated (W4).
+
+**The standard scenario** (the whole corpus), W2, 2026-10-22/23. V2V p95 and, in brackets, the realtime first byte p95, in ms:
+
+| Session trees | Background tokens/s | Arm 2: stock (FCFS, 2,048-token chunks) | Arm 3: + priority | Arm 4: + step cap 512/256 (the frozen box) | Arm 7b: SGLang 0.5.22 |
+|---|---:|---:|---:|---:|---:|
+| 0 (voice alone) | 0 | 1,744 (96), frozen box | | | |
+| 8 | 2,700–2,800 | 1,886 (114) | 1,871 (80) | — | 3,228 (1,440); with HiCache 1,822 (97) |
+| 16 | 5,000–5,600 | 2,406 (446) | 2,400 (333) | 2,215 (224) | 8,477 (2,284); with HiCache 2,218 (249) |
+| 24 | 9,200–9,600 | 3,008 (1,280) | 4,360 (2,243) | 3,865 (542) | — |
+
+At 16 session trees, every arm (V2V p50 / p95 / p99 in ms; the realtime first byte p95; background tokens/s):
+
+| Arm | Point | V2V p50 / p95 / p99 | First byte p95 | Background tokens/s | Notes |
+|---|---|---:|---:|---:|---|
+| 4 | frozen box: step cap 512, long-prefill threshold 256 | 1,736 / 2,215 / 2,925 | 224 | 5,068 | |
+| 4 | step cap 1,024, no threshold | 1,687 / 2,167 / 2,479 | 144 | 5,246 | the best cell; within noise of the frozen box |
+| 4 | other cells (512/0, 1,024/256, 1,024/512) | 1,703–1,724 / 2,257–2,510 / 2,504–2,684 | 178–273 | 5,015–5,097 | |
+| 5 | `--watermark 0.1` | 1,703 / 2,495 / 2,986 | 216 | 5,001 | |
+| 5 | `--max-num-queued-tokens 8192` | 1,693 / 2,053 / 2,173 | 137 | 4,454 | 2 of 50 voice turns failed: the limit refuses realtime requests too (43 refusals) |
+| 6 | static cap, 2 background in flight | 1,755 / 2,208 / 2,729 | 236 | 5,569 | the highest goodput |
+| 6 | static cap, 8 | 1,683 / 3,065 / 3,647 | 510 | 5,296 | |
+| 6 | static reservation, 2,048 tokens | 1,688 / 2,328 / 3,068 | 276 | 4,922 | |
+| 7a | `--max-num-seqs 12` | 1,710 / 2,104 / 2,984 | 161 | 4,981 | |
+| 7a | `--max-num-seqs 12` with #54530 | 1,728 / 2,736 / 3,103 | 461 | 4,897 | |
+| 7b | SGLang 0.5.22, priority preemption | 1,882 / 8,477 / 9,458 | 2,284 | 5,543 | no host tier: half its prompt tokens hit, against about 90% for vLLM with its CPU tier |
+| 7b | SGLang with HiCache (4×, written through) | 1,720 / 2,218 / 4,088 | 249 | 4,924 | the host tier, for parity with vLLM's |
+| 8a | llm-d flow control, emulated (ceilings 6/6/6) | 1,768 / 2,468 / 2,821 | 216 | 5,413 | 1 background request shed |
+| 8b | SMG 1.13.0, as shipped | 1,723 / 2,202 / 3,255 | 237 | 5,545 | |
+| 8c | preempt-resubmit before the first byte | 1,678 / 2,520 / 2,711 | 235 | 5,090 | 11 resubmissions |
+| factor | frozen box, preemptive generation off | 1,687 / 2,278 / 2,953 | 294 | 5,121 | |
+| calls | frozen box, 4 callers / 6 callers | 1,747 / 2,599 / 3,135 · 1,735 / 2,670 / 3,471 | 428 · 413 | 5,296 · 5,067 | 4 callers alone: 1,655 / 2,017 / 2,110 |
+
+What the standard scenario says:
+- **At 8 session trees every vLLM arm holds the voice SLO** (1,871–1,886 ms). SGLang does not (3,228 ms).
+- **At 16, the realistic operating point, none clearly does, and the arms are within noise of each other.** The best stock cell, `--max-num-seqs 12`, SMG and the static cap of 2 land at 2,104–2,215 ms, 100–220 ms above the SLO; `--max-num-queued-tokens` lands under it only by refusing work, voice turns included. No gateway policy or engine knob separates itself from tuned stock here.
+- **The step cap shows in the realtime first byte, not in V2V.** At 24 session trees, priority scheduling alone gives a first-byte p95 of 2,243 ms and the 512/256 step cap 542 ms, but V2V p95 is 4,360 against 3,865 ms: the rest of the turn, decoding to the first sentence and TTS, still shares the GPU with agent prefills. No arm holds the SLO at 24.
+- **SGLang's deficit was its missing host tier.** Without one it is the worst arm at every load; with HiCache, written through like vLLM's CPU tier, it matches vLLM: 1,822 ms at 8 session trees and 2,218 ms at 16, against the frozen box's 2,215 ms.
+- **Preemptive generation off** changes nothing measurable (2,278 against 2,215 ms), and **more callers** cost what they cost alone and some: four callers beside 16 session trees reach 2,599 ms against 2,017 ms alone.
+
+**The discriminating scenario** (W2's third batch, 2026-10-23): 24 session trees of the 48 traces with the largest contexts (`weka-x32-long`, a median of 13.3k tokens a request), beside the same two callers, one run per point. The pool holds two or three of these contexts, and the agents' working set is far beyond both tiers: under the frozen box 98% of their prompt tokens are computed, and agents wait about a minute for a first token under every arm. It is the regime where running agent KV fills the pool. V2V p50 / p95 / p99 and the realtime first byte p95 in ms; background tokens/s:
+
+| Arm | Point | V2V p50 / p95 / p99 | First byte p95 | Background tokens/s | Notes |
+|---|---|---:|---:|---:|---|
+| 4 | frozen box | 4,270 / 10,811 / 12,427 | 8,556 | 3,703 | |
+| 4 | step cap 1,024, no threshold | 4,816 / 8,789 / 10,024 | 6,523 | 4,097 | |
+| 5 | `--watermark 0.1` | 4,843 / 10,647 / 13,583 | 8,201 | 3,712 | |
+| 5 | `--max-num-queued-tokens 8192` | 1,797 / 2,013 / 2,032 | 56 | 5,597 | 48 of 50 voice turns failed: 1,132 requests refused, voice turns among them |
+| 6 | static cap, 2 / 8 background in flight | 3,363 / 8,573 / 10,385 · 5,713 / 9,876 / 11,369 | 6,320 · 7,502 | 3,566 · 3,785 | |
+| 6 | static reservation, 2,048 tokens | 3,311 / 5,706 / 6,317 | 3,631 | 3,633 | |
+| 7a | `--max-num-seqs 12` with #54530 | 4,687 / 10,930 / 11,870 | 7,964 | 3,718 | |
+| 7b | SGLang 0.5.22, priority preemption | 5,367 / 12,051 / 17,937 | 6,451 | 3,678 | |
+| 7b | SGLang with HiCache (4×, written through) | 4,274 / 10,497 / 13,193 | 5,000 | 4,908 | |
+| 8a | llm-d flow control, emulated | 4,221 / 10,992 / 11,277 | 8,172 | 4,006 | 60 background requests shed |
+| 8b | SMG 1.13.0 | 3,511 / 11,050 / 13,839 | 8,783 | 3,557 | |
+| 8c | preempt-resubmit before the first byte | 1,960 / 2,591 / 2,684 | 374 | 3,901 | 1,080 resubmissions; agent TTFT p99 140 s |
+
+The voice turn by stage (means over the replies, ms; `waterfall.svg` draws them):
+
+| Point | Endpointing | Reply to first sentence | TTS first audio | Transport and playout | Mean V2V | LLM first token |
+|---|---:|---:|---:|---:|---:|---:|
+| frozen box | 827 | 3,651 | 276 | 326 | 5,080 | 2,701 |
+| static reservation, 2,048 tokens | 830 | 2,173 | 250 | 351 | 3,604 | 1,068 |
+| preempt-resubmit | 827 | 627 | 223 | 358 | 2,034 | 265 |
+
+What the discriminating scenario says:
+- **Every arm but one collapses, and the loss is the wait for KV.** V2V p95 is 5.7–12.1 s. Endpointing and TTS do not move; the turn loses its seconds between the end of the turn and the first sentence, most of them before the LLM's first token.
+- **Engine priority does not help here**, in any form measured: vLLM's priority scheduling with any step cap, #54530 (it preempts at the request-count cap, which does not bind here), SGLang's priority preemption, with or without its host tier. SGLang's host tier lifts agent goodput by a third, not the voice tail.
+- **Static answers help or cheat.** The 2,048-token reservation halves the tail (5.7 s), still 3.7 s over the SLO; concurrency caps do not help, because two contexts fill the pool. vLLM's queue limit meets the SLO only by refusing the voice turns.
+- **Preempt-resubmit holds the tail** at 2.6 s p95, 0.6 s over the SLO, at the frozen box's goodput: it aborts the background requests that have no first byte yet, which frees their KV at once, and their resubmissions restore the prefixes already written through to the CPU tier rather than recompute them (the engine computed 0.65M prompt tokens and restored 0.62M, against 1.48M and 0.06M under the frozen box). Its cost is the agents' tail. It cannot reach a request that is already decoding, which an engine-side preemption can (arm 9).
+- **An instrument note.** vLLM counts a preemption when the victim's next output reaches the frontend, so the per-point preemption counts are lower bounds ([the KV case](#the-kv-case-make-room)).
+
 ## The control plane: lh-gateway in front of the engine
 
 On cyan, the voice agent and the agent replay reach the engine through `lh-gateway`:
