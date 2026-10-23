@@ -1,0 +1,26 @@
+# W2's second E2 batch: the arms that take an earlier arm's winner. At 16 sessions the frozen box (step cap 512,
+# long-prefill threshold 256) had the lowest V2V p95 of arms 2-4 at the same background goodput, so it is the engine
+# here. Frozen-engine points first, then the flag variants, so the engine restarts three times.
+#   benchmarks/e2/campaign.sh benchmarks/e2/w2b.campaign
+
+# The frozen box at 24 sessions, and the gateway-side arms in front of it
+arms/a4-b512-t256-s24.toml
+arms/a6-cap2-s16.toml
+arms/a6-cap8-s16.toml
+arms/a6-reserve2048-s16.toml
+arms/a8a-flow-s16.toml
+arms/a8b-smg-s16.toml
+arms/a8c-resubmit-s16.toml
+
+# Factors on the frozen box: preemptive generation off, calls per GPU
+arms/factor-no-preemptive-s16.toml
+arms/calls4-s0.toml
+arms/calls4-s16.toml
+arms/calls6-s16.toml
+
+# vLLM's own headroom knobs on the frozen box
+arms/a5-watermark10-s16.toml
+arms/a5-queued8192-s16.toml
+
+# The second-best step cap at 24 sessions
+arms/a4-b1024-t256-s24.toml

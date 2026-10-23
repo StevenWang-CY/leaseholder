@@ -1,0 +1,7 @@
+# E2 arm 4, the best cell at 16 sessions (step cap 512, long-prefill threshold 256: the frozen box), beside 24 agent
+# session trees.
+arm = 4
+label = "priority, step cap 512, long-prefill threshold 256 (frozen box)"
+
+[agents]
+sessions = 24

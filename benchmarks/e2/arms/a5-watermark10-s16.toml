@@ -1,0 +1,10 @@
+# E2 arm 5: the best arm 4 cell (the frozen box) with vLLM's KV watermark at 10%: a tenth of the KV blocks stay free
+# when the scheduler admits a waiting or preempted request. Beside 16 agent session trees.
+arm = 5
+label = "frozen box + watermark 0.1"
+
+[agents]
+sessions = 16
+
+[engine]
+flags = ["--watermark", "0.1"]

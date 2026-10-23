@@ -1,0 +1,11 @@
+# E2 arm 5: the frozen box with vLLM's queued-token limit at 8,192, about 1.6 s of prefill at the step cap: new
+# requests get 503 while the prompt tokens of the requests in prefill exceed it, voice requests included. Beside 16
+# agent session trees.
+arm = 5
+label = "frozen box + max-num-queued-tokens 8192"
+
+[agents]
+sessions = 16
+
+[engine]
+flags = ["--max-num-queued-tokens", "8192"]

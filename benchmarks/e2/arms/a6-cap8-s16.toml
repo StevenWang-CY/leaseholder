@@ -1,0 +1,12 @@
+# E2 arm 6: an operator's cap in front of the frozen box, at most 8 background requests in flight. Beside 16 agent
+# session trees.
+arm = 6
+label = "frozen box + static cap, 8 background in flight"
+
+[agents]
+sessions = 16
+
+[gateway.admission]
+policy = "static-cap"
+background_max_in_flight = 8
+queue_timeout_s = 240

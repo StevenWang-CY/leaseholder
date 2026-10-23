@@ -1,0 +1,13 @@
+# E2 arm 8a: llm-d's flow control, emulated at the gateway, in front of the frozen box. Every class's ceiling is 6
+# requests in flight, so background fills at most 6 and a realtime request that finds 6 in flight sheds the newest
+# background one. Beside 16 agent session trees.
+arm = "8a"
+label = "frozen box + flow control (llm-d, emulated), ceilings 6/6/6"
+
+[agents]
+sessions = 16
+
+[gateway.admission]
+policy = "flow-control"
+ceilings = { realtime = 6, interactive = 6, background = 6 }
+queue_timeout_s = 240

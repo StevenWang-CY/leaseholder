@@ -1,0 +1,9 @@
+# E2 calls per GPU: 6 callers on the frozen box beside 16 agent session trees.
+arm = "4-calls"
+label = "frozen box, 6 callers"
+
+[voice]
+callers = 6
+
+[agents]
+sessions = 16

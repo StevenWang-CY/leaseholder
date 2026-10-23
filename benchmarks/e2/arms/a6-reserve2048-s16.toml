@@ -1,0 +1,13 @@
+# E2 arm 6: an equal-size static reservation in front of the frozen box. Background requests leave 2,048 of the pool's
+# 36,400 tokens free: two concurrent voice turns at their longest (arm 1 averaged 646 prompt and 23 completion tokens
+# a turn). Beside 16 agent session trees.
+arm = 6
+label = "frozen box + token reservation, 2,048 tokens"
+
+[agents]
+sessions = 16
+
+[gateway.admission]
+policy = "token-reservation"
+reserved_tokens = 2048
+queue_timeout_s = 240

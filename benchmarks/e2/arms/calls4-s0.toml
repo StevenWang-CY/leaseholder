@@ -1,0 +1,6 @@
+# E2 calls per GPU: 4 callers on the frozen box with no agents.
+arm = "1-calls"
+label = "frozen box, 4 callers, voice alone"
+
+[voice]
+callers = 4
