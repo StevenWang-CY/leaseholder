@@ -12,8 +12,8 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
 
 1. ``max_preemptions_per_step``: before the running requests are scheduled in a step, the waiting request of the
    highest priority that lacks free KV blocks for its whole remaining sequence preempts running requests of a
-   strictly lower priority, the lowest priority first and, within it, the longest (the most KV, unless shared),
-   through the stock ``_preempt_request``. As few as needed, at most this many, and none if that many would not make
+   strictly lower priority, the lowest priority first and, within it, the one whose sequence takes the most blocks
+   (the most KV, unless shared), the latest arrival among equals, through the stock ``_preempt_request``. As few as needed, at most this many, and none if that many would not make
    it fit. Preempting before the running loop means no victim is un-scheduled (vLLM #59907), and a victim is not
    resumed in the step that preempted it. Blocks whose free is deferred (async scheduling with a KV-consumer
    connector, as on the frozen box) count as free: they, like the victims', are free by the next step, when the
@@ -141,10 +141,11 @@ HELPERS = '''
     def _make_room(self, request: Request, timestamp: float) -> set[Request]:
         """Preempt running requests of a lower priority than `request` until it
         is no block short, and return them: the lowest priority first and,
-        within it, the longest (the most KV, unless shared), so that as few as
-        possible are preempted; none if `max_preemptions_per_step` of them would
-        not do. Deferred frees count as free: like the victims', they land by
-        the next step."""
+        within it, the one whose sequence takes the most blocks (the most KV,
+        unless shared), so that as few as possible are preempted, and the latest
+        arrival among equals, as vLLM's own preemption picks; none if
+        `max_preemptions_per_step` of them would not do. Deferred frees count as
+        free: like the victims', they land by the next step."""
         if self.connector is not None and self.connector.has_pending_block_frees():
             # Pending transfers free blocks instead, as the running loop waits.
             return set()
@@ -157,7 +158,11 @@ HELPERS = '''
         if num_short <= 0:
             return set()
         candidates.sort(
-            key=lambda req: (req.priority, req.num_tokens, req.arrival_time),
+            key=lambda req: (
+                req.priority,
+                cdiv(req.num_tokens, self.block_size),
+                req.arrival_time,
+            ),
             reverse=True,
         )
         victims: list[Request] = []

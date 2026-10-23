@@ -247,13 +247,14 @@ def test_the_per_step_cap(module, model, cap, victims):
     assert ("voice" in scheduled(out)) == bool(victims)
 
 
-def test_victim_choice_longest_then_latest_arrival(module, model):
-    """Among runners of the same priority, the longest goes first; between equals, the latest arrival."""
+def test_victim_choice_most_blocks_then_latest_arrival(module, model):
+    """Among runners of the same priority, the one whose sequence takes the most blocks goes first; between equals,
+    the latest arrival, even one a few tokens shorter within the same block count."""
     sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2})
     run(
         sched,
         request("rt", blocks(12), priority=0, arrival=0),
-        request("early", blocks(6), priority=2, arrival=1),
+        request("early", blocks(6) + 4, priority=2, arrival=1),  # 4 tokens longer, as many blocks
         request("large", blocks(7), priority=2, arrival=2),
         request("late", blocks(6), priority=2, arrival=3),
     )
