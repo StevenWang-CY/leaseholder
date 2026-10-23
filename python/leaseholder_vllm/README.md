@@ -37,6 +37,17 @@ The offload manager and its policies are plain Python, so the tests run without 
 VLLM_SRC=~/src/vllm-v0.32.0 uv run --extra test pytest      # in python/leaseholder_vllm
 ```
 
-Without `VLLM_SRC` the tests use the installed vLLM (the engine environment on a GPU node), and they skip when neither is available. `tests/test_pr54530.py` builds the `pr54530` engine variant ([`deploy/phastform/variants`](../../deploy/phastform/variants)) from the same checkout's scheduler and checks that it changes nothing but the PR's lines.
+Without `VLLM_SRC` the tests use the installed vLLM (the engine environment on a GPU node), and they skip when neither is available. `tests/test_pr54530.py` and `tests/test_make_room_build.py` build the `pr54530` and `make-room` engine variants ([`deploy/phastform/variants`](../../deploy/phastform/variants)) from the same checkout's scheduler and check that each changes nothing but its own lines.
+
+`tests/test_make_room.py` checks the `make-room` variant's behavior on vLLM's real v1 scheduler, on CPU, with hand-made requests and no model, as vLLM's own `tests/v1/core` do: preemption for a waiting higher-priority request under KV pressure (victims, the per-step cap, deferred block frees), the budget cap, the reserve, and stock behavior with the switches off or under FCFS. The scheduler needs torch and vLLM's dependencies, too much for CI, so these tests skip under `VLLM_SRC` and run on the GPU node, against the engine environment with pytest beside it (as `tests/live/run.sh` keeps it). `VLLM_TARGET_DEVICE=cpu` keeps them off the GPU:
+
+```sh
+tools=~/leaseholder/cache/testtools
+[[ -d $tools/pytest ]] || ~/.local/bin/uv pip install -q --target "$tools" pytest
+cd ~/leaseholder/src/python/leaseholder_vllm
+VLLM_TARGET_DEVICE=cpu PYTHONPATH=$tools ~/leaseholder/venvs/engine/bin/python -m pytest -q -p no:cacheprovider tests/test_make_room.py
+```
+
+Elsewhere, an environment with CPU torch 2.13 and vLLM 0.32.0's Python dependencies runs them on the source checkout instead, with `VLLM_SRC` unset: `VLLM_TARGET_DEVICE=cpu PYTHONPATH=~/.cache/leaseholder/vllm-v0.32.0 python -m pytest tests/test_make_room.py`.
 
 The live check runs on the GPU node against the running engine. `tests/live/run.sh` links the `engine-check.conf` drop-in into `lh-engine` (the frozen configuration with `LeaseConnector` and a recording `LeasePolicy`), restarts the engine, runs `tests/live/test_live_engine.py`, and restores the frozen configuration, also on failure. It checks that the hint reaches both plugins, that `X-Session-ID` reaches the GPU-tier KV events and the hint, and that a CPU restore shows up in the hit receipt.
