@@ -13,7 +13,10 @@ WorkingDirectory=%h/leaseholder
 # DeepGEMM's FP8 kernels JIT-compile with nvcc >= 13.0. FlashInfer's JIT also needs curand headers, which the
 # CUDA 13.0 toolkit on this host lacks; bootstrap.sh links the venv's copies into cache/curand_include.
 Environment=CUDA_HOME=/usr/local/cuda-13.0
-Environment=PATH=%h/leaseholder/venvs/engine/bin:/usr/local/cuda-13.0/bin:/usr/local/bin:/usr/bin:/bin
+# vLLM's /server_info lists the venv's packages with `uv pip list` when the venv has no pip, so uv (in ~/.local/bin)
+# is on the path and VIRTUAL_ENV names the venv; without them the endpoint answers 500.
+Environment=PATH=%h/leaseholder/venvs/engine/bin:/usr/local/cuda-13.0/bin:/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+Environment=VIRTUAL_ENV=%h/leaseholder/venvs/engine
 Environment=FLASHINFER_EXTRA_CUDAFLAGS=-I%h/leaseholder/cache/curand_include
 Environment=FLASHINFER_EXTRA_CFLAGS=-I%h/leaseholder/cache/curand_include
 Environment=FLASHINFER_WORKSPACE_BASE=%h/leaseholder/cache/flashinfer
