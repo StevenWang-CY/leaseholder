@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use axum::response::{IntoResponse, Response};
 use http::StatusCode;
 use http::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use lh_core::admission::Deferral;
 use lh_proto::{SessionId, SloClass};
 use tracing::Level;
 
@@ -35,6 +36,12 @@ pub(crate) struct Exchange {
     pub forwarded: bool,
     /// How long the request waited at the admission point; `None` without one.
     pub admission_wait: Option<Duration>,
+    /// Why policy leaseholder deferred it.
+    pub deferred: Option<Deferral>,
+    /// Whether policy leaseholder admitted it regardless, after `max_defer_s`.
+    pub aged: bool,
+    /// Whether policy leaseholder capped its reply.
+    pub degraded: bool,
     /// How many times it was sent upstream again after a preemption.
     pub resubmits: u32,
     pub first_byte: Option<Duration>,
@@ -56,6 +63,9 @@ impl Exchange {
             status: None,
             forwarded: false,
             admission_wait: None,
+            deferred: None,
+            aged: false,
+            degraded: false,
             resubmits: 0,
             first_byte: None,
             summary: Summary::default(),
@@ -182,6 +192,9 @@ impl Drop for Exchange {
                     status,
                     outcome = outcome.map(Outcome::as_str),
                     admission_wait_ms = self.admission_wait.map(ms),
+                    deferred = self.deferred.map(Deferral::as_str),
+                    aged = self.aged.then_some(true),
+                    degraded = self.degraded.then_some(true),
                     resubmits = (self.resubmits > 0).then_some(self.resubmits),
                     first_byte_ms = self.first_byte.map(ms),
                     total_ms = ms(total),

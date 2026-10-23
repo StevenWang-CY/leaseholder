@@ -6,8 +6,10 @@
 
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use lh_core::admission::Deferral;
 use lh_proto::SloClass;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
@@ -17,6 +19,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::{Registry, Unit};
 
+use crate::realtime::Phase;
 use crate::usage::Usage;
 
 /// The API routes, as the `route` label.
@@ -191,6 +194,21 @@ struct RefusalLabels {
     reason: &'static str,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ReasonLabels {
+    reason: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct OversizeLabels {
+    oversize: bool,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct StateLabels {
+    state: &'static str,
+}
+
 type Histograms<L> = Family<L, Histogram, fn() -> Histogram>;
 
 #[derive(Debug)]
@@ -214,6 +232,14 @@ pub(crate) struct Metrics {
     refused: Family<RefusalLabels, Counter>,
     resubmits: Family<ClassLabels, Counter>,
     discarded_tokens: Family<ClassLabels, Counter>,
+    deferred: Family<ReasonLabels, Counter>,
+    deferral: Histograms<ReasonLabels>,
+    aged: Family<OversizeLabels, Counter>,
+    degraded: Counter,
+    false_alarms: Counter,
+    false_alarm_token_seconds: Counter<f64, AtomicU64>,
+    realtime_sessions: Family<StateLabels, Gauge>,
+    state_timeouts: Family<StateLabels, Counter>,
 }
 
 impl Metrics {
@@ -238,6 +264,14 @@ impl Metrics {
             refused: Family::default(),
             resubmits: Family::default(),
             discarded_tokens: Family::default(),
+            deferred: Family::default(),
+            deferral: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
+            aged: Family::default(),
+            degraded: Counter::default(),
+            false_alarms: Counter::default(),
+            false_alarm_token_seconds: Counter::default(),
+            realtime_sessions: Family::default(),
+            state_timeouts: Family::default(),
         };
         for class in SloClass::ALL.map(SloClass::as_str) {
             for outcome in Outcome::ALL.map(Outcome::as_str) {
@@ -265,6 +299,19 @@ impl Metrics {
         }
         for kind in UpstreamError::ALL.map(UpstreamError::as_str) {
             create(&metrics.upstream_errors, KindLabels { kind });
+        }
+        for reason in Deferral::ALL.map(Deferral::as_str) {
+            create(&metrics.deferred, ReasonLabels { reason });
+            create(&metrics.deferral, ReasonLabels { reason });
+        }
+        for oversize in [false, true] {
+            create(&metrics.aged, OversizeLabels { oversize });
+        }
+        for state in Phase::ALL.map(Phase::as_str) {
+            create(&metrics.realtime_sessions, StateLabels { state });
+            if state != Phase::Idle.as_str() {
+                create(&metrics.state_timeouts, StateLabels { state });
+            }
         }
         for field in crate::sanitize::sanitized_fields() {
             create(&metrics.sanitized, FieldLabels { field });
@@ -371,6 +418,53 @@ impl Metrics {
             "Estimated prompt tokens of the upstream attempts preemptions dropped: at most the prefill they \
              discarded",
             self.discarded_tokens.clone(),
+        );
+        r.register(
+            "admission_deferred",
+            "Background requests policy leaseholder deferred, by what held them back when they arrived: the \
+             headroom of the armed realtime sessions, or the critical window's prefill budget",
+            self.deferred.clone(),
+        );
+        r.register_with_unit(
+            "admission_deferral",
+            "Time from arrival to admission of the background requests policy leaseholder deferred, by what \
+             held them back when they arrived",
+            Unit::Seconds,
+            self.deferral.clone(),
+        );
+        r.register(
+            "admission_aged",
+            "Deferred requests admitted regardless after max_defer_s; oversize: their estimate alone was over \
+             what the headroom leaves background requests",
+            self.aged.clone(),
+        );
+        r.register(
+            "admission_degraded",
+            "Realtime requests whose reply policy leaseholder capped, because the background requests in flight \
+             left less than one turn's headroom free",
+            self.degraded.clone(),
+        );
+        r.register(
+            "admission_false_alarms",
+            "Headroom armings that no realtime request of their session followed: the session left the armed \
+             states, timed out or closed first",
+            self.false_alarms.clone(),
+        );
+        r.register(
+            "admission_false_alarm_token_seconds",
+            "Estimated background tokens the headroom held back during false alarms, times how long",
+            self.false_alarm_token_seconds.clone(),
+        );
+        r.register(
+            "realtime_sessions",
+            "Realtime sessions policy leaseholder follows, by the state of their turn",
+            self.realtime_sessions.clone(),
+        );
+        r.register(
+            "realtime_state_timeouts",
+            "Realtime sessions that stayed in a state of their turn for state_timeout_s without an event, by the \
+             state: a lost or missing event",
+            self.state_timeouts.clone(),
         );
         self
     }
@@ -482,6 +576,56 @@ impl Metrics {
         self.resubmits.get_or_create(&labels).inc();
     }
 
+    /// Policy leaseholder deferred a background request.
+    pub fn deferred(&self, reason: Deferral) {
+        let labels = ReasonLabels {
+            reason: reason.as_str(),
+        };
+        self.deferred.get_or_create(&labels).inc();
+    }
+
+    /// A deferred background request was admitted after waiting `wait`.
+    pub fn deferral(&self, reason: Deferral, wait: Duration) {
+        let labels = ReasonLabels {
+            reason: reason.as_str(),
+        };
+        self.deferral
+            .get_or_create(&labels)
+            .observe(wait.as_secs_f64());
+    }
+
+    /// A deferred request was admitted regardless.
+    pub fn aged(&self, oversize: bool) {
+        self.aged.get_or_create(&OversizeLabels { oversize }).inc();
+    }
+
+    /// A realtime request's reply was capped.
+    pub fn degraded(&self) {
+        self.degraded.inc();
+    }
+
+    /// A headroom arming ended with no realtime request, having held back `token_seconds` of background work.
+    pub fn false_alarm(&self, token_seconds: f64) {
+        self.false_alarms.inc();
+        self.false_alarm_token_seconds
+            .inc_by(token_seconds.max(0.0));
+    }
+
+    /// The gauge of the realtime sessions in `phase`.
+    pub fn realtime_sessions(&self, phase: Phase) -> Gauge {
+        self.realtime_sessions.get_or_create_owned(&StateLabels {
+            state: phase.as_str(),
+        })
+    }
+
+    /// A realtime session's `phase` timed out.
+    pub fn state_timeout(&self, phase: Phase) {
+        let labels = StateLabels {
+            state: phase.as_str(),
+        };
+        self.state_timeouts.get_or_create(&labels).inc();
+    }
+
     pub fn refused(&self, class: SloClass, reason: Refusal) {
         let labels = RefusalLabels {
             class: class.as_str(),
@@ -531,6 +675,25 @@ impl Metrics {
     pub fn sanitized_count(&self, field: &'static str) -> u64 {
         self.sanitized
             .get(&FieldLabels { field })
+            .map_or(0, |counter| counter.get())
+    }
+
+    /// The false alarms, and their token-seconds.
+    #[cfg(test)]
+    pub fn false_alarms(&self) -> (u64, f64) {
+        (
+            self.false_alarms.get(),
+            self.false_alarm_token_seconds.get(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn state_timeouts(&self, phase: Phase) -> u64 {
+        let labels = StateLabels {
+            state: phase.as_str(),
+        };
+        self.state_timeouts
+            .get(&labels)
             .map_or(0, |counter| counter.get())
     }
 }

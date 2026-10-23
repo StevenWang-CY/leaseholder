@@ -35,8 +35,8 @@ use crate::admission::Ticket;
 use crate::exchange::Exchange;
 use crate::metrics::{Outcome, Refusal, Route, UpstreamError};
 use crate::sanitize::{
-    REQUEST_ID, resolve_class, resolve_session, rewrite_body, sanitize_headers, set_engine_headers,
-    strip_hop_by_hop,
+    REQUEST_ID, cap_reply, resolve_class, resolve_session, rewrite_body, sanitize_headers,
+    set_engine_headers, strip_hop_by_hop,
 };
 use crate::server::{App, Shared};
 use crate::usage::Scanner;
@@ -121,7 +121,7 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
     shared.metrics.request_body(route, read - ex.received);
     let signals = shared.upstream_priority;
     let priority = signals.body.then(|| class.engine_priority());
-    let body = match rewrite_body(&body, &tenant.cache_salt, priority, &shared.metrics) {
+    let mut body = match rewrite_body(&body, &tenant.cache_salt, priority, &shared.metrics) {
         Ok(body) => body,
         Err(err) => return ex.error(StatusCode::BAD_REQUEST, "invalid_json", err.to_string()),
     };
@@ -142,6 +142,14 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
                 Ok(ticket) => {
                     let waited = ticket.as_ref().map_or(Duration::ZERO, Ticket::waited);
                     ex.admission_wait = Some(waited);
+                    if let Some(ticket) = &ticket {
+                        ex.deferred = ticket.deferred();
+                        ex.aged = ticket.aged();
+                        if let Some(cap) = ticket.reply_cap() {
+                            body.json = cap_reply(&body.json, route, cap);
+                            ex.degraded = true;
+                        }
+                    }
                     start += waited;
                     ticket
                 }

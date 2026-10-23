@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use http::uri::{Authority, Scheme, Uri};
 use lh_core::FROZEN_BOX_POOL_TOKENS;
-use lh_core::admission::{Ceilings, Policy};
+use lh_core::admission::{Ceilings, Leaseholder, Policy, Trigger};
 use lh_proto::SloClass;
 use serde::Deserialize;
 
@@ -92,8 +92,15 @@ pub struct Admission {
     pub policy: Policy,
     /// The requests each class's queue may hold; a request that would wait beyond them gets 429.
     pub queue_limit: usize,
-    /// How long a request may wait before it gets 503.
-    pub queue_timeout: Duration,
+    /// How long a request may wait: `queue_timeout_s`, after which it gets 503, or under policy leaseholder,
+    /// which refuses no request for its wait, `max_defer_s`, after which it is admitted regardless.
+    pub max_wait: Duration,
+    /// How long a realtime session stays in a state of its turn that no event moves it on from
+    /// (`state_timeout_s`). Only policy leaseholder keeps the sessions' states.
+    pub state_timeout: Option<Duration>,
+    /// The engine's step budget (`max_num_batched_tokens`), in whose steps policy leaseholder's throttle prices a
+    /// background request's prefill; `None` without the throttle.
+    pub step_tokens: Option<u64>,
 }
 
 /// One entry of `upstream_priority`.
@@ -200,7 +207,7 @@ impl Default for RawConfig {
 }
 
 /// `[admission]` as written. Each key but `policy` belongs to some of the policies, and setting it for another
-/// one is an error, so no setting silently does nothing.
+/// one is an error, so no setting silently does nothing; nor is a key of a mechanism switched off.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawAdmission {
@@ -209,6 +216,16 @@ struct RawAdmission {
     pool_tokens: Option<u64>,
     reserved_tokens: Option<u64>,
     ceilings: Option<RawCeilings>,
+    headroom: Option<bool>,
+    headroom_tokens: Option<u64>,
+    trigger: Option<TriggerName>,
+    throttle: Option<bool>,
+    critical_prefill_budget_ms: Option<f64>,
+    max_num_batched_tokens: Option<u64>,
+    degrade: Option<bool>,
+    degrade_max_tokens: Option<u32>,
+    max_defer_s: Option<f64>,
+    state_timeout_s: Option<f64>,
     queue_limit: Option<usize>,
     queue_timeout_s: Option<f64>,
 }
@@ -230,6 +247,7 @@ enum PolicyName {
     TokenReservation,
     FlowControl,
     PreemptResubmit,
+    Leaseholder,
 }
 
 impl PolicyName {
@@ -240,8 +258,17 @@ impl PolicyName {
             Self::TokenReservation => "token-reservation",
             Self::FlowControl => "flow-control",
             Self::PreemptResubmit => "preempt-resubmit",
+            Self::Leaseholder => "leaseholder",
         }
     }
+}
+
+/// `trigger`: what arms policy leaseholder's headroom.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TriggerName {
+    Onset,
+    Request,
 }
 
 #[derive(Deserialize)]
@@ -398,6 +425,20 @@ impl RawAdmission {
             ],
             PolicyName::FlowControl => &["ceilings", "queue_limit", "queue_timeout_s"],
             PolicyName::PreemptResubmit => &["queue_limit", "queue_timeout_s"],
+            PolicyName::Leaseholder => &[
+                "pool_tokens",
+                "headroom",
+                "headroom_tokens",
+                "trigger",
+                "throttle",
+                "critical_prefill_budget_ms",
+                "max_num_batched_tokens",
+                "degrade",
+                "degrade_max_tokens",
+                "max_defer_s",
+                "state_timeout_s",
+                "queue_limit",
+            ],
         };
         let set = [
             (
@@ -407,11 +448,32 @@ impl RawAdmission {
             ("pool_tokens", self.pool_tokens.is_some()),
             ("reserved_tokens", self.reserved_tokens.is_some()),
             ("ceilings", self.ceilings.is_some()),
+            ("headroom", self.headroom.is_some()),
+            ("headroom_tokens", self.headroom_tokens.is_some()),
+            ("trigger", self.trigger.is_some()),
+            ("throttle", self.throttle.is_some()),
+            (
+                "critical_prefill_budget_ms",
+                self.critical_prefill_budget_ms.is_some(),
+            ),
+            (
+                "max_num_batched_tokens",
+                self.max_num_batched_tokens.is_some(),
+            ),
+            ("degrade", self.degrade.is_some()),
+            ("degrade_max_tokens", self.degrade_max_tokens.is_some()),
+            ("max_defer_s", self.max_defer_s.is_some()),
+            ("state_timeout_s", self.state_timeout_s.is_some()),
             ("queue_limit", self.queue_limit.is_some()),
             ("queue_timeout_s", self.queue_timeout_s.is_some()),
         ];
         if let Some((key, _)) = set.iter().find(|(key, set)| *set && !reads.contains(key)) {
             return Err(format!("admission.{key} does not apply to policy {name}"));
+        }
+        // SMG's bulk class queues 1,024 requests.
+        let queue_limit = self.queue_limit.unwrap_or(1024);
+        if let PolicyName::Leaseholder = self.policy {
+            return self.leaseholder(queue_limit).map(Some);
         }
         let needs = |key: &str| format!("admission: policy {name} needs {key}");
         let policy = match self.policy {
@@ -468,17 +530,128 @@ impl RawAdmission {
                 }
             }
             PolicyName::PreemptResubmit => Policy::PreemptResubmit,
+            PolicyName::Leaseholder => unreachable!("validated above"),
         };
         Ok(Some(Admission {
             policy,
-            // SMG's bulk class queues 1,024 requests. A minute ends a wait well before clients give up on their
-            // own (AIPerf's replay after 300 s, OpenAI's SDK after 600 s).
-            queue_limit: self.queue_limit.unwrap_or(1024),
-            queue_timeout: seconds(
+            queue_limit,
+            // A minute ends a wait well before clients give up on their own (AIPerf's replay after 300 s,
+            // OpenAI's SDK after 600 s).
+            max_wait: seconds(
                 "admission.queue_timeout_s",
                 self.queue_timeout_s.unwrap_or(60.0),
             )?,
+            state_timeout: None,
+            step_tokens: None,
         }))
+    }
+
+    /// Policy leaseholder. Each mechanism is on unless switched off, needs its own keys while it is on, and
+    /// takes none while it is off.
+    fn leaseholder(self, queue_limit: usize) -> Result<Admission, String> {
+        let headroom = self.headroom.unwrap_or(true);
+        let throttle = self.throttle.unwrap_or(true);
+        let degrade = self.degrade.unwrap_or(true);
+        let sizing = headroom || degrade;
+        for (key, set, on, off) in [
+            (
+                "trigger",
+                self.trigger.is_some(),
+                headroom,
+                "headroom = false",
+            ),
+            (
+                "critical_prefill_budget_ms",
+                self.critical_prefill_budget_ms.is_some(),
+                throttle,
+                "throttle = false",
+            ),
+            (
+                "max_num_batched_tokens",
+                self.max_num_batched_tokens.is_some(),
+                throttle,
+                "throttle = false",
+            ),
+            (
+                "degrade_max_tokens",
+                self.degrade_max_tokens.is_some(),
+                degrade,
+                "degrade = false",
+            ),
+            (
+                "headroom_tokens",
+                self.headroom_tokens.is_some(),
+                sizing,
+                "headroom = false and degrade = false",
+            ),
+        ] {
+            if set && !on {
+                return Err(format!("admission.{key} does not apply with {off}"));
+            }
+        }
+        let needs = |key: &str, off: &str| {
+            format!("admission: policy leaseholder needs {key}, unless {off}")
+        };
+        let pool_tokens = self.pool_tokens.unwrap_or(FROZEN_BOX_POOL_TOKENS);
+        let headroom_tokens = match self.headroom_tokens {
+            Some(tokens) if (1..pool_tokens).contains(&tokens) => tokens,
+            Some(tokens) => {
+                return Err(format!(
+                    "admission.headroom_tokens ({tokens}) must be positive and less than pool_tokens \
+                     ({pool_tokens})"
+                ));
+            }
+            None if sizing => {
+                return Err(needs(
+                    "headroom_tokens",
+                    "headroom = false and degrade = false",
+                ));
+            }
+            None => 0,
+        };
+        let critical_prefill_budget = match self.critical_prefill_budget_ms {
+            Some(ms) => Some(Duration::try_from_secs_f64(ms / 1e3).map_err(|_| {
+                "admission.critical_prefill_budget_ms must be a number of milliseconds, 0 or more"
+            })?),
+            None if throttle => {
+                return Err(needs("critical_prefill_budget_ms", "throttle = false"));
+            }
+            None => None,
+        };
+        // The frozen box's `--max-num-batched-tokens`.
+        let step_tokens = match self.max_num_batched_tokens {
+            Some(0) => return Err("admission.max_num_batched_tokens must be positive".into()),
+            tokens => throttle.then(|| tokens.unwrap_or(512)),
+        };
+        let degrade_max_tokens = match self.degrade_max_tokens {
+            Some(0) => return Err("admission.degrade_max_tokens must be positive".into()),
+            None if degrade => return Err(needs("degrade_max_tokens", "degrade = false")),
+            cap => cap,
+        };
+        let trigger = match self.trigger {
+            None | Some(TriggerName::Onset) => Trigger::Onset,
+            Some(TriggerName::Request) => Trigger::Request,
+        };
+        let policy = Policy::Leaseholder(Leaseholder {
+            pool_tokens,
+            headroom_tokens,
+            headroom: headroom.then_some(trigger),
+            critical_prefill_budget,
+            degrade_max_tokens,
+        });
+        // Longer than an E2 caller's turn is armed (about 4 s from speech onset to the reply's first audio), so
+        // aging admits only what a stuck or unbroken arming holds back.
+        let max_defer_s = self.max_defer_s.unwrap_or(10.0);
+        // Longer than any state of an E2 caller's turn lasts (lines of 2 to 3 s, replies of a few seconds of
+        // audio), so only a lost event ends a state by timeout.
+        let state_timeout_s = self.state_timeout_s.unwrap_or(10.0);
+        Ok(Admission {
+            policy,
+            queue_limit,
+            max_wait: seconds("admission.max_defer_s", max_defer_s)?,
+            state_timeout: Some(seconds("admission.state_timeout_s", state_timeout_s)?),
+            step_tokens,
+        })
     }
 }
 
@@ -700,7 +873,9 @@ mod tests {
                     background_max_in_flight: 4
                 },
                 queue_limit: 1024,
-                queue_timeout: Duration::from_secs(60),
+                max_wait: Duration::from_secs(60),
+                state_timeout: None,
+                step_tokens: None,
             })
         );
         let reservation = admission(
@@ -717,7 +892,7 @@ mod tests {
             }
         );
         assert_eq!(
-            (reservation.queue_limit, reservation.queue_timeout),
+            (reservation.queue_limit, reservation.max_wait),
             (8, Duration::from_secs(290))
         );
         let flow = admission(
@@ -786,6 +961,174 @@ mod tests {
             let err = admission(keys).unwrap_err();
             assert!(err.contains(cause), "{keys}: {err}");
         }
+    }
+
+    #[test]
+    fn policy_leaseholder_switches_each_mechanism_with_its_own_keys() {
+        let a = format!("[tenants.a]\nkeys_sha256 = [\"{KEY}\"]");
+        let admission = |keys: &str| {
+            config(
+                &format!("[admission]\npolicy = \"leaseholder\"\n{keys}"),
+                &a,
+            )
+            .map(|config| config.admission.unwrap())
+        };
+        let all =
+            "headroom_tokens = 1024\ncritical_prefill_budget_ms = 250\ndegrade_max_tokens = 24";
+        let arm9 = admission(all).unwrap();
+        let full = Leaseholder {
+            pool_tokens: FROZEN_BOX_POOL_TOKENS,
+            headroom_tokens: 1024,
+            headroom: Some(Trigger::Onset),
+            critical_prefill_budget: Some(Duration::from_millis(250)),
+            degrade_max_tokens: Some(24),
+        };
+        assert_eq!(
+            arm9,
+            Admission {
+                policy: Policy::Leaseholder(full),
+                queue_limit: 1024,
+                max_wait: Duration::from_secs(10),
+                state_timeout: Some(Duration::from_secs(10)),
+                step_tokens: Some(512),
+            }
+        );
+        let tuned = admission(&format!(
+            "{all}\ntrigger = \"request\"\npool_tokens = 20000\nmax_defer_s = 4.5\nstate_timeout_s = 30\n\
+             queue_limit = 16\nmax_num_batched_tokens = 1024"
+        ))
+        .unwrap();
+        let request = Leaseholder {
+            pool_tokens: 20_000,
+            headroom: Some(Trigger::Request),
+            ..full
+        };
+        assert_eq!(tuned.policy, Policy::Leaseholder(request));
+        assert_eq!(
+            (tuned.queue_limit, tuned.max_wait, tuned.state_timeout),
+            (
+                16,
+                Duration::from_secs_f64(4.5),
+                Some(Duration::from_secs(30))
+            )
+        );
+        assert_eq!(tuned.step_tokens, Some(1024));
+
+        // The ablations: each mechanism off, without its keys.
+        let ablation = |keys: &str| match admission(keys).unwrap().policy {
+            Policy::Leaseholder(lh) => lh,
+            other => panic!("{other:?}"),
+        };
+        let no_throttle = "headroom_tokens = 1024\ndegrade_max_tokens = 24\nthrottle = false";
+        assert_eq!(
+            ablation(no_throttle),
+            Leaseholder {
+                critical_prefill_budget: None,
+                ..full
+            }
+        );
+        assert_eq!(admission(no_throttle).unwrap().step_tokens, None);
+        let no_headroom = "headroom = false\nheadroom_tokens = 1024\ncritical_prefill_budget_ms = 250\n\
+                           degrade_max_tokens = 24";
+        assert_eq!(
+            ablation(no_headroom),
+            Leaseholder {
+                headroom: None,
+                ..full
+            }
+        );
+        let no_degrade =
+            "headroom_tokens = 1024\ncritical_prefill_budget_ms = 250\ndegrade = false";
+        assert_eq!(
+            ablation(no_degrade),
+            Leaseholder {
+                degrade_max_tokens: None,
+                ..full
+            }
+        );
+        let throttle_alone = "headroom = false\ndegrade = false\ncritical_prefill_budget_ms = 0";
+        assert_eq!(
+            ablation(throttle_alone),
+            Leaseholder {
+                headroom_tokens: 0,
+                headroom: None,
+                critical_prefill_budget: Some(Duration::ZERO),
+                degrade_max_tokens: None,
+                ..full
+            }
+        );
+
+        for (keys, cause) in [
+            (
+                "",
+                "leaseholder needs headroom_tokens, unless headroom = false and degrade = false",
+            ),
+            (
+                "headroom_tokens = 1024\ndegrade_max_tokens = 24",
+                "needs critical_prefill_budget_ms, unless throttle = false",
+            ),
+            (
+                "headroom_tokens = 1024\ncritical_prefill_budget_ms = 250",
+                "needs degrade_max_tokens, unless degrade = false",
+            ),
+            (
+                &format!("{all}\nthrottle = false"),
+                "critical_prefill_budget_ms does not apply with throttle = false",
+            ),
+            (
+                &format!("{all}\ndegrade = false"),
+                "degrade_max_tokens does not apply with degrade = false",
+            ),
+            (
+                "headroom_tokens = 1024\ndegrade_max_tokens = 24\nthrottle = false\nmax_num_batched_tokens = 512",
+                "max_num_batched_tokens does not apply with throttle = false",
+            ),
+            (
+                &format!("{all}\nmax_num_batched_tokens = 0"),
+                "max_num_batched_tokens must be positive",
+            ),
+            (
+                &format!("{all}\nheadroom = false\ntrigger = \"onset\""),
+                "trigger does not apply with headroom = false",
+            ),
+            (
+                "headroom = false\ndegrade = false\nheadroom_tokens = 1\ncritical_prefill_budget_ms = 1",
+                "headroom_tokens does not apply with headroom = false and degrade = false",
+            ),
+            (
+                &format!("{all}\nqueue_timeout_s = 60"),
+                "queue_timeout_s does not apply to policy leaseholder",
+            ),
+            (
+                "headroom_tokens = 36400\ncritical_prefill_budget_ms = 250\ndegrade_max_tokens = 24",
+                "must be positive and less than pool_tokens (36400)",
+            ),
+            (
+                "headroom_tokens = 1024\ncritical_prefill_budget_ms = -1\ndegrade_max_tokens = 24",
+                "a number of milliseconds, 0 or more",
+            ),
+            (
+                "headroom_tokens = 1024\ncritical_prefill_budget_ms = 250\ndegrade_max_tokens = 0",
+                "degrade_max_tokens must be positive",
+            ),
+            (
+                &format!("{all}\nmax_defer_s = 0"),
+                "max_defer_s must be a positive",
+            ),
+            (&format!("{all}\ntrigger = \"speech\""), "unknown variant"),
+        ] {
+            let err = admission(keys).unwrap_err();
+            assert!(err.contains(cause), "{keys}: {err}");
+        }
+        let err = config(
+            "[admission]\npolicy = \"static-cap\"\nbackground_max_in_flight = 1\nmax_defer_s = 1",
+            &a,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("max_defer_s does not apply to policy static-cap"),
+            "{err}"
+        );
     }
 
     #[test]

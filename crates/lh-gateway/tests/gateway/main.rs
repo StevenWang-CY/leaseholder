@@ -3,5 +3,6 @@
 mod admission;
 mod common;
 mod events;
+mod leaseholder;
 mod proxy;
 mod streams;

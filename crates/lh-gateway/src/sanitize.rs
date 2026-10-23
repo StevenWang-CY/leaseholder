@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::auth::Tenant;
 use crate::config::PrioritySignals;
-use crate::metrics::Metrics;
+use crate::metrics::{Metrics, Route};
 
 pub(crate) static SESSION_ID: HeaderName = HeaderName::from_static(headers::SESSION_ID);
 pub(crate) static VLLM_PRIORITY: HeaderName = HeaderName::from_static(headers::VLLM_PRIORITY);
@@ -301,6 +301,45 @@ pub(crate) fn rewrite_body(
     })
 }
 
+/// The body fields that cap a reply's tokens: Chat Completions' `max_completion_tokens` and its deprecated
+/// `max_tokens`, which Completions reads, and the Responses API's `max_output_tokens`.
+const REPLY_CAPS: [&str; 3] = ["max_completion_tokens", "max_tokens", "max_output_tokens"];
+
+/// Caps the reply of a degraded request at `cap` tokens in a body [`rewrite_body`] wrote: each of the body's
+/// reply caps is lowered to `cap` if it is above it or not a count, and a body with none gets the route's own.
+pub(crate) fn cap_reply(body: &[u8], route: Route, cap: u32) -> Bytes {
+    let TopLevel(fields) =
+        serde_json::from_slice(body).expect("the gateway writes bodies as JSON objects");
+    let mut json = Vec::with_capacity(body.len() + 32);
+    json.push(b'{');
+    if !fields
+        .iter()
+        .any(|(key, _)| REPLY_CAPS.contains(&key.as_str()))
+    {
+        let field = match route {
+            Route::Completions => "max_tokens",
+            Route::Responses => "max_output_tokens",
+            _ => "max_completion_tokens",
+        };
+        write!(json, "\"{field}\":{cap},").expect("writing to a Vec cannot fail");
+    }
+    for (key, value) in &fields {
+        serde_json::to_writer(&mut json, key).expect("writing to a Vec cannot fail");
+        json.push(b':');
+        if REPLY_CAPS.contains(&key.as_str()) {
+            let asked = serde_json::from_str::<u32>(value.get()).ok();
+            let capped = asked.filter(|&asked| asked <= cap).unwrap_or(cap);
+            write!(json, "{capped}").expect("writing to a Vec cannot fail");
+        } else {
+            json.extend_from_slice(value.get().as_bytes());
+        }
+        json.push(b',');
+    }
+    // Every member, the one added among them, ends with a comma.
+    *json.last_mut().expect("a member was written") = b'}';
+    json.into()
+}
+
 /// The top-level members of a JSON object, in order, with raw values.
 struct TopLevel<'a>(Vec<(String, &'a RawValue)>);
 
@@ -467,6 +506,53 @@ mod tests {
         let value: Value = serde_json::from_slice(&out.json).unwrap();
         assert_eq!(value["priority"], 2);
         assert_eq!(metrics.sanitized_count("priority"), 2);
+    }
+
+    #[test]
+    fn a_degraded_reply_is_capped_in_the_body() {
+        let capped = |body: &str, route| -> Value {
+            serde_json::from_slice(&cap_reply(body.as_bytes(), route, 24)).unwrap()
+        };
+        // A body without a cap gets the route's own; a smaller one stays, a larger one or a non-count is lowered.
+        let chat = capped(r#"{"model":"m","cache_salt":"s"}"#, Route::ChatCompletions);
+        assert_eq!(
+            chat,
+            json!({"max_completion_tokens": 24, "model": "m", "cache_salt": "s"})
+        );
+        let both = capped(
+            r#"{"max_tokens":100,"max_completion_tokens":12,"cache_salt":"s"}"#,
+            Route::ChatCompletions,
+        );
+        assert_eq!(
+            both,
+            json!({"max_tokens": 24, "max_completion_tokens": 12, "cache_salt": "s"})
+        );
+        let null = capped(
+            r#"{"max_tokens":null,"cache_salt":"s"}"#,
+            Route::Completions,
+        );
+        assert_eq!(null, json!({"max_tokens": 24, "cache_salt": "s"}));
+        let completion = capped(r#"{"prompt":"p","cache_salt":"s"}"#, Route::Completions);
+        assert_eq!(
+            completion,
+            json!({"max_tokens": 24, "prompt": "p", "cache_salt": "s"})
+        );
+        let response = capped(
+            r#"{"input":"p","max_output_tokens":4000,"cache_salt":"s"}"#,
+            Route::Responses,
+        );
+        assert_eq!(
+            response,
+            json!({"input": "p", "max_output_tokens": 24, "cache_salt": "s"})
+        );
+        // Every other value is copied as it is.
+        let body =
+            br#"{"messages":[{"role":"user","content":"\"max_tokens\":1"}],"cache_salt":"s"}"#;
+        let out = cap_reply(body, Route::ChatCompletions, 24);
+        assert_eq!(
+            &out[..],
+            br#"{"max_completion_tokens":24,"messages":[{"role":"user","content":"\"max_tokens\":1"}],"cache_salt":"s"}"#
+        );
     }
 
     #[test]

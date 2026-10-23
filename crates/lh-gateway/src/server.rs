@@ -105,7 +105,7 @@ impl Server {
             upstream_priority: config.upstream_priority,
             admission: config
                 .admission
-                .map(|admission| Arc::new(Admission::new(&admission, Arc::clone(&metrics)))),
+                .map(|admission| Admission::new(&admission, Arc::clone(&metrics))),
             metrics,
             events: Events::new(config.event_dedup_capacity, config.event_dedup_ttl, sink),
             max_body_bytes: config.max_body_bytes,

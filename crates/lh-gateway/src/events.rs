@@ -1,6 +1,6 @@
 //! Lifecycle events: `POST /v1/events` from trusted tenants, deduplicated by `(source, event_id)` within a
-//! bounded window, then handed to an [`EventSink`]. v0 records them ([`LogSink`]); the policy core will consume
-//! them through the same trait.
+//! bounded window, then handed to the admission point, where policy leaseholder follows the realtime sessions'
+//! turns by them, and to an [`EventSink`], which records them ([`LogSink`]).
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -12,6 +12,7 @@ use http::StatusCode;
 use lh_proto::LifecycleEvent;
 use serde_json::value::RawValue;
 
+use crate::admission::Admission;
 use crate::exchange::Exchange;
 use crate::metrics::{Metrics, Route};
 use crate::proxy::read_body;
@@ -82,12 +83,14 @@ impl Events {
         }
     }
 
-    /// Records a batch, returning how many events were new and how many were repeats.
+    /// Records a batch, returning how many events were new and how many were repeats. The new ones go to the
+    /// admission point, if there is one, and then to the sink.
     fn ingest(
         &self,
         tenant: &Arc<str>,
         events: Vec<LifecycleEvent>,
         metrics: &Metrics,
+        admission: Option<&Admission>,
     ) -> (usize, usize) {
         let total = events.len();
         let received = Instant::now();
@@ -105,6 +108,9 @@ impl Events {
                 .collect()
         };
         let accepted = fresh.len();
+        if let Some(admission) = admission {
+            admission.events(&fresh);
+        }
         for event in fresh {
             self.sink.accept(AcceptedEvent {
                 tenant: Arc::clone(tenant),
@@ -172,7 +178,11 @@ pub(crate) async fn post(State(app): State<App>, request: Request) -> Response {
         Ok(events) => events,
         Err(message) => return ex.error(StatusCode::BAD_REQUEST, "invalid_event", message),
     };
-    let (accepted, duplicates) = shared.events.ingest(&tenant.name, events, &shared.metrics);
+    let admission = shared.admission.as_deref();
+    let (accepted, duplicates) =
+        shared
+            .events
+            .ingest(&tenant.name, events, &shared.metrics, admission);
     let body = serde_json::json!({"accepted": accepted, "duplicates": duplicates});
     ex.respond(StatusCode::ACCEPTED, &body)
 }

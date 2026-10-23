@@ -405,6 +405,14 @@ async fn metrics_expose_every_series() {
         "lh_gateway_admission_waiting{class=\"realtime\"} 0",
         "lh_gateway_admission_wait_seconds_count{class=\"interactive\"} 0",
         "lh_gateway_admission_refused_total{class=\"background\",reason=\"timeout\"} 0",
+        "lh_gateway_admission_deferred_total{reason=\"headroom\"} 0",
+        "lh_gateway_admission_deferral_seconds_count{reason=\"critical\"} 0",
+        "lh_gateway_admission_aged_total{oversize=\"true\"} 0",
+        "lh_gateway_admission_degraded_total 0",
+        "lh_gateway_admission_false_alarms_total 0",
+        "lh_gateway_admission_false_alarm_token_seconds_total 0",
+        "lh_gateway_realtime_sessions{state=\"critical\"} 0",
+        "lh_gateway_realtime_state_timeouts_total{state=\"playback\"} 0",
     ] {
         assert!(
             text.lines().any(|line| line.starts_with(series)),

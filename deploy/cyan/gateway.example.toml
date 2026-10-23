@@ -56,6 +56,20 @@ default_class = "interactive"
 #
 # policy = "preempt-resubmit"
 #
-# Every policy's queues:
+# Leaseholder's own policy (E2 arm 9). headroom_tokens is one voice turn at its longest, for each armed session:
+# arm 1 averaged 646 prompt and 23 completion tokens a turn.
+# policy = "leaseholder"
+# headroom_tokens = 1024
+# critical_prefill_budget_ms = 150
+# degrade_max_tokens = 16
+# and, with their defaults:
+# trigger = "onset"
+# max_num_batched_tokens = 512
+# max_defer_s = 10
+# state_timeout_s = 10
+# An ablation switches one mechanism off and drops its keys: headroom = false (and trigger), throttle = false
+# (and critical_prefill_budget_ms, max_num_batched_tokens), degrade = false (and degrade_max_tokens).
+#
+# Every policy's queues (leaseholder refuses no request for its wait, and takes no queue_timeout_s):
 # queue_limit = 1024
 # queue_timeout_s = 60
