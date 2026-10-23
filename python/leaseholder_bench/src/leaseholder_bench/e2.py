@@ -8,7 +8,7 @@ gateway's configuration and the engine the GPU node runs. The point is named aft
    arm's ``[engine]`` against it;
 2. it makes cyan's units serve the point: the router (SMG, for arm 8b), the gateway's configuration
    (``gateway.toml`` with the arm's ``[gateway]`` table merged in) and the voice agent's preemptive
-   generation, restarting only the units whose configuration changes;
+   generation and lifecycle events, restarting only the units whose configuration changes;
 3. it empties the engine's prefix cache, so that every point starts from the same state, and, with
    agent sessions, starts AIPerf's ``agentic_replay`` (``configs/agentic_replay.yaml``) on the
    load-generator cores and waits for its profiling phase and a warm-up;
@@ -72,6 +72,7 @@ GATEWAY = "lh-gateway"
 WORKER = "lh-voice-worker"
 E2_GATEWAY = "e2-gateway"
 NO_PREEMPTIVE = "no-preemptive-generation"
+NO_EVENTS = "no-events"
 """Drop-ins under deploy/cyan/variants/ that e2 run links into cyan's units as ``variant-NAME.conf``."""
 
 SGLANG = "sglang"
@@ -100,6 +101,8 @@ class Voice:
     seed: int = 0
     preemptive_generation: bool = True
     """LiveKit's preemptive generation (``LH_PREEMPTIVE_GENERATION`` of the voice worker)."""
+    events: bool = True
+    """The voice worker's lifecycle events to the gateway (``LH_EVENTS``)."""
 
 
 @dataclass(frozen=True)
@@ -332,19 +335,19 @@ def configure_cyan(arm: Arm, host: Host, systemd: Systemd) -> dict[str, Any]:
             f"{WORKER} ends turns with LiveKit's end-of-turn model; E2 points need fixed endpointing: "
             "link deploy/cyan/variants/vad-turns (ops/RUNBOOK.md)"
         )
-    applied = _apply(host, systemd, arm.router, arm.gateway, arm.voice.preemptive_generation)
+    applied = _apply(host, systemd, arm.router, arm.gateway, arm.voice)
     return applied | {"llm_path": env.get("LH_LLM_UDS")}
 
 
 def reset_cyan(host: Host, systemd: Systemd) -> dict[str, Any]:
     """Undo what e2 run changes on cyan: SMG stopped, the gateway back on gateway.toml, preemptive
-    generation on."""
+    generation and lifecycle events on."""
     with _exclusive(host):
-        return _apply(host, systemd, None, {}, True)
+        return _apply(host, systemd, None, {}, Voice())
 
 
 def _apply(
-    host: Host, systemd: Systemd, router: str | None, overlay: Mapping[str, Any], preemptive: bool
+    host: Host, systemd: Systemd, router: str | None, overlay: Mapping[str, Any], voice: Voice
 ) -> dict[str, Any]:
     if router == "smg":
         systemd("start", SMG)  # returns once SMG answers /health
@@ -356,7 +359,11 @@ def _apply(
         gateway |= _write_private(
             host.config / "gateway-e2.toml", GATEWAY_HEADER + toml_text(config)
         )
-    worker = _link(host, WORKER, NO_PREEMPTIVE, not preemptive)
+    links = [
+        _link(host, WORKER, NO_PREEMPTIVE, not voice.preemptive_generation),
+        _link(host, WORKER, NO_EVENTS, not voice.events),
+    ]
+    worker = any(links)
     if gateway or worker:
         systemd("daemon-reload")
     if gateway:
@@ -380,7 +387,11 @@ def _apply(
     return {
         "router": router,
         "gateway": {"restarted": gateway, "config": _redacted(config)},
-        "worker": {"restarted": worker, "preemptive_generation": preemptive},
+        "worker": {
+            "restarted": worker,
+            "preemptive_generation": voice.preemptive_generation,
+            "events": voice.events,
+        },
     }
 
 

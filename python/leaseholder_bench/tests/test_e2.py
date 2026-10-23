@@ -52,6 +52,7 @@ label = "stock vLLM, 4 agent sessions"
 callers = 1
 turns = 3
 preemptive_generation = false
+events = false
 
 [agents]
 sessions = 4
@@ -99,6 +100,7 @@ def test_an_arm_file_fills_in_the_defaults(tmp_path: Path) -> None:
 def test_an_arm_file_says_everything_about_its_point(tmp_path: Path) -> None:
     arm = load_arm(write(tmp_path, "a2-stock-s4.toml", ARM))
     assert arm.voice.preemptive_generation is False and arm.voice.barge_in == 0.25
+    assert arm.voice.events is False
     assert arm.agents.warmup == 0.2 and isinstance(arm.agents.think_cap, float)
     assert arm.gateway == {
         "upstream_priority": [],
@@ -122,6 +124,7 @@ def test_an_arm_file_says_everything_about_its_point(tmp_path: Path) -> None:
         ('arm = 2\nlabel = "x"\n[voice]\nturns = true\n', "turns must be int, not True"),
         ('arm = 2\nlabel = "x"\n[agents]\nwarmup = "60"\n', "warmup must be float"),
         ('arm = 2\nlabel = "x"\n[voice]\npreemptive_generation = 1\n', "must be bool"),
+        ('arm = 2\nlabel = "x"\n[voice]\nevents = "off"\n', "events must be bool"),
         ('arm = 11\nlabel = "x"\n', "arm is E2's arm"),
         ('arm = "7z1"\nlabel = "x"\n', "arm is E2's arm"),
         ('arm = 2\nlabel = "x"\nrouter = "nginx"\n', "router can only be smg"),
@@ -465,10 +468,14 @@ def test_a_point_with_agents_configures_cyan_and_stops_aiperf_after_the_calls(cy
     out = cyan.host.root / "runs" / "a2-stock-s4"
     units = cyan.host.units
     gateway_link = units / "lh-gateway.service.d" / "variant-e2-gateway.conf"
-    worker_link = units / "lh-voice-worker.service.d" / "variant-no-preemptive-generation.conf"
+    worker = units / "lh-voice-worker.service.d"
     assert gateway_link.readlink().parts[-2:] == ("e2-gateway", "lh-gateway.conf")
-    assert worker_link.readlink().parts[-2:] == ("no-preemptive-generation", "lh-voice-worker.conf")
-    assert cyan.systemd.calls == [
+    assert {link.readlink().parts[-2] for link in worker.glob("variant-*.conf")} == {
+        "no-preemptive-generation",
+        "no-events",
+    }
+    assert (REPO / "deploy" / "cyan" / "variants" / "no-events" / "lh-voice-worker.conf").exists()
+    assert cyan.systemd.calls == [  # the worker restarts once for both of its drop-ins
         ("daemon-reload",),
         ("restart", "lh-gateway"),
         ("restart", "lh-voice-worker"),
@@ -485,6 +492,11 @@ def test_a_point_with_agents_configures_cyan_and_stops_aiperf_after_the_calls(cy
     assert env["AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID"] == "false"  # from configs/aiperf.env
     run_json = record(cyan, "a2-stock-s4")
     assert run_json["aiperf"] == {"exit_status": 0}
+    assert run_json["cyan"]["worker"] == {
+        "restarted": True,
+        "preemptive_generation": False,
+        "events": False,
+    }
     assert "agents-key" not in (out / "run.json").read_text()
     assert run_json["cyan"]["gateway"]["config"]["tenants"]["agents"]["keys_sha256"] == [
         "<redacted>"

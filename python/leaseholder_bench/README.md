@@ -255,7 +255,7 @@ lh-bench e2 reset                        # cyan's units as gateway.toml and the 
 
 A point runs in this order:
 1. **The engine.** Its `/server_info` (on vLLM it needs `VLLM_SERVER_DEV_MODE=1`, which `lh-engine.service` sets) gives the server, its version, the KV pool and its settings. The arm's `[engine]` flags, and on vLLM the frozen box's policy, step cap and long-prefill threshold wherever the flags say nothing else, must match them, or the point fails before anything starts and names the `variant.sh use` command that fixes it. A flag whose setting the engine does not report is recorded as unchecked.
-2. **cyan's units.** SMG runs only for `router = "smg"`. With a `[gateway]` table the gateway runs on `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in, mode 600) through the `e2-gateway` drop-in, and without one on `gateway.toml`. The voice worker's preemptive generation is switched with the `no-preemptive-generation` drop-in. Only a unit whose configuration changes restarts, and the worker must register again within 90 s. The worker must end turns with fixed endpointing (`vad-turns`), or nothing runs.
+2. **cyan's units.** SMG runs only for `router = "smg"`. With a `[gateway]` table the gateway runs on `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in, mode 600) through the `e2-gateway` drop-in, and without one on `gateway.toml`. The voice worker's preemptive generation is switched with the `no-preemptive-generation` drop-in, and its lifecycle events with `no-events`. Only a unit whose configuration changes restarts, and the worker must register again within 90 s. The worker must end turns with fixed endpointing (`vad-turns`), or nothing runs.
 3. **A cold start.** The engine's prefix cache, and vLLM's CPU tier, are emptied.
 4. **The replay.** With agent sessions, AIPerf starts on cores 16–23 and the calls wait for its profiling phase plus the warm-up.
 5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them.
@@ -272,6 +272,7 @@ A point runs in this order:
 | `[voice] barge_in` | 0.25 | Share of turns on which the caller interrupts the reply |
 | `[voice] seed` | 0 | The callers' seed |
 | `[voice] preemptive_generation` | `true` | LiveKit's preemptive generation in the voice worker (`LH_PREEMPTIVE_GENERATION`) |
+| `[voice] events` | `true` | The voice worker's lifecycle events to the gateway (`LH_EVENTS`); `false` measures a point without them |
 | `[agents] sessions` | 0 | Session trees AIPerf keeps live; 0 is voice alone |
 | `[agents] target` | `"gateway"` | `"gateway"`, as the `agents` tenant with `LH_GATEWAY_AGENTS_KEY` from `~/.config/leaseholder/gateway-keys.env`, or `"engine"`, straight through the tunnel |
 | `[agents] think_cap` | 120 | Cap on each recorded think time, in seconds |
