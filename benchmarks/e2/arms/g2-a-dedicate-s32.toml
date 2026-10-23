@@ -1,0 +1,21 @@
+# E2 on two GPU nodes, A: dedicate. Phastform serves the calls and Gray the agents, both on the frozen box (tuned
+# stock), at twice one node's load: 4 callers beside 32 session trees of the 32x replay.
+arm = "4-dedicate"
+label = "two GPU nodes dedicated: calls on Phastform, agents on Gray"
+
+[voice]
+callers = 4
+
+[agents]
+sessions = 32
+
+[gateway.nodes.phastform]
+upstream = "http://127.0.0.1:18000"
+classes = ["realtime"]
+
+[gateway.nodes.gray]
+upstream = "http://127.0.0.1:28000"
+classes = ["interactive", "background"]
+
+[gateway.placement]
+policy = "dedicated"

@@ -93,7 +93,7 @@ LH_GPU=phastform.cis.upenn.edu,gray.cis.upenn.edu benchmarks/e2/campaign.sh --pa
 
 `lh-bench e2 run` starts each node's tunnel and leaves it running (stop `lh-tunnel-gray` after the window), checks, empties and snapshots each node's engine, and tells the voice worker the nodes, so that each call's STT and TTS follow it. The summary keeps the totals a point on one node has, the engines' counters added up, and each node's share; the report places the point by its totals and gives each node's share in a table of its own ([the summary and the report](../../python/leaseholder_bench/README.md#e2-points)).
 
-The three ways to run voice and agents on two equal GPUs, at equal load: 4 callers and 32 session trees of `weka-x32` (twice the 16 of one node), 3 repeats each.
+The three ways to run voice and agents on two equal GPUs, at equal load: 4 callers and 32 session trees of `weka-x32` (twice the 16 of one node), 3 repeats each. [`g2-r1.campaign`](g2-r1.campaign) to [`g2-r3.campaign`](g2-r3.campaign) are the three rounds, each over A, B and C (`arms/g2-a-dedicate-s32.toml`, `g2-b-pool-s32.toml`, `g2-c-leaseholder-s32.toml`), grouped by engine with the groups' order rotated.
 
 | Point | `[gateway.placement] policy` | The nodes | `[gateway.admission]` | `[engine]` |
 |---|---|---|---|---|

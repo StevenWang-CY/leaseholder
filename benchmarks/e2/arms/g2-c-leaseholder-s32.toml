@@ -1,0 +1,30 @@
+# E2 on two GPU nodes, C: pool under Leaseholder. Both nodes take calls and agents and run arm 9 (the gateway's
+# leaseholder policy at each node's admission point, the engine's make-room); a new call goes to the node with the
+# fewest calls, then the fewest armed for a turn, then the most free KV, and a new agent session to the node holding
+# the least background KV. 4 callers, 32 session trees.
+arm = "9-pool"
+label = "two GPU nodes pooled under Leaseholder: arm 9 on each, lease-aware placement"
+
+[voice]
+callers = 4
+
+[agents]
+sessions = 32
+
+[gateway.nodes.phastform]
+upstream = "http://127.0.0.1:18000"
+
+[gateway.nodes.gray]
+upstream = "http://127.0.0.1:28000"
+
+[gateway.placement]
+policy = "leaseholder"
+
+[gateway.admission]
+policy = "leaseholder"
+headroom_tokens = 1024
+critical_prefill_budget_ms = 150
+degrade_max_tokens = 16
+
+[engine]
+variant = "make-room"

@@ -1,0 +1,19 @@
+# E2 on two GPU nodes, B: pool under tuned stock. Both nodes take calls and agents, on the frozen box; sessions stay on
+# their node, and a new one goes to the node with the fewest requests in flight. 4 callers, 32 session trees.
+arm = "4-pool"
+label = "two GPU nodes pooled under tuned stock: sticky sessions, least-loaded"
+
+[voice]
+callers = 4
+
+[agents]
+sessions = 32
+
+[gateway.nodes.phastform]
+upstream = "http://127.0.0.1:18000"
+
+[gateway.nodes.gray]
+upstream = "http://127.0.0.1:28000"
+
+[gateway.placement]
+policy = "least-loaded"

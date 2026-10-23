@@ -1,0 +1,10 @@
+# E2 on two GPU nodes (Phastform and Gray), round 2 of 3: A dedicate, B pool under tuned stock, C pool under
+# Leaseholder, at 4 callers and 32 session trees, grouped by engine, the groups' order rotated from round to round.
+#   LH_GPU=phastform.cis.upenn.edu,gray.cis.upenn.edu benchmarks/e2/campaign.sh benchmarks/e2/g2-r2.campaign
+
+# engine make-room
+arms/g2-c-leaseholder-s32.toml
+
+# engine frozen
+arms/g2-b-pool-s32.toml
+arms/g2-a-dedicate-s32.toml
