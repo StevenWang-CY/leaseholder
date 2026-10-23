@@ -145,7 +145,7 @@ One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.
 | Symptom | Likely cause | Action |
 |---|---|---|
 | `lh-engine` fails at start with "Free memory on device … less than desired GPU memory utilization" | Another process holds GPU memory, or the audio servers grew | `nvidia-smi`; stop the foreign job or wait. The engine needs 10.83 GiB free at start |
-| A unit restarts in a loop, then stops (`start-limit-hit`) | Three failed starts within 30 min | `journalctl --user -u <unit> -n 200`, fix, `systemctl --user reset-failed <unit>`, start |
+| A unit restarts in a loop, then stops, or will not start (`start-limit-hit`) | A fourth start within 30 min: the units' crash-loop guard (`StartLimitBurst=3`) counts deliberate starts too, such as switching variants by hand | A crash loop: `journalctl --user -u <unit> -n 200`, fix, `systemctl --user reset-failed <unit>`, start. Deliberate switches: `systemctl --user reset-failed <unit>` first (campaigns switch at most once a point, under the limit) |
 | The first start after an upgrade takes many minutes | FlashInfer JIT and torch.compile caches are cold | Expected once; caches persist in `~/leaseholder/cache/flashinfer` and `~/.cache/vllm` |
 | No KV events reach a subscriber | vLLM connects (does not bind) to a specific TCP endpoint | The subscriber must bind `tcp://127.0.0.1:5557`; the engine reconnects to it within seconds |
 | The tunnel is down (`curl 127.0.0.1:18000/health` fails on cyan) | Network blip or a restarted GPU node | `lh-tunnel-phastform` restarts itself every 5 s; check `journalctl --user -u lh-tunnel-phastform` |
