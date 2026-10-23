@@ -40,3 +40,7 @@ The decision stands: the control plane stays in front of stock vLLM, and its pol
 - **No trait.** The policies are variants of one enum in `lh_core::admission`, driven by a pure state machine (arrivals, first bytes, departures and the realtime sessions' turns) that the gateway feeds and whose waits it carries out. A closed set of policies at one admission point needed no trait; another router embeds the state machine as the gateway does.
 - **The engine fix for E2** runs as a generated scheduler module, the `make-room` variant: built from vLLM 0.32.0's source at each start with asserted anchors and loaded with `--scheduler-cls`, so the box stays a stock install and the change is exactly the one proposed upstream.
 
+## Update (2026-10-23, W4)
+
+- **Only the engine change holds the voice tail.** E2's discriminating scenario contradicts the consequence above that the control plane compensates with admission and turn-imminent headroom: the `leaseholder` policy on the stock engine (the gateway-only ablation) left voice where stock vLLM left it. The `make-room` change holds the tail, with degrade capping the reply to fit its first-tokens window, and the policy's lifecycle timing adds nothing measurable beside it ([ARCHITECTURE.md §4.3](../ARCHITECTURE.md#43-turn-imminent-headroom)).
+

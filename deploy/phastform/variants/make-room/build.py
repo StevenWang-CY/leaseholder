@@ -20,8 +20,8 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
    request is admitted; blocks a connector's pending transfers will free are waited for, as the running loop waits.
 2. ``budget_cap``: prefills of a lower priority, running or waiting, sit out the steps of a request's first tokens:
    from the step in which the waiting request of the highest priority fits (deferred frees counted), while it loads
-   its KV from a connector or prefills, until it has its first ``budget_cap_tokens`` output tokens (16: a voice
-   reply's first sentence). Those steps carry its tokens and the decodes alone; decodes are never cut. A request
+   its KV from a connector or prefills, until it has its first ``budget_cap_tokens`` output tokens (16 by
+   default). Those steps carry its tokens and the decodes alone; decodes are never cut. A request
    whose load is done waits for the waiting loop, which runs only on budget the running prefills leave. A waiting
    request that does not fit holds nothing back, so prefills that will free its blocks go on; nor does a waiting or
    loading request while every running slot is taken, since it could not be promoted.

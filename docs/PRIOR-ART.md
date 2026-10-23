@@ -2,15 +2,15 @@
 
 *Checked against primary sources (papers, issue and PR threads, release notes, documentation, code) on 2026-10-22. Status is as of that date. Dates are UTC.*
 
-This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It times the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and tool waits for agents.
+This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and (planned) tool waits for agents. E2 measured that timing adding nothing beside an engine change which, with replies capped to fit its first-tokens window, holds the voice tail.
 
 ## Positioning
 
 > Leaseholder applies known co-serving and KV-tiering mechanisms to a workload pair published systems have not measured together, a cascaded voice pipeline beside long-context agents on one GPU, and measures when lifecycle timing beats static reservation and engine priority, and when it does not.
 
 **Claimed.** Three parts, argued in [What is distinctive](#what-is-distinctive):
-1. **Lifecycle-timed headroom, freed by parking.** GPU room for the next realtime turn is held before the request exists, from speech onset or end of turn. It is counted in KV tokens and made by parking background sessions in host RAM rather than killing their requests.
-2. **The engine "make room" fix.** A waiting high-priority request may preempt running work when the KV cache is full, keeping or offloading the victim's KV. Neither vLLM nor SGLang does this today.
+1. **Lifecycle-timed headroom, freed by parking: a measured negative result.** GPU room for the next realtime turn is held before the request exists, from speech onset or end of turn. It is counted in KV tokens and made by parking background sessions in host RAM rather than killing their requests. In E2's discriminating scenario the timing added nothing measurable: beside the engine change (2.), switching the headroom off or arming it by the request lands within the spread of the full configuration's runs, and without the engine change the gateway's policy leaves voice where stock vLLM does.
+2. **The engine "make room" fix.** A waiting high-priority request may preempt running work when the KV cache is full, keeping or offloading the victim's KV; neither vLLM nor SGLang does this today. Lower-priority prefill also sits out the steps of the request's first tokens, the part E2 found necessary; the KV preemption, or a class-aware KV reserve in its place, does the rest.
 3. **The validated recompute ledger.** Every recomputed prompt token is attributed to a cause, and the attribution is checked by injecting causes.
 
 Everything else is a baseline or a reference: [At a glance](#at-a-glance) lists each mechanism and where it exists, and [What we do not claim](#what-we-do-not-claim) gathers them.
@@ -26,7 +26,7 @@ In the tables, **Relation** says how an item bears on Leaseholder:
 |---|---|---|
 | A latency class co-served with best-effort work | ConServe, HyGen, BROS, Niyama; Valve in production on 8,054 GPUs | Not claimed |
 | Priority classes, budgets, aging, queue TTLs, in-flight eviction | llm-d v1.0 flow control, SMG, Dynamo, AIBrix | Not claimed; llm-d flow control (emulated) and SMG are E2 baselines |
-| Headroom held back for priority work | Static: SMG reserved slots, llm-d holdback ceilings, vLLM `watermark` (class-blind). Tied to a running request: Llumnix. Sized from load or the agent graph: Valve, Tokencake | An equal-size static reservation is a baseline; timing it from voice events is claimed |
+| Headroom held back for priority work | Static: SMG reserved slots, llm-d holdback ceilings, vLLM `watermark` (class-blind). Tied to a running request: Llumnix. Sized from load or the agent graph: Valve, Tokencake | An equal-size static reservation is a baseline; timing it from voice events is measured, with no gain in E2 |
 | Engine priority preemption | vLLM among running requests; SGLang at the request cap | Baseline; the KV-full case is the claimed fix |
 | Parking KV during a tool call, prefetching before the return | Tokencake, KVFlow, CacheScout, MORI; proposed for vLLM (#57103, #58198) | Not claimed; E1 measures what lifecycle information adds |
 | TTL holds and leases | Continuum, TensorRT-LLM retention, vLLM #37003, llm-d-router #2273, AIBrix #2814 | Not claimed; Continuum's TTL hold is an E1 baseline |
@@ -223,11 +223,11 @@ Belady's MIN over fixed-size blocks is exact only for single-tier hit counts. Wi
 ## What is distinctive
 
 Each point below rests on the sources above, as of 2026-10-22.
-1. **Headroom timed by voice lifecycle events and freed by parking.**
+1. **Headroom timed by voice lifecycle events and freed by parking: a measured negative result.**
    - Capacity held back for priority work exists. It is static (SMG reserved slots, llm-d holdback ceilings, vLLM `watermark`), tied to a running request (Llumnix), or sized from load or the agent graph (Valve's dynamic memory reservation; Tokencake, which keeps GPU memory for critical-path agents).
    - llm-d's in-flight eviction reacts to demand that is already queued, and Dynamo's priority "does not reserve capacity".
    - In shipping systems, making room means ending background work (llm-d's 429 eviction, SMG's cancel before the first byte, Gemini Flex's preemption with client retries) or engine preemption that frees the victim's blocks. Keeping the victim's KV is published (ConServe) and proposed for SGLang (`--preempt-keep-kv`, draft #45686) and llm-d (deferred partial eviction).
-   - We found no system that holds KV headroom for a realtime turn from a voice event that precedes the request, such as speech onset or end of turn. The claim is about timing: E2 compares it with an equal-size static reservation and with engine priority, and reports where it does not help.
+   - We found no system that holds KV headroom for a realtime turn from a voice event that precedes the request, such as speech onset or end of turn. The claim is about timing, and E2 measured it through arm 9's ablations, not against the equal-size static reservation, from which arm 9 also differs in its engine: beside the engine change, headroom armed from speech onset, armed only by the request, or left out lands within the spread of arm 9's own runs, and on the stock engine the gateway's policy leaves voice where stock vLLM does. In this regime the timing does not help.
 2. **The engine "make room" fix.**
    - vLLM preempts among running requests but never for a waiting one (#40004, open since 2026-04-16); its open fixes cover only the `max_num_seqs` cap.
    - SGLang's priority preemption does not fire when KV memory runs out; the fix is a draft opened on 2026-10-21 (#45686).
