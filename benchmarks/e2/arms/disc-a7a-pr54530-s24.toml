@@ -1,0 +1,11 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a7a-pr54530-s16.toml.
+arm = "7a"
+label = "priority, max-num-seqs 12, with vLLM #54530, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+variant = "pr54530"

@@ -1,0 +1,26 @@
+# W2's third E2 batch: the discriminating scenario (24 session trees replaying the 48 traces with the largest contexts,
+# weka-x32-long, so the 36,400-token pool holds two or three agent contexts) across arms 4 to 8, and SGLang with its
+# host tier (HiCache, write-through, 4x) at 8 and 16 sessions for KV-tier parity with vLLM's CPU tier. One run of each;
+# the best of each arm is repeated in W4 with arm 9. Grouped by engine, so the engine restarts six times.
+#   benchmarks/e2/campaign.sh benchmarks/e2/w2c.campaign
+
+# The frozen box, and the gateway-side arms in front of it
+arms/disc-frozen-s24.toml
+arms/disc-a6-cap2-s24.toml
+arms/disc-a6-cap8-s24.toml
+arms/disc-a6-reserve2048-s24.toml
+arms/disc-a8a-flow-s24.toml
+arms/disc-a8b-smg-s24.toml
+arms/disc-a8c-resubmit-s24.toml
+
+# Engine flags: the other best step cap, vLLM's own headroom knobs
+arms/disc-a4-b1024-t0-s24.toml
+arms/disc-a5-watermark10-s24.toml
+arms/disc-a5-queued8192-s24.toml
+
+# Engine preemption: vLLM #54530, SGLang without and with its host tier
+arms/disc-a7a-pr54530-s24.toml
+arms/disc-a7b-sglang-s24.toml
+arms/a7b-sglang-hicache-s8.toml
+arms/a7b-sglang-hicache-s16.toml
+arms/disc-a7b-sglang-hicache-s24.toml

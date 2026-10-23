@@ -1,0 +1,13 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a6-cap2-s16.toml.
+arm = 6
+label = "frozen box + static cap, 2 background in flight, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "static-cap"
+background_max_in_flight = 2
+queue_timeout_s = 240

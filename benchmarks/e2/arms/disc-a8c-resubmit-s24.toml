@@ -1,0 +1,12 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a8c-resubmit-s16.toml.
+arm = "8c"
+label = "frozen box + preempt-resubmit before the first byte, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "preempt-resubmit"
+queue_timeout_s = 240

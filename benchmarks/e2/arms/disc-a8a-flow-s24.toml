@@ -1,0 +1,13 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a8a-flow-s16.toml.
+arm = "8a"
+label = "frozen box + flow control (llm-d, emulated), ceilings 6/6/6, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "flow-control"
+ceilings = { realtime = 6, interactive = 6, background = 6 }
+queue_timeout_s = 240
