@@ -274,6 +274,18 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 - **Why.** Every step of the reply carried the agents' prefill chunks, up to 512 tokens, so its tokens came about 60 ms apart; with the budget cap they come about 18 ms apart. The first token still waits for the step in flight when the turn arrives. E2's first arm-9 point, on the first module, showed the same loss at scale: its waterfall put it in the reply's first sentence (1,335 ms at the median against 536 ms to the first token).
 - **The KV case on the final module:** 228 and 288 ms to the first token, 517 and 577 ms to the 16th.
 
+**The calls' first-token tail.** `deploy/phastform/variants/make-room/tail.py` runs 12 closed-loop agent sessions at priority 2 beside two calls at priority 0 for 240 s and gives the calls' time to first token. The agents' prompts are 6–30k tokens, either fresh each turn, as E2's discriminating replay computes 98% of its prompt tokens, or growing by a tool result each turn, so that they reuse the CPU tier; a call turns every 4–8 s with 16 output tokens. On Gray, 2026-10-23:
+
+| Scheduler | Agents' prompts | Call turns | TTFT p50 / p90 / p95 / max |
+|---|---|---:|---|
+| `make-room` before its KV-load rule | growing | 70 | 424 / 619 / 3,311 / 3,544 ms |
+| `make-room` before its KV-load rule | fresh | 68 | 361 / 1,897 / 3,176 / 4,120 ms |
+| `make-room` | fresh | 74 | 208 / 290 / 318 / 438 ms |
+| `make-room` | growing | 73 | 202 / 286 / 305 / 462 ms |
+
+- **Why.** Between a call's turns, the agents' prefills cycle the GPU's free blocks, so the turn's prefix is evicted and loads back from the CPU tier, asynchronously. Every slow turn was in `WAITING_FOR_REMOTE_KVS` (the scheduler's state logged each step), with KV to spare. Once its load is done, a request waits for the waiting loop to promote it, and the waiting loop runs only on budget the running loop leaves; the agents' 512-token chunks left none. The budget cap now holds lower-priority prefill while a higher-priority request loads, as while it prefills.
+- **E2's points show the same tail:** disc-a9-s24 on the module before this rule had its first token after 334 ms at the median and 2,146 ms at p95, against preempt-resubmit's 251 and 394 ms; its turns loaded about 40k tokens from the CPU tier, about their own prefixes.
+
 ## Agent replay on the frozen box: a first retention-headroom signal
 
 Measured in W0: AIPerf `agentic_replay` of the 32×-scaled Claude Code corpus, 16 session trees, think times capped at 120 s, `ignore_eos`, 10 minutes, against the frozen box through the tunnel. `lh-bench kv-metrics` compared vLLM's sampled KV block histograms over the run.

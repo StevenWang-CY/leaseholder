@@ -550,6 +550,33 @@ def test_lower_priority_prefill_sits_out_a_requests_first_tokens(module, model, 
     assert all(tokens["decode"] == tokens["voice"] == 1 for tokens in steps)
 
 
+@pytest.mark.parametrize("make_room", [{"budget_cap": True}, {}])
+def test_a_higher_priority_request_loading_its_kv_holds_lower_priority_prefill(
+    module, model, make_room
+):
+    """A priority-0 request admitted with its KV loading from a connector (WAITING_FOR_REMOTE_KVS and an in-flight
+    prefill, as the waiting loop admits an async load) keeps the running priority-2 prefill out of the steps while it
+    loads: once the load is done, the waiting loop promotes it only on budget the running loop leaves. Stock vLLM
+    (the control) gives the prefill its chunk."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        400,
+        make_room,
+        long_prefill_token_threshold=256,
+        max_model_len=4096,
+    )
+    run(sched, request("decode", 40, priority=2, arrival=0))
+    sched.add_request(request("prefill", 3000, priority=2, arrival=1))
+    step(sched)
+    voice = request("voice", 300, priority=0, arrival=2)
+    sched.add_request(voice)
+    voice.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+    sched._inflight_prefills.add(voice)
+    tokens = step(sched).num_scheduled_tokens
+    assert tokens == ({"decode": 1} if make_room else {"decode": 1, "prefill": 256})
+
+
 # The reserve
 
 
