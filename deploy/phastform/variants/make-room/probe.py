@@ -1,8 +1,9 @@
 """probe.py [URL]: the make-room variant's KV check. Two priority-2 requests of 18,000 tokens fill the
-engine's KV pool and decode, leaving 24 blocks free and growing into them only; then a priority-0 chat turn
-of about 700 tokens (44 blocks) arrives. Without make-room it waits until a priority-2 request finishes
-(192 decoded tokens); with it, it preempts one of them. The probe prints its time to first token, the free
-blocks it found and the preemptions.
+engine's KV pool, leaving 24 blocks free, and keep decoding; then a priority-0 chat turn of about 700 tokens
+(44 blocks) arrives. Without make-room it waits until the two have grown into the free blocks and vLLM
+preempts one of them so that the other can grow (a few seconds); with it, it preempts one at once. The probe
+sends the voice turn once the engine reports both running and the pool full, and prints its time to
+first token and the engine's state before and after it.
 
 The reserve (make_room.reserve_tokens) keeps the second priority-2 request out of a full pool, so the KV
 case is run with it off. On the GPU node, with the engine's environment, which has aiohttp:
@@ -25,7 +26,10 @@ import aiohttp
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
 MODEL = "Qwen/Qwen3-4B-Instruct-2507-FP8"
 BACKGROUND = 2
-FREE_BLOCKS = 24  # left free by the priority-2 prompts; their decodes grow into them, no further
+FREE_BLOCKS = 24  # left free by the priority-2 prompts; their decodes grow into them
+# The priority-2 requests decode until the probe ends. With a short reply the first would finish while the second
+# still prefills, and the voice turn would find half the pool free.
+DECODE_TOKENS = 4096
 CALL = (
     "the call is about a late order and the customer wants it moved to friday so check the address"
     " then confirm the time window and read back the total with tax before you say goodbye"
@@ -37,6 +41,17 @@ async def metrics(session: aiohttp.ClientSession) -> str:
         return await response.text()
 
 
+async def engine_state(session: aiohttp.ClientSession, num_blocks: int) -> dict[str, int]:
+    """The engine's running and waiting requests and free KV blocks, from its metrics."""
+    exposition = await metrics(session)
+    usage = sample(exposition, "vllm:kv_cache_usage_perc")
+    return {
+        "running": round(sample(exposition, "vllm:num_requests_running")),
+        "waiting": round(sample(exposition, "vllm:num_requests_waiting")),
+        "free": round((1 - usage) * num_blocks),
+    }
+
+
 def sample(exposition: str, name: str) -> float:
     """A metric's value in a Prometheus exposition, summed over its label sets."""
     line = re.compile("^" + re.escape(name) + r"(?:\{[^}]*\})? (\S+)$", re.M)
@@ -46,20 +61,23 @@ def sample(exposition: str, name: str) -> float:
 async def stream(
     session: aiohttp.ClientSession, path: str, body: dict, first: asyncio.Event | None = None
 ) -> float:
-    """Seconds to the first streamed token; with ``first``, set it then and read on to the end."""
+    """Seconds to the first streamed token. With ``first``, set it then and read the stream to its end:
+    closing the response would make vLLM abort the request."""
     started = time.perf_counter()
+    ttft = None
     body = body | {"model": MODEL, "stream": True}
     async with session.post(f"{URL}{path}", json=body) as response:
         if response.status != 200:
             raise RuntimeError(f"{response.status}: {await response.text()}")
         async for line in response.content:
-            if line.startswith(b"data: {") and json.loads(line[6:]).get("choices"):
+            if ttft is None and line.startswith(b"data: {") and json.loads(line[6:]).get("choices"):
                 ttft = time.perf_counter() - started
                 if first is None:
                     return ttft
                 first.set()
-                first = None
-    raise RuntimeError("the stream ended before its first token")
+    if ttft is None:
+        raise RuntimeError("the stream ended before its first token")
+    return ttft
 
 
 async def main() -> None:
@@ -69,14 +87,12 @@ async def main() -> None:
         labels = dict(re.findall(r'(\w+)="([^"]*)"', info.group(1)))
         block_size = int(labels["block_size"])
         num_blocks = int(labels["num_gpu_blocks"]) - 1  # less vLLM's null block
-        # A prompt one token short of k blocks fills them with its first decoded token; each request
-        # then decodes into FREE_BLOCKS / BACKGROUND blocks and stops there.
+        # A prompt one token short of k blocks fills them with its first decoded token.
         prompt_tokens = (num_blocks - FREE_BLOCKS) // BACKGROUND * block_size - 1
-        decode_tokens = FREE_BLOCKS // BACKGROUND * block_size
         bodies = [
             {
                 "prompt": [rng.randrange(1000, 100_000) for _ in range(prompt_tokens)],
-                "max_tokens": decode_tokens,
+                "max_tokens": DECODE_TOKENS,
                 "ignore_eos": True,
                 "priority": 2,
             }
@@ -89,7 +105,8 @@ async def main() -> None:
         ]
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 120)
-        decoding = sum(event.is_set() for event in started)
+        if not all(event.is_set() for event in started):
+            sys.exit("probe: the priority-2 requests did not start decoding within 120 s")
 
         # A voice session's history that the engine has never seen, so nothing of it is cached,
         # ending on the caller's turn.
@@ -102,18 +119,27 @@ async def main() -> None:
         tokenize = {"model": MODEL, "messages": messages}
         async with session.post(f"{URL}/tokenize", json=tokenize) as response:
             voice_tokens = (await response.json())["count"]
-        before = await metrics(session)
-        free = round((1 - sample(before, "vllm:kv_cache_usage_perc")) * num_blocks)
+
+        # Send the voice turn while both priority-2 requests run and the pool is full: the engine
+        # reports it, so the probe does not rely on timing. Once they have grown into the free
+        # blocks, vLLM moves one of them back to waiting, and a voice turn would find room.
+        while True:
+            state = await engine_state(session, num_blocks)
+            if state["running"] == BACKGROUND and state["free"] <= FREE_BLOCKS:
+                break
+            if state["running"] < BACKGROUND:
+                sys.exit(
+                    f"probe: a priority-2 request stopped running before the pool filled ({state})"
+                )
+            await asyncio.sleep(0.05)
         body = {"messages": messages, "max_tokens": 4, "priority": 0}
         ttft = await stream(session, "/v1/chat/completions", body)
-        after = await metrics(session)
-        preemptions = sample(after, "vllm:num_preemptions_total") - sample(
-            before, "vllm:num_preemptions_total"
-        )
+        after = await engine_state(session, num_blocks)
         print(
-            f"priority-0 TTFT {ttft * 1000:.0f} ms for {voice_tokens} prompt tokens, with {decoding}"
-            f" of {BACKGROUND} priority-2 requests of {prompt_tokens} tokens decoding and {free}"
-            f" of {num_blocks} blocks free; preemptions: {preemptions:.0f}"
+            f"priority-0 TTFT {ttft * 1000:.0f} ms for {voice_tokens} prompt tokens, sent with"
+            f" {state['running']} priority-2 requests of {prompt_tokens} tokens running and"
+            f" {state['free']} of {num_blocks} blocks free; after it, {after['running']} running and"
+            f" {after['waiting']} waiting"
         )
         for task in background:
             task.cancel()
