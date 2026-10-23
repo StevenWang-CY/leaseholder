@@ -26,6 +26,13 @@
 //!
 //! A third table times `POST /v1/events`, batches of one and four events, through a gateway without a policy
 //! and through policy leaseholder, which moves its sessions by each event under the admission lock.
+//!
+//! A fourth prices placement: the same requests through a gateway on two nodes, each a mock engine of its own,
+//! and through a gateway on one with the same admission policy, the two started together so that they serve the
+//! same requests: without an admission policy (placement least-loaded) and with policy leaseholder (placement
+//! leaseholder). Every request names the same session, so all but the first are requests of a placed session,
+//! which find their node in the placement table and keep it. The second engine and these gateways start once
+//! the first three tables have run, so those run in the process they always had.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -37,7 +44,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::serve::ListenerExt;
 use bytes::Bytes;
 use futures_util::stream;
@@ -130,10 +137,11 @@ fn main() {
         addr: bare_rt.block_on(start_bare_proxy(engine)),
         runtime: Some(bare_rt.handle().clone()),
     };
-    let gateway = |config: &str| Target {
-        addr: gateway_rt.block_on(start_gateway(engine, config)),
+    let gateway_on = |engines: &[SocketAddr], config: &str| Target {
+        addr: gateway_rt.block_on(start_gateway(engines, config)),
         runtime: Some(gateway_rt.handle().clone()),
     };
+    let gateway = |config: &str| gateway_on(&[engine], config);
     let targets = [direct, bare, gateway("")];
     // A gateway without a policy for the policy table, with its own overhead histogram, and policy leaseholder
     // once more for the run with events. These gateways have a voice tenant too.
@@ -161,6 +169,38 @@ fn main() {
         price_policies(&policies).await;
         time_events(&[&policies[0], &policies[POLICIES.len()]]).await;
     });
+    // The placement table's second engine and its gateways start only now, so that the tables above run in the
+    // process they ran in before placement. Each gateway on two nodes is priced against one on a single node
+    // with its admission policy.
+    let engines = [engine, engine_rt.block_on(start_engine())];
+    let priced = |name, engines: &[SocketAddr], config: String| Priced {
+        name,
+        target: gateway_on(engines, &format!("{voice}\n{config}")),
+        events: false,
+    };
+    let pairs = [
+        (
+            priced("one node, none", &engines[..1], String::new()),
+            priced(
+                "two nodes, least-loaded",
+                &engines,
+                "[placement]\npolicy = \"least-loaded\"".into(),
+            ),
+        ),
+        (
+            priced(
+                "one node, leaseholder",
+                &engines[..1],
+                format!("[admission]\n{leaseholder}"),
+            ),
+            priced(
+                "two nodes, leaseholder",
+                &engines,
+                format!("[placement]\npolicy = \"leaseholder\"\n[admission]\n{leaseholder}"),
+            ),
+        ),
+    ];
+    client_rt.block_on(price_placement(&pairs));
 }
 
 /// A gateway of the policy table: its policy, and whether lifecycle events flow while its requests run.
@@ -186,9 +226,11 @@ async fn serve(app: Router) -> SocketAddr {
     addr
 }
 
-/// The mock engine: JSON at once, or `CHUNKS` stamped SSE chunks `CHUNK_GAP` apart (the first at once).
+/// The mock engine: JSON at once, or `CHUNKS` stamped SSE chunks `CHUNK_GAP` apart (the first at once). Its
+/// `/health` answers the probes of a gateway on nodes.
 async fn start_engine() -> SocketAddr {
-    serve(Router::new().route(
+    let app = Router::new().route("/health", get(|| async {}));
+    serve(app.route(
         "/v1/chat/completions",
         post(|body: Bytes| async move {
             if memchr::memmem::find(&body, b"\"stream\":true").is_none() {
@@ -241,13 +283,24 @@ fn digest(key: &str) -> String {
         .collect()
 }
 
-/// A gateway in front of `engine`, with `extra` (more tenants, an `[admission]` table, or nothing) in its
-/// configuration.
-async fn start_gateway(engine: SocketAddr, extra: &str) -> SocketAddr {
+/// A gateway in front of `engines`, its upstream if there is one and nodes `a` and `b` if there are two, with
+/// `extra` (more tenants, `[admission]` and `[placement]` tables, or nothing) in its configuration.
+async fn start_gateway(engines: &[SocketAddr], extra: &str) -> SocketAddr {
+    let (upstream, nodes) = match engines {
+        [engine] => (format!("upstream = \"http://{engine}\""), String::new()),
+        _ => (
+            String::new(),
+            engines
+                .iter()
+                .zip(["a", "b"])
+                .map(|(engine, name)| format!("[nodes.{name}]\nupstream = \"http://{engine}\"\n"))
+                .collect(),
+        ),
+    };
     let config = Config::from_toml(&format!(
-        "upstream = \"http://{engine}\"\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
+        "{upstream}\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
          [tenants.agents]\nkeys_sha256 = [\"{}\"]\ntrusted = true\ndefault_class = \"background\"\n\
-         max_class = \"interactive\"\n{extra}",
+         max_class = \"interactive\"\n{nodes}{extra}",
         digest(KEY)
     ))
     .unwrap();
@@ -474,6 +527,95 @@ async fn price_policies(gateways: &[Priced]) {
     }
     println!();
     for gateway in gateways {
+        report_gateway_metric(&client, &gateway.target, gateway.name).await;
+    }
+}
+
+/// The fourth table: each pair's gateway on two nodes against its gateway on one, in the policy table's request
+/// scenarios. The two runs of a scenario alternate, the one-node run first, and the CPU columns are each run's.
+/// Each gateway's `lh_gateway_overhead_seconds` follows.
+async fn price_placement(pairs: &[(Priced, Priced)]) {
+    let client = http_client();
+    let small = chat_body(2 << 10, false);
+    // Warm every path, and place the session.
+    for (one, two) in pairs {
+        for gateway in [one, two] {
+            run(
+                &client,
+                &gateway.target,
+                &small,
+                Kind::Json,
+                8,
+                2_000,
+                BACKGROUND,
+            )
+            .await;
+            run(
+                &client,
+                &gateway.target,
+                &small,
+                Kind::Json,
+                8,
+                2_000,
+                REALTIME,
+            )
+            .await;
+        }
+    }
+    println!(
+        "\nPlacement: the requests of one placed session, through two nodes and through one. Microseconds, p50 / p99.\n"
+    );
+    println!(
+        "| Gateway | Scenario | Concurrency | One node | Two nodes | Added by placement | CPU per request, one / two |"
+    );
+    println!("|---|---|---:|---:|---:|---:|---:|");
+    let scenarios: [(&str, usize, usize, &str); 5] = [
+        ("Non-streaming, 2 KiB body", 1, 5_000, BACKGROUND),
+        ("Non-streaming, 2 KiB body", 8, 40_000, BACKGROUND),
+        ("Non-streaming, 2 KiB body", 64, 40_000, BACKGROUND),
+        ("Realtime, non-streaming, 2 KiB body", 1, 5_000, REALTIME),
+        ("Realtime, non-streaming, 2 KiB body", 8, 40_000, REALTIME),
+    ];
+    for (scenario, concurrency, count, class) in scenarios {
+        for (one, two) in pairs {
+            let base = run(
+                &client,
+                &one.target,
+                &small,
+                Kind::Json,
+                concurrency,
+                count,
+                class,
+            )
+            .await;
+            let placed = run(
+                &client,
+                &two.target,
+                &small,
+                Kind::Json,
+                concurrency,
+                count,
+                class,
+            )
+            .await;
+            let us = |samples: &Samples, q: f64| quantile(&samples.requests, q) as f64 / 1e3;
+            let cpu = |samples: &Samples| samples.busy.as_secs_f64() * 1e6 / count as f64;
+            println!(
+                "| {} | {scenario} | {concurrency} | {:.0} / {:.0} | {:.0} / {:.0} | {:.0} / {:.0} | {:.0} / {:.0} |",
+                two.name,
+                us(&base, 0.5),
+                us(&base, 0.99),
+                us(&placed, 0.5),
+                us(&placed, 0.99),
+                us(&placed, 0.5) - us(&base, 0.5),
+                us(&placed, 0.99) - us(&base, 0.99),
+                cpu(&base),
+                cpu(&placed),
+            );
+        }
+    }
+    println!();
+    for gateway in pairs.iter().flat_map(|(one, two)| [one, two]) {
         report_gateway_metric(&client, &gateway.target, gateway.name).await;
     }
 }
