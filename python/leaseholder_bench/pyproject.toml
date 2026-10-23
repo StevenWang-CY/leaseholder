@@ -28,3 +28,6 @@ leaseholder = "leaseholder_bench:plugins.yaml"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
+markers = [
+    "integration: needs more than this venv (the demo video's encoding runs the script with uv)",
+]

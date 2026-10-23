@@ -407,4 +407,6 @@ the exact first bytes from a request log, the Pareto marking, repeated points pl
 medians with every run kept, the stage waterfall's means and V2V marks, the report's columns that
 only some points have, compact records that give the report of their run directories byte for
 byte, the committed records (complete, without credentials, reported as `make reproduce-e2` reports
-them), and the names of the lines the voice worker writes.
+them), and the names of the lines the voice worker writes. `tests/test_demo.py` runs the demo
+video's renderer on a synthetic pair of calls ([`benchmarks/e2`](../../benchmarks/e2/README.md#the-demo-video));
+its encoding test is marked `integration` and left out of CI.

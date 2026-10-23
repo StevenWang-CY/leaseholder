@@ -77,3 +77,23 @@ make reproduce-e2
 ```
 
 The run directories themselves, with the raw records the report does not need (the gateway's request log, AIPerf's exports, the metric snapshots, the worker's journal, the GPU's samples, the tools' logs), are an asset of the GitHub release that publishes the results.
+
+## The demo video
+
+Two calls side by side, one stuttering and one smooth, while background agents run: [`demo.py`](demo.py) renders them from two points measured with `lh-bench e2 run --save-audio`, which has the callers save each call's audio and the times of its turns ([`lh-voice bots --save-audio`](../../python/leaseholder_voice/README.md#measurement-callers)). `campaign.sh` does not pass the option, so the two points are measured by hand, each after switching the GPU node to its engine as `campaign.sh` does (`variant.sh use` with what `lh-bench e2 engine ARM` prints), for example the frozen box and arm 9 in the discriminating scenario:
+
+```sh
+lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/disc-frozen-s24.toml --out ~/leaseholder/runs/e2/demo/disc-frozen-s24 --save-audio
+lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/disc-a9-s24.toml --out ~/leaseholder/runs/e2/demo/disc-a9-s24 --save-audio
+```
+
+Then, on a workstation with the two run directories fetched (`uv` installs the script's pinned numpy, matplotlib and imageio-ffmpeg, whose ffmpeg encodes):
+
+```sh
+uv run benchmarks/e2/demo.py $LH_E2_RESULTS/demo/disc-frozen-s24 $LH_E2_RESULTS/demo/disc-a9-s24 \
+  --labels "Tuned vLLM, the frozen box" "Leaseholder, arm 9" --out demo.mp4 --gif demo.gif
+```
+
+The video is 1280×720 at 30 frames a second. Each side shows its point's first call (`--caller`): its scrolling waveform, the caller above and the agent below; the current turn's wait, from the end of the caller's speech to the agent's first audio, counting live; each reply's V2V as the callers measured it, in a bar that grows while the caller waits; and the background goodput, the point's over its calls and the last 10 s of AIPerf's completed requests on the wall clock. Both calls show the same turns from `--first-turn` (default 0): `--turns` of them, by default as many as fit in `--seconds` (default 90). Turn k of both starts at the same moment, so the same line is answered side by side, and the call that is ahead waits in silence before its next line: only a caller's pause between turns is stretched, never a measured wait. The soundtrack is one call at a time, the left one for the first half and the right one for the second, and the side playing is highlighted. `--gif` writes the first 10 s (`--gif-seconds`) as a 640×360 GIF at 10 frames a second, for a README. A 90-second video takes two to three minutes to render.
+
+`python/leaseholder_bench/tests/test_demo.py` runs the renderer on a synthetic pair of calls, tones in the files `--save-audio` writes: in CI the excerpt, the aligned turns, the soundtrack and the frames, with the bench venv's numpy and matplotlib; and, marked integration since it fetches the script's dependencies, the script itself through `uv run` to an MP4 and a GIF (`uv run --extra test pytest -m integration tests/test_demo.py` in `python/leaseholder_bench`).
