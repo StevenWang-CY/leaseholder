@@ -1,0 +1,7 @@
+# E2 arm 9 without degrade, with a 48-token first-tokens window, in the discriminating scenario: undegraded replies'
+# first sentences outrun make-room's default 16-token window (disc-a9-no-degrade-s24), and degrade's 16-token cap,
+# which keeps them inside it, capped every reply there. This prices full replies. Measured after s2, on the same build.
+#   benchmarks/e2/campaign.sh benchmarks/e2/a9-window.campaign
+
+# engine make-room --additional-config.make_room.budget_cap_tokens 48
+arms/disc-a9-window48-s24.toml

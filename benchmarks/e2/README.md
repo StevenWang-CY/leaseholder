@@ -65,6 +65,8 @@ The other arms take an earlier arm's winner, so their files are written from its
 
 [`a9-standard.campaign`](a9-standard.campaign) puts arm 9 in the standard scenario at 8, 16 and 24 session trees, as W2 measured arms 2 to 8, so that its frontier stands beside theirs. [`s1.campaign`](s1.campaign) and [`s2.campaign`](s2.campaign) repeat the realistic operating point, 16 session trees, for the frozen box and arm 9, so that each has three runs there.
 
+[`a9-window.campaign`](a9-window.campaign) measures arm 9 without degrade and with make-room's first-tokens window at 48 tokens, after `s2`: without degrade, a reply's first sentence can outrun the default 16-token window, and degrade's 16-token cap, which keeps it inside, capped every reply in the discriminating scenario.
+
 The `[admission]` keys are those of `lh-gateway`'s configuration ([its README](../../crates/lh-gateway/README.md)); `lh-bench e2 run` passes the `[gateway]` table through as it is.
 
 **SMG as shipped (arm 8b).** `lh-smg.service` runs SMG 1.13.0's priority scheduler with its defaults. A vLLM worker behind its `openai` backend reports no capacity, so SMG sizes its pool at 64 slots, and its built-in reservations (system 32, interactive at least 128, default 10%) do not fit: it scales them down to system 19, interactive 39 and default 4, which leaves 2 slots for the bulk class, where the gateway sends background requests. Measured against `lh-bench mock-server`, 40 concurrent bulk requests went through 2 at a time, and the others wait in SMG's bulk queue (1,024 deep, 503 after 300 s). As shipped, arm 8b therefore caps the agents at 2 requests in flight; reservations that fit the pool take a `--priority-scheduler-config` file.
