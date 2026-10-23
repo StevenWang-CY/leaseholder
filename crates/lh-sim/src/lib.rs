@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod mrc;
 pub mod pauses;
 pub mod prefix;
+pub mod regime;
 pub mod replay;
 pub mod replay_log;
 pub mod retention;

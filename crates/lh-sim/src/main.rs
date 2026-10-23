@@ -15,7 +15,7 @@ use lh_sim::replay::{Pauses, ReplayConfig, Service};
 use lh_sim::replay_log;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
 use lh_sim::scheduler::{Scheduler, StepBudget};
-use lh_sim::{metrics, mrc};
+use lh_sim::{metrics, mrc, regime};
 use serde_json::json;
 
 #[derive(Parser)]
@@ -38,6 +38,9 @@ enum Command {
     Mrc(MrcArgs),
     /// Replays a measured AIPerf run (its profile_export.jsonl) through the engine model alone.
     ReplayLog(LogArgs),
+    /// Runs the E1 information ladder over a grid of session counts, CPU tier sizes and pause
+    /// sources: a CSV of every arm in every cell, and a Markdown regime map.
+    Regime(RegimeArgs),
     /// Dumps AIPerf's replay structure and lane plan as the simulator builds it, in the format of
     /// scripts/aiperf_reference.py, to check the port against AIPerf.
     #[command(hide = true)]
@@ -285,6 +288,38 @@ struct MrcArgs {
 }
 
 #[derive(Args)]
+struct RegimeArgs {
+    /// The workload; --concurrency and --pauses give way to --sessions and --pause-sources.
+    #[command(flatten)]
+    replay: ReplayArgs,
+    #[command(flatten)]
+    cost: CostArgs,
+    /// Session counts (AIPerf's lanes): the KV pressure grows with them.
+    #[arg(long, value_delimiter = ',', default_value = "5,8,12,16,24,32,40")]
+    sessions: Vec<usize>,
+    /// CPU tier sizes as multiples of the GPU pool.
+    #[arg(long = "cpu-ratio", value_delimiter = ',', default_value = "2,4,8")]
+    cpu_ratios: Vec<f64>,
+    /// Pause sources: trace, tracelab.
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "trace,tracelab"
+    )]
+    pause_sources: Vec<PausesArg>,
+    /// Cells to run at once. Default: the machine's cores.
+    #[arg(long)]
+    jobs: Option<usize>,
+    /// Write one row per cell and arm to this CSV file.
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Write the regime map to this Markdown file.
+    #[arg(long)]
+    markdown: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct LogArgs {
     /// The Weka traces the run replayed.
     traces: PathBuf,
@@ -338,6 +373,7 @@ fn main() -> ExitCode {
         Command::Run(args) => run(args),
         Command::Mrc(args) => mrc(args),
         Command::ReplayLog(args) => replay_log(args),
+        Command::Regime(args) => regime(args),
         Command::AiperfPlan(args) => aiperf_plan(args),
     };
     match result {
@@ -618,6 +654,52 @@ fn mrc(args: MrcArgs) -> Result<(), String> {
     }
     if let Some(path) = &args.csv {
         write(path, &text)?;
+    }
+    Ok(())
+}
+
+fn regime(args: RegimeArgs) -> Result<(), String> {
+    let mut cfg = RunConfig::frozen_box(args.replay.config());
+    cfg.cost = args.cost.cost()?;
+    cfg.service = args.cost.service()?;
+    let mut cells = Vec::new();
+    for &source in &args.pause_sources {
+        for &sessions in &args.sessions {
+            for &cpu_ratio in &args.cpu_ratios {
+                let pool = FROZEN_BOX_POOL_TOKENS * cfg.replay.token_scale as u64;
+                cells.push(regime::Cell {
+                    pauses: args.replay.pauses(source),
+                    sessions,
+                    cpu_ratio,
+                    capacity: TierCapacity::with_cpu_ratio(&cfg.geometry, pool, cpu_ratio),
+                });
+            }
+        }
+    }
+    let jobs = args.jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    });
+    let start = std::time::Instant::now();
+    let results = regime::sweep(
+        &args.replay.traces,
+        args.replay.plan_options(),
+        &cfg,
+        &cells,
+        jobs,
+    )?;
+    let map = regime::markdown(&results);
+    print!("{map}");
+    println!(
+        "{} cells x {} arms in {:.1} s on {jobs} threads",
+        cells.len(),
+        Arm::E1.len(),
+        start.elapsed().as_secs_f64()
+    );
+    if let Some(path) = &args.csv {
+        write(path, &regime::csv(&results))?;
+    }
+    if let Some(path) = &args.markdown {
+        write(path, &map)?;
     }
     Ok(())
 }
