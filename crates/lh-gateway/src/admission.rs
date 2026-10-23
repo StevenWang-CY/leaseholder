@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use lh_core::admission::{self, Action, Policy, RequestId, SessionUsage};
+use lh_core::admission::{self, Action, Estimate, Policy, RequestId, SessionUsage};
 use lh_proto::{SessionId, SloClass};
 use tokio::sync::watch;
 
@@ -86,10 +86,13 @@ impl Admission {
         let (sender, signal) = watch::channel(Signal::Admitted);
         let (id, tokens) = {
             let mut state = self.lock();
-            let tokens = estimated.as_ref().map_or(0, |(session, body_bytes)| {
-                state.sessions.estimate(session, *body_bytes)
-            });
-            let Ok(arrival) = state.core.arrive(class, tokens) else {
+            let estimate = estimated
+                .as_ref()
+                .map_or(Estimate::default(), |(session, body_bytes)| {
+                    state.sessions.estimate(session, *body_bytes)
+                });
+            let tokens = estimate.tokens;
+            let Ok(arrival) = state.core.arrive(class, estimate) else {
                 drop(state);
                 self.metrics.refused(class, Refusal::QueueFull);
                 return Err(Refusal::QueueFull);
@@ -296,7 +299,7 @@ struct Sessions {
 }
 
 impl Sessions {
-    fn estimate(&self, session: &SessionId, body_bytes: u64) -> u64 {
+    fn estimate(&self, session: &SessionId, body_bytes: u64) -> Estimate {
         admission::estimate_tokens(body_bytes, self.usage.get(session).copied())
     }
 
@@ -334,9 +337,9 @@ mod tests {
         let first = SessionId::new("s-0").unwrap();
         let last = SessionId::new(format!("s-{SESSIONS}")).unwrap();
         // Forgotten: a quarter token per byte again.
-        assert_eq!(sessions.estimate(&first, 400), 100);
-        assert_eq!(sessions.estimate(&last, 400), SESSIONS as u64 + 1);
+        assert_eq!(sessions.estimate(&first, 400).tokens, 100);
+        assert_eq!(sessions.estimate(&last, 400).tokens, SESSIONS as u64 + 1);
         sessions.observe(&last, usage(7));
-        assert_eq!(sessions.estimate(&last, 800), 107);
+        assert_eq!(sessions.estimate(&last, 800).tokens, 107);
     }
 }

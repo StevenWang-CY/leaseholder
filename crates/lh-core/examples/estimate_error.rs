@@ -78,7 +78,7 @@ fn estimates(records: &[Record]) -> (Vec<u64>, Vec<u64>, usize) {
         if start {
             let usage = last.get(r.session.as_str()).copied();
             with_report += usize::from(usage.is_some());
-            anchored[i] = estimate_tokens(r.bytes, usage);
+            anchored[i] = estimate_tokens(r.bytes, usage).tokens;
         } else {
             let usage = SessionUsage {
                 prompt_tokens: r.prompt_tokens,
@@ -89,7 +89,7 @@ fn estimates(records: &[Record]) -> (Vec<u64>, Vec<u64>, usize) {
     }
     let fallback = records
         .iter()
-        .map(|r| estimate_tokens(r.bytes, None))
+        .map(|r| estimate_tokens(r.bytes, None).tokens)
         .collect();
     (anchored, fallback, with_report)
 }
