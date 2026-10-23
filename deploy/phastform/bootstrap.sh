@@ -10,6 +10,11 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$HOME/leaseholder
 uv=${UV:-$HOME/.local/bin/uv}
+# The locks were resolved with uv 0.11.27; uv 0.10.8 could not resolve the engine lock's torchcodec==0.17.0+cu130
+# through --torch-backend.
+version=$("$uv" --version | awk '{print $2}')
+[[ $(printf '%s\n' 0.11.27 "$version" | sort -V | head -1) == 0.11.27 ]] ||
+  { echo "bootstrap: uv $version is older than 0.11.27; set UV to a newer uv" >&2; exit 2; }
 mkdir -p "$root"/{venvs,vendor,cache/flashinfer,cache/curand_include,runs}
 
 venv() { # venv NAME REQUIREMENTS UV_ARGS...
