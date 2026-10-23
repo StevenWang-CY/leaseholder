@@ -10,10 +10,10 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 
 **What is ours, and what is not.** Priority classes, budgets, eviction of best-effort work and parking with prefetch already ship (llm-d, SMG, Dynamo) or are published (ConServe, Tokencake, MORI); they are baselines here. The contributions are headroom timed by lifecycle events and freed by parking, an engine fix that lets a waiting high-priority request preempt running work under KV pressure, and a validated recompute ledger. [PRIOR-ART.md](PRIOR-ART.md) gives the sources.
 
-**What exists and what is planned.** This document is the target design. After W1, the first week of a 12-week plan:
-- **deployed:** the frozen box on Phastform (§5), and on cyan the SSH tunnel, the control plane (`lh-gateway`) and the voice plane (§7);
-- **in code, v0:** the wire types, the gateway, the cost model and KV geometry, the simulator and the engine plugins (§4.1);
-- **planned:** the `lh-core` policies (admission, turn-imminent headroom, leases, prefetch, the ledger) and `lh-node`, from W3. Sections that depend on them are marked *planned*.
+**What exists and what is planned.** This document is the target design. After W2, the second week of a 12-week plan:
+- **deployed:** the frozen box on Phastform (§5) and, for booked windows, on Gray; on cyan the SSH tunnels, the control plane (`lh-gateway`) and the voice plane (§7);
+- **in code:** the wire types, the gateway with its admission point and E2's baseline policies, the cost and step-time models and KV geometry, the simulator with its contention model, the engine plugins and the E2 harness (§4.1);
+- **planned:** Leaseholder's own `lh-core` policies (turn-imminent headroom and the critical-window throttle from W3; leases, prefetch and the ledger with `lh-node` from W5). Sections that depend on them are marked *planned*.
 
 ## 1. Tenets
 
@@ -48,14 +48,14 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 │  vLLM 0.32 · Qwen3-4B-Instruct-2507-FP8 · KV pool 36,400 tokens (5 GiB) · 32k context        :8000      │
 │  native CPU offload tier, 20 GiB in /dev/shm · KV events (ZMQ) · priority scheduling                    │
 │  vLLM Whisper large-v3-turbo (STT) :8100 · Kokoro-82M on Kokoro-FastAPI (TTS) :8880                     │
-│  lh-node sidecar (W3): KV-event relay, engine epoch, health                                             │
+│  lh-node sidecar (W5): KV-event relay, engine epoch, health                                             │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 Gray: second RTX 5060 Ti, booked windows; same image; dedicate-vs-pool experiment, node-loss drill
 mustard: Prometheus · Grafana · datasets · run archive      peacock: Linux builds · simulator runs
 ```
 
-In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus and Grafana on mustard, and the Gray window are planned; the rest is deployed ([RUNBOOK.md](../ops/RUNBOOK.md)).
+In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus and Grafana on mustard, and Gray's experiments are planned; the rest, Gray's frozen box included, is deployed ([RUNBOOK.md](../ops/RUNBOOK.md)).
 
 | Host | Role |
 |---|---|
