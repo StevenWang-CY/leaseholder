@@ -73,3 +73,17 @@ default_class = "interactive"
 # Every policy's queues (leaseholder refuses no request for its wait, and takes no queue_timeout_s):
 # queue_limit = 1024
 # queue_timeout_s = 60
+
+# Two GPU nodes instead of one upstream (crates/lh-gateway/README.md#placement): leave `upstream` out, name each node
+# with its tunnel's port, and choose how sessions are placed. E2's two-node points set this in their arm files.
+# [nodes.phastform]
+# upstream = "http://127.0.0.1:18000"
+# [nodes.gray]
+# upstream = "http://127.0.0.1:28000"
+#
+# [placement]
+# policy = "least-loaded"
+# idle_s = 300
+# probe_interval_s = 1
+# Placement leaseholder needs [admission] policy = "leaseholder". Placement dedicated needs each node's classes:
+# classes = ["realtime"] in one node's table and classes = ["interactive", "background"] in the other's.

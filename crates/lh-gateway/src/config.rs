@@ -10,14 +10,18 @@ use std::time::Duration;
 use http::uri::{Authority, Scheme, Uri};
 use lh_core::FROZEN_BOX_POOL_TOKENS;
 use lh_core::admission::{Ceilings, Leaseholder, Policy, Trigger};
+use lh_core::placement;
 use lh_proto::SloClass;
 use serde::Deserialize;
 
 /// A validated configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The engine's address (`host:port`), spoken to over plain HTTP/1.1.
+    /// The engine's address (`host:port`), spoken to over plain HTTP/1.1; with `[nodes]`, the first node's.
     pub upstream: Authority,
+    /// `[nodes]` and `[placement]`: several GPU nodes and how sessions are placed on them; `None` for one
+    /// `upstream`.
+    pub placement: Option<Placement>,
     /// How long an idle upstream connection is kept for reuse. It must be shorter than the engine's own
     /// keep-alive, or a request can be sent on a connection the engine is closing.
     pub upstream_idle_timeout: Duration,
@@ -103,6 +107,29 @@ pub struct Admission {
     pub step_tokens: Option<u64>,
 }
 
+/// `[nodes]` and `[placement]`: the GPU nodes, and how sessions are placed on them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub policy: placement::Policy,
+    /// The nodes, by name.
+    pub nodes: Vec<Node>,
+    /// How long a session keeps its node without a request (`idle_s`); its next request is placed again.
+    pub idle: Duration,
+    /// How often each node's `/health` is probed (`probe_interval_s`). A node takes no new sessions once three
+    /// probes in a row fail.
+    pub probe_interval: Duration,
+}
+
+/// One of `[nodes]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Node {
+    pub name: String,
+    pub upstream: Authority,
+    /// Whether it serves each class, strictest first: those `classes` names under placement dedicated, and
+    /// every class under the others.
+    pub serves: [bool; 3],
+}
+
 /// One entry of `upstream_priority`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -169,6 +196,8 @@ struct RawConfig {
     upstream: String,
     upstream_idle_timeout_s: f64,
     upstream_priority: Vec<PrioritySignal>,
+    nodes: BTreeMap<String, RawNode>,
+    placement: Option<RawPlacement>,
     admission: RawAdmission,
     listen: Vec<RawListen>,
     tenants: BTreeMap<String, RawTenant>,
@@ -190,6 +219,8 @@ impl Default for RawConfig {
             // vLLM closes idle connections after VLLM_HTTP_TIMEOUT_KEEP_ALIVE, 5 s by default.
             upstream_idle_timeout_s: 4.0,
             upstream_priority: vec![PrioritySignal::VllmHeader],
+            nodes: BTreeMap::new(),
+            placement: None,
             admission: RawAdmission::default(),
             listen: Vec::new(),
             tenants: BTreeMap::new(),
@@ -289,6 +320,41 @@ struct RawTenant {
     max_class: Option<SloClass>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNode {
+    upstream: String,
+    /// Placement dedicated only.
+    classes: Option<Vec<SloClass>>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawPlacement {
+    policy: PlacementName,
+    idle_s: Option<f64>,
+    probe_interval_s: Option<f64>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum PlacementName {
+    Dedicated,
+    #[default]
+    LeastLoaded,
+    Leaseholder,
+}
+
+impl From<PlacementName> for placement::Policy {
+    fn from(name: PlacementName) -> Self {
+        match name {
+            PlacementName::Dedicated => Self::Dedicated,
+            PlacementName::LeastLoaded => Self::LeastLoaded,
+            PlacementName::Leaseholder => Self::Leaseholder,
+        }
+    }
+}
+
 impl Config {
     /// Reads and validates a configuration file.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -310,9 +376,19 @@ impl Config {
 
 impl RawConfig {
     fn validate(self) -> Result<Config, String> {
-        let upstream = parse_upstream(&self.upstream)?;
+        // One engine is `upstream`; several are `[nodes]`, without it.
+        let upstream = match self.nodes.iter().next() {
+            None => parse_upstream(&self.upstream)?,
+            Some(_) if !self.upstream.is_empty() => {
+                return Err(
+                    "set upstream for one engine or [nodes.<name>] for several, not both".into(),
+                );
+            }
+            Some((name, node)) => node_upstream(name, &node.upstream)?,
+        };
         let upstream_priority = priority_signals(&self.upstream_priority)?;
         let admission = self.admission.validate()?;
+        let placement = placement(self.nodes, self.placement, admission.as_ref())?;
 
         let mut tenants = Vec::with_capacity(self.tenants.len());
         let mut digests = HashSet::new();
@@ -388,6 +464,7 @@ impl RawConfig {
         }
         Ok(Config {
             upstream,
+            placement,
             upstream_idle_timeout: seconds(
                 "upstream_idle_timeout_s",
                 self.upstream_idle_timeout_s,
@@ -657,12 +734,7 @@ impl RawAdmission {
 
 impl RawTenant {
     fn validate(self, name: String) -> Result<Tenant, String> {
-        let valid_name = !name.is_empty()
-            && name.len() <= 64
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-        if !valid_name {
+        if !valid_name(&name) {
             return Err(format!(
                 "tenant name {name:?}: use 1 to 64 characters from [A-Za-z0-9._-]"
             ));
@@ -692,6 +764,120 @@ impl RawTenant {
             max_class,
         })
     }
+}
+
+/// `[nodes]` and `[placement]`. Without nodes there is nothing to place; with them, a node's `classes` belong to
+/// placement dedicated alone, and setting them for another policy is an error, as under `[admission]`.
+fn placement(
+    nodes: BTreeMap<String, RawNode>,
+    raw: Option<RawPlacement>,
+    admission: Option<&Admission>,
+) -> Result<Option<Placement>, String> {
+    if nodes.is_empty() {
+        return match raw {
+            None => Ok(None),
+            Some(_) => Err("[placement] needs [nodes.<name>]: one engine is upstream".into()),
+        };
+    }
+    if nodes.len() == 1 {
+        return Err("[nodes] needs two nodes or more: one engine is upstream".into());
+    }
+    let raw = raw.unwrap_or_default();
+    let policy = placement::Policy::from(raw.policy);
+    let dedicated = policy == placement::Policy::Dedicated;
+    let leaseholder = matches!(
+        admission,
+        Some(Admission {
+            policy: Policy::Leaseholder(_),
+            ..
+        })
+    );
+    if policy == placement::Policy::Leaseholder && !leaseholder {
+        return Err(
+            "placement leaseholder reads policy leaseholder's state: set [admission] policy = \
+             \"leaseholder\""
+                .into(),
+        );
+    }
+    let mut validated: Vec<Node> = Vec::with_capacity(nodes.len());
+    for (name, node) in nodes {
+        if !valid_name(&name) {
+            return Err(format!(
+                "node name {name:?}: use 1 to 64 characters from [A-Za-z0-9._-]"
+            ));
+        }
+        let upstream = node_upstream(&name, &node.upstream)?;
+        if let Some(other) = validated.iter().find(|other| other.upstream == upstream) {
+            return Err(format!(
+                "nodes.{} and nodes.{name} have the same upstream",
+                other.name
+            ));
+        }
+        let serves = match (node.classes, dedicated) {
+            (None, false) => [true; 3],
+            (Some(_), false) => {
+                return Err(format!(
+                    "nodes.{name}.classes applies only to placement dedicated"
+                ));
+            }
+            (None, true) => {
+                return Err(format!(
+                    "nodes.{name}: placement dedicated needs the classes it serves"
+                ));
+            }
+            (Some(classes), true) => {
+                let mut serves = [false; 3];
+                for class in classes {
+                    if std::mem::replace(&mut serves[class as usize], true) {
+                        return Err(format!("nodes.{name}.classes lists {class} twice"));
+                    }
+                }
+                if serves == [false; 3] {
+                    return Err(format!("nodes.{name}.classes is empty"));
+                }
+                serves
+            }
+        };
+        validated.push(Node {
+            name,
+            upstream,
+            serves,
+        });
+    }
+    let unserved = SloClass::ALL
+        .into_iter()
+        .find(|&class| !validated.iter().any(|node| node.serves[class as usize]));
+    if let Some(class) = unserved {
+        return Err(format!(
+            "placement dedicated: no node serves {class} requests"
+        ));
+    }
+    Ok(Some(Placement {
+        policy,
+        nodes: validated,
+        // Anthropic's prompt cache keeps a prefix for 5 minutes after its last use; E2's agents think for at most
+        // 2 minutes, and a call's turns are seconds apart.
+        idle: seconds("placement.idle_s", raw.idle_s.unwrap_or(300.0))?,
+        // The window of the gateway's own /ready.
+        probe_interval: seconds(
+            "placement.probe_interval_s",
+            raw.probe_interval_s.unwrap_or(1.0),
+        )?,
+    }))
+}
+
+/// A tenant or node name: 1 to 64 characters from `[A-Za-z0-9._-]`, which metric labels, socket files and unit
+/// names can carry.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn node_upstream(name: &str, raw: &str) -> Result<Authority, String> {
+    parse_upstream(raw).map_err(|e| format!("nodes.{name}: {e}"))
 }
 
 fn parse_upstream(raw: &str) -> Result<Authority, String> {
@@ -1129,6 +1315,181 @@ mod tests {
             err.contains("max_defer_s does not apply to policy static-cap"),
             "{err}"
         );
+    }
+
+    /// A configuration with two GPU nodes, one TCP listener, a tenant, and more tables.
+    fn nodes(tables: &str) -> Result<Config, String> {
+        Config::from_toml(&format!(
+            "[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\n\
+             [nodes.gray]\nupstream = \"http://127.0.0.1:28000\"\n\
+             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n{tables}"
+        ))
+        .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn nodes_and_placement_take_their_own_keys_and_defaults() {
+        assert_eq!(
+            config("", &format!("[tenants.a]\nkeys_sha256 = [\"{KEY}\"]"))
+                .unwrap()
+                .placement,
+            None
+        );
+        let pool = nodes("").unwrap();
+        let placement = pool.placement.unwrap();
+        assert_eq!(placement.policy, placement::Policy::LeastLoaded);
+        assert_eq!(
+            (placement.idle, placement.probe_interval),
+            (Duration::from_secs(300), Duration::from_secs(1))
+        );
+        // By name, every class served; the configuration's upstream is the first node's.
+        let names: Vec<_> = placement
+            .nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.upstream.as_str(), n.serves))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("gray", "127.0.0.1:28000", [true; 3]),
+                ("phastform", "127.0.0.1:18000", [true; 3])
+            ]
+        );
+        assert_eq!(pool.upstream.as_str(), "127.0.0.1:28000");
+
+        let dedicated = Config::from_toml(&format!(
+            "[nodes.voice]\nupstream = \"http://127.0.0.1:18000\"\nclasses = [\"realtime\"]\n\
+             [nodes.agents]\nupstream = \"http://127.0.0.1:28000\"\nclasses = [\"background\", \"interactive\"]\n\
+             [placement]\npolicy = \"dedicated\"\nidle_s = 60\nprobe_interval_s = 0.25\n\
+             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n"
+        ))
+        .unwrap()
+        .placement
+        .unwrap();
+        assert_eq!(dedicated.policy, placement::Policy::Dedicated);
+        let serves: Vec<_> = dedicated
+            .nodes
+            .iter()
+            .map(|n| (n.name.as_str(), n.serves))
+            .collect();
+        assert_eq!(
+            serves,
+            [
+                ("agents", [false, true, true]),
+                ("voice", [true, false, false])
+            ]
+        );
+        assert_eq!(
+            (dedicated.idle, dedicated.probe_interval),
+            (Duration::from_secs(60), Duration::from_millis(250))
+        );
+
+        let arm9 = "[admission]\npolicy = \"leaseholder\"\nheadroom_tokens = 1024\n\
+                    critical_prefill_budget_ms = 150\ndegrade_max_tokens = 16";
+        let leaseholder = nodes(&format!("[placement]\npolicy = \"leaseholder\"\n{arm9}")).unwrap();
+        assert_eq!(
+            leaseholder.placement.unwrap().policy,
+            placement::Policy::Leaseholder
+        );
+    }
+
+    #[test]
+    fn placement_mistakes_are_rejected_with_their_cause() {
+        let a =
+            format!("[[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]");
+        let one = "[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"";
+        let dedicated = "[placement]\npolicy = \"dedicated\"";
+        for (text, cause) in [
+            (
+                format!("upstream = \"http://127.0.0.1:18000\"\n{one}\n{a}"),
+                "set upstream for one engine or [nodes.<name>] for several, not both",
+            ),
+            (format!("{one}\n{a}"), "[nodes] needs two nodes or more"),
+            (
+                format!(
+                    "upstream = \"http://127.0.0.1:18000\"\n[placement]\npolicy = \"dedicated\"\n{a}"
+                ),
+                "[placement] needs [nodes.<name>]",
+            ),
+        ] {
+            let err = Config::from_toml(&text).unwrap_err().to_string();
+            assert!(err.contains(cause), "{text}: {err}");
+        }
+        for (tables, cause) in [
+            ("[placement]\npolicy = \"round-robin\"", "unknown variant"),
+            ("[placement]\nidle = 60", "unknown field"),
+            (
+                "[placement]\nidle_s = 0",
+                "placement.idle_s must be a positive",
+            ),
+            (
+                "[placement]\nprobe_interval_s = -1",
+                "placement.probe_interval_s must be a positive",
+            ),
+            ("[nodes.gray.extra]\n", "unknown field"),
+            (
+                "[nodes.\"a b\"]\nupstream = \"http://127.0.0.1:38000\"",
+                "node name \"a b\"",
+            ),
+            (
+                "[nodes.three]\nupstream = \"http://127.0.0.1:18000\"",
+                "nodes.phastform and nodes.three have the same upstream",
+            ),
+            (
+                "[nodes.three]\nupstream = \"http://engine:8000/v1\"",
+                "nodes.three: upstream \"http://engine:8000/v1\"",
+            ),
+            ("[nodes.three]", "missing field `upstream`"),
+            (
+                "[nodes.three]\nupstream = \"http://127.0.0.1:38000\"\nclasses = [\"realtime\"]",
+                "nodes.three.classes applies only to placement dedicated",
+            ),
+            (
+                dedicated,
+                "nodes.gray: placement dedicated needs the classes it serves",
+            ),
+            (
+                "[placement]\npolicy = \"leaseholder\"",
+                "placement leaseholder reads policy leaseholder's state",
+            ),
+            (
+                "[placement]\npolicy = \"leaseholder\"\n\
+                 [admission]\npolicy = \"static-cap\"\nbackground_max_in_flight = 4",
+                "placement leaseholder reads policy leaseholder's state",
+            ),
+        ] {
+            let err = nodes(tables).unwrap_err();
+            assert!(err.contains(cause), "{tables}: {err}");
+        }
+        let classes = |gray: &str, phastform: &str| {
+            Config::from_toml(&format!(
+                "[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\nclasses = {phastform}\n\
+                 [nodes.gray]\nupstream = \"http://127.0.0.1:28000\"\nclasses = {gray}\n{dedicated}\n{a}"
+            ))
+            .map_err(|e| e.to_string())
+        };
+        assert!(classes("[\"background\", \"interactive\"]", "[\"realtime\"]").is_ok());
+        for (gray, phastform, cause) in [
+            (
+                "[\"background\"]",
+                "[\"realtime\"]",
+                "no node serves interactive requests",
+            ),
+            (
+                "[\"background\", \"background\"]",
+                "[\"realtime\"]",
+                "nodes.gray.classes lists background twice",
+            ),
+            (
+                "[]",
+                "[\"realtime\", \"interactive\", \"background\"]",
+                "nodes.gray.classes is empty",
+            ),
+            ("[\"bulk\"]", "[\"realtime\"]", "unknown variant"),
+        ] {
+            let err = classes(gray, phastform).unwrap_err();
+            assert!(err.contains(cause), "{gray} {phastform}: {err}");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "lh-gateway"
-description = "Leaseholder gateway: the serving harness in front of vLLM (auth, sanitization, sessions, classes, admission, SSE passthrough, lifecycle events, metrics)"
+description = "Leaseholder gateway: the serving harness in front of vLLM (auth, sanitization, sessions, classes, admission, placement on GPU nodes, SSE passthrough, lifecycle events, metrics)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

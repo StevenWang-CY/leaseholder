@@ -311,9 +311,21 @@ pub fn key_digest(key: &str) -> String {
 /// background, max interactive) and `bench` (untrusted, default interactive). `top` holds extra top-level keys.
 pub fn gateway_toml(upstream: SocketAddr, socket: &std::path::Path, top: &str) -> String {
     format!(
-        r#"
-upstream = "http://{upstream}"
-log_level = "debug"
+        "\nupstream = \"http://{upstream}\"\n{}",
+        harness_toml(socket, top)
+    )
+}
+
+/// The test configuration of a gateway on GPU nodes instead of one upstream: `tables` holds `[nodes.<name>]`,
+/// `[placement]` and any other table.
+pub fn nodes_toml(socket: &std::path::Path, tables: &str) -> String {
+    harness_toml(socket, tables)
+}
+
+/// The test configuration's listeners and tenants, after `top`.
+fn harness_toml(socket: &std::path::Path, top: &str) -> String {
+    format!(
+        r#"log_level = "debug"
 {top}
 
 [[listen]]
@@ -351,6 +363,12 @@ impl Gateway {
     pub async fn start_with(upstream: SocketAddr, top: &str, sink: Arc<dyn EventSink>) -> Self {
         let config = Config::from_toml(&gateway_toml(upstream, &socket_path(), top)).unwrap();
         Self::from_config(config, sink).await
+    }
+
+    /// A gateway on GPU nodes: `tables` holds `[nodes.<name>]`, `[placement]` and any other table.
+    pub async fn start_nodes(tables: &str) -> Self {
+        let config = Config::from_toml(&nodes_toml(&socket_path(), tables)).unwrap();
+        Self::from_config(config, Arc::new(LogSink)).await
     }
 
     pub async fn from_config(config: Config, sink: Arc<dyn EventSink>) -> Self {

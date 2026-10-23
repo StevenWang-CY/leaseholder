@@ -171,6 +171,26 @@ pub(crate) fn resolve_session(
     inputs: &ClientInputs,
     prompt_cache_key: Option<&str>,
 ) -> SessionId {
+    match session_source(inputs, prompt_cache_key) {
+        Some(raw) => std::str::from_utf8(raw)
+            .ok()
+            .and_then(|id| SessionId::new(id).ok())
+            .unwrap_or_else(|| hashed_session(tenant, raw)),
+        None => new_id("m-", &random_hex()),
+    }
+}
+
+/// Whether a request names its session, so that its next requests can name the same one; a minted session is
+/// the request's own.
+pub(crate) fn names_session(inputs: &ClientInputs, prompt_cache_key: Option<&str>) -> bool {
+    session_source(inputs, prompt_cache_key).is_some()
+}
+
+/// The first present source of a request's session, in PROTOCOL.md's order.
+fn session_source<'a>(
+    inputs: &'a ClientInputs,
+    prompt_cache_key: Option<&'a str>,
+) -> Option<&'a [u8]> {
     let sources = [
         inputs.session_id.as_ref().map(HeaderValue::as_bytes),
         inputs
@@ -179,13 +199,7 @@ pub(crate) fn resolve_session(
             .map(HeaderValue::as_bytes),
         prompt_cache_key.map(str::as_bytes),
     ];
-    match sources.into_iter().flatten().find(|raw| !raw.is_empty()) {
-        Some(raw) => std::str::from_utf8(raw)
-            .ok()
-            .and_then(|id| SessionId::new(id).ok())
-            .unwrap_or_else(|| hashed_session(tenant, raw)),
-        None => new_id("m-", &random_hex()),
-    }
+    sources.into_iter().flatten().find(|raw| !raw.is_empty())
 }
 
 fn hashed_session(tenant: &str, raw: &[u8]) -> SessionId {

@@ -34,9 +34,10 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::admission::Ticket;
 use crate::exchange::Exchange;
 use crate::metrics::{Outcome, Refusal, Route, UpstreamError};
+use crate::placement::{InFlight, Node};
 use crate::sanitize::{
-    REQUEST_ID, cap_reply, resolve_class, resolve_session, rewrite_body, sanitize_headers,
-    set_engine_headers, strip_hop_by_hop,
+    REQUEST_ID, cap_reply, names_session, resolve_class, resolve_session, rewrite_body,
+    sanitize_headers, set_engine_headers, strip_hop_by_hop,
 };
 use crate::server::{App, Shared};
 use crate::usage::Scanner;
@@ -130,11 +131,25 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
     parts
         .headers
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    // The session's node with `[nodes]`, placed now if it has none; otherwise the one upstream.
+    let mut node = &shared.nodes[0];
+    let mut placed = None;
+    if let Some(placement) = &shared.placement {
+        let named = names_session(&inputs, body.prompt_cache_key.as_deref());
+        let Some(in_flight) = placement.request(&shared.nodes, &session, class, named) else {
+            ex.session = Some(session);
+            let message = format!("no ready node takes {class} requests");
+            return ex.error(StatusCode::SERVICE_UNAVAILABLE, "no_ready_node", message);
+        };
+        node = &shared.nodes[in_flight.node()];
+        ex.on_node(node);
+        placed = Some(in_flight);
+    }
     let session = &*ex.session.insert(session);
 
     // The admission point. Its decisions are the gateway's overhead; the time a request waits there is not.
     let mut start = read;
-    let ticket = match &shared.admission {
+    let ticket = match &node.admission {
         None => None,
         Some(admission) => {
             let arrived = Instant::now();
@@ -166,7 +181,7 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
         data: Some(body.json),
         sent: Some(sent),
     };
-    forward(&app, ex, parts, body, ticket).await
+    forward(&app, node, ex, parts, body, ticket, placed).await
 }
 
 /// `GET /v1/models`: authenticated and sanitized, with no session or class.
@@ -183,7 +198,15 @@ pub(crate) async fn models(app: App, request: Request) -> Response {
     ex.tenant = Some(Arc::clone(&tenant.name));
     sanitize_headers(&mut parts.headers, tenant.trusted, &shared.metrics);
     parts.headers.insert(REQUEST_ID.clone(), ex.id.clone());
-    forward(&app, ex, parts, UpstreamBody::empty(), None).await
+    // With `[nodes]`, any ready node knows the model.
+    let node = match shared.nodes.iter().find(|node| node.ready()) {
+        Some(node) => node,
+        None => &shared.nodes[0],
+    };
+    if shared.placement.is_some() {
+        ex.on_node(node);
+    }
+    forward(&app, node, ex, parts, UpstreamBody::empty(), None, None).await
 }
 
 /// Reads a request body of at most `limit` bytes.
@@ -213,38 +236,39 @@ pub(crate) async fn read_body(
     }
 }
 
-/// Sends the request upstream and relays the response. An admitted request's ticket goes with the relay and
-/// is given back when the response ends. A request shed before its response answers 429; one preempted
-/// before its first byte is sent again.
+/// Sends the request to `node` and relays the response. An admitted request's ticket and its place on its node
+/// go with the relay, and are given back when the response ends. A request shed before its response answers
+/// 429; one preempted before its first byte is sent again.
 async fn forward(
     app: &App,
+    node: &Node,
     mut ex: Exchange,
     mut parts: http::request::Parts,
     body: UpstreamBody,
     mut ticket: Option<Ticket>,
+    placed: Option<InFlight>,
 ) -> Response {
     let shared = &app.shared;
+    let upstream = &node.upstream;
     let path = parts.uri.path_and_query().cloned();
-    parts.uri = shared
-        .upstream
-        .uri(path.unwrap_or_else(|| PathAndQuery::from_static("/")));
+    parts.uri = upstream.uri(path.unwrap_or_else(|| PathAndQuery::from_static("/")));
     parts.version = Version::HTTP_11;
     parts.extensions.clear();
 
     ex.forwarded = true;
     let sent = match &mut ticket {
         Some(ticket) if ticket.preemptible() => {
-            resubmitting(shared, &mut ex, parts, body, ticket).await
+            resubmitting(shared, upstream, &mut ex, parts, body, ticket).await
         }
         Some(ticket) if ticket.sheddable() => {
             let request = http::Request::from_parts(parts, body);
             tokio::select! {
-                sent = send(shared, request) => sent.map(|response| (response, None)),
+                sent = send(shared, upstream, request) => sent.map(|response| (response, None)),
                 // Dropping the request future closes its connection, which aborts the engine request.
                 () = ticket.shed() => return ex.shed(),
             }
         }
-        _ => send(shared, http::Request::from_parts(parts, body))
+        _ => send(shared, upstream, http::Request::from_parts(parts, body))
             .await
             .map(|response| (response, None)),
     };
@@ -275,6 +299,7 @@ async fn forward(
         scanner,
         shared.stall_timeout,
         ticket,
+        placed,
     ));
     let body = ClientBody {
         frames: receiver,
@@ -298,8 +323,8 @@ enum Failure {
 }
 
 impl Failure {
+    /// The client's answer; the upstream error counts on the request's node.
     fn answer(self, ex: Exchange, shared: &Shared) -> Response {
-        let metrics = &shared.metrics;
         match self {
             Self::Upstream(err) => {
                 let kind = if err.is_connect() {
@@ -307,7 +332,7 @@ impl Failure {
                 } else {
                     UpstreamError::Request
                 };
-                metrics.upstream_error(kind);
+                ex.metrics().upstream_error(kind);
                 let mut message = format!("upstream request failed: {err}");
                 let mut source = err.source();
                 while let Some(cause) = source {
@@ -317,13 +342,13 @@ impl Failure {
                 ex.error(StatusCode::BAD_GATEWAY, "upstream_unavailable", message)
             }
             Self::Timeout(awaited) => {
-                metrics.upstream_error(UpstreamError::Timeout);
+                ex.metrics().upstream_error(UpstreamError::Timeout);
                 let timeout = shared.first_byte_timeout;
                 let message = format!("no {awaited} from the upstream within {timeout:?}");
                 ex.error(StatusCode::GATEWAY_TIMEOUT, "upstream_timeout", message)
             }
             Self::Body => {
-                metrics.upstream_error(UpstreamError::Body);
+                ex.metrics().upstream_error(UpstreamError::Body);
                 let message = "the upstream response broke off before its first byte";
                 ex.error(StatusCode::BAD_GATEWAY, "upstream_unavailable", message)
             }
@@ -335,9 +360,10 @@ impl Failure {
 /// Sends a request upstream and waits for its response headers, for at most the first-byte timeout.
 async fn send(
     shared: &Shared,
+    upstream: &Upstream,
     request: http::Request<UpstreamBody>,
 ) -> Result<http::Response<Incoming>, Failure> {
-    let response = shared.upstream.client.request(request);
+    let response = upstream.client.request(request);
     match tokio::time::timeout(shared.first_byte_timeout, response).await {
         Ok(response) => response.map_err(Failure::Upstream),
         Err(_) => Err(Failure::Timeout("response headers")),
@@ -350,6 +376,7 @@ async fn send(
 /// response whose first byte comes later. Each attempt has the first-byte timeout to its first frame.
 async fn resubmitting(
     shared: &Shared,
+    upstream: &Upstream,
     ex: &mut Exchange,
     parts: http::request::Parts,
     body: UpstreamBody,
@@ -359,7 +386,7 @@ async fn resubmitting(
     let mut request = http::Request::from_parts(parts, body);
     loop {
         tokio::select! {
-            attempt = first_frame(shared, request) => {
+            attempt = first_frame(shared, upstream, request) => {
                 let (response, first) = attempt?;
                 // A frame that arrives as the request is preempted belongs to the dropped attempt.
                 if first.is_none() || ticket.first_byte() {
@@ -381,11 +408,11 @@ async fn resubmitting(
 /// Sends a request and reads its response to the first body frame, or to the end of a body without one.
 async fn first_frame(
     shared: &Shared,
+    upstream: &Upstream,
     request: http::Request<UpstreamBody>,
 ) -> Result<(http::Response<Incoming>, Option<Bytes>), Failure> {
     let attempt = async {
-        let response = shared
-            .upstream
+        let response = upstream
             .client
             .request(request)
             .await
@@ -409,7 +436,8 @@ async fn first_frame(
 }
 
 /// Relays an upstream body into the client's channel until either side ends, or until the admission policy
-/// sheds the request.
+/// sheds the request. The request's place on its node ends with the relay.
+#[allow(clippy::too_many_arguments)]
 async fn pump(
     mut upstream: Incoming,
     frames: mpsc::Sender<Bytes>,
@@ -418,6 +446,7 @@ async fn pump(
     mut scanner: Scanner,
     stall_timeout: Duration,
     mut ticket: Option<Ticket>,
+    _placed: Option<InFlight>,
 ) {
     let _active = ex.class.map(|class| ex.metrics().stream_started(class));
     let sheddable = ticket.as_ref().is_some_and(Ticket::sheddable);

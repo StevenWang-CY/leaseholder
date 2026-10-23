@@ -15,16 +15,17 @@ use axum::routing::{MethodRouter, get, post};
 use axum::serve::ListenerExt;
 use http::header::{CONTENT_TYPE, HeaderValue};
 use http::{Method, StatusCode, Uri};
+use lh_proto::LifecycleEvent;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::admission::Admission;
 use crate::auth::Tenants;
 use crate::config::{Config, ListenAddr, PrioritySignals};
 use crate::events::{self, EventSink, Events};
 use crate::exchange::Exchange;
 use crate::metrics::{Metrics, Route};
+use crate::placement::{self, Node, Placement};
 use crate::proxy::{self, Upstream};
 
 /// `GET /ready` succeeds while the upstream's `/health` has answered within this window.
@@ -34,18 +35,34 @@ const READY_WINDOW: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 pub(crate) struct Shared {
     pub tenants: Tenants,
-    pub upstream: Upstream,
+    /// The GPU nodes: the one `upstream`, or `[nodes]` by name.
+    pub nodes: Vec<Node>,
+    /// With `[nodes]`, the sessions placed on them.
+    pub placement: Option<Arc<Placement>>,
     pub upstream_priority: PrioritySignals,
-    /// `None` under policy "none": requests go upstream at once.
-    pub admission: Option<Arc<Admission>>,
     pub metrics: Arc<Metrics>,
     pub events: Events,
     pub max_body_bytes: usize,
     pub stream_buffer_frames: usize,
     pub stall_timeout: Duration,
     pub first_byte_timeout: Duration,
-    /// When the upstream's `/health` last succeeded.
+    /// When the one upstream's `/health` last succeeded.
     healthy_at: Mutex<Option<Instant>>,
+}
+
+impl Shared {
+    /// Accepted lifecycle events, in the order they were received, to the admission point of their session's
+    /// node.
+    pub fn lifecycle(&self, events: &[LifecycleEvent]) {
+        match &self.placement {
+            None => {
+                if let Some(admission) = &self.nodes[0].admission {
+                    admission.events(events);
+                }
+            }
+            Some(placement) => placement.events(&self.nodes, events),
+        }
+    }
 }
 
 /// The state of one listener's routes.
@@ -98,14 +115,41 @@ impl Server {
             };
             listeners.push((listener, tenant));
         }
-        let metrics = Arc::new(Metrics::new());
+        let idle_timeout = config.upstream_idle_timeout;
+        let admission = config.admission.as_ref();
+        let (metrics, nodes, placement) = match &config.placement {
+            None => {
+                let metrics = Arc::new(Metrics::new());
+                let upstream = Upstream::new(config.upstream, idle_timeout);
+                let node = Node::new(None, upstream, admission, Arc::clone(&metrics), [true; 3]);
+                (metrics, vec![node], None)
+            }
+            Some(placement) => {
+                let names: Vec<Arc<str>> = placement
+                    .nodes
+                    .iter()
+                    .map(|node| node.name.as_str().into())
+                    .collect();
+                let metrics = Arc::new(Metrics::with_nodes(&names, placement.policy));
+                let nodes: Vec<Node> = placement
+                    .nodes
+                    .iter()
+                    .zip(names)
+                    .map(|(node, name)| {
+                        let upstream = Upstream::new(node.upstream.clone(), idle_timeout);
+                        let own = Arc::new(metrics.on(&name));
+                        Node::new(Some(name), upstream, admission, own, node.serves)
+                    })
+                    .collect();
+                let placement = Placement::new(placement, &nodes, Arc::clone(&metrics));
+                (metrics, nodes, Some(placement))
+            }
+        };
         let shared = Shared {
             tenants,
-            upstream: Upstream::new(config.upstream, config.upstream_idle_timeout),
+            nodes,
+            placement,
             upstream_priority: config.upstream_priority,
-            admission: config
-                .admission
-                .map(|admission| Admission::new(&admission, Arc::clone(&metrics))),
             metrics,
             events: Events::new(config.event_dedup_capacity, config.event_dedup_ttl, sink),
             max_body_bytes: config.max_body_bytes,
@@ -136,12 +180,43 @@ impl Server {
     /// Serves until `shutdown` completes, then stops accepting and lets in-flight requests finish for up to the
     /// drain timeout. Unix socket files are removed before it returns.
     pub async fn run(self, shutdown: impl Future<Output = ()>) {
-        tracing::info!(
-            upstream = %self.shared.upstream.authority(),
-            listeners = ?self.local_addrs().unwrap_or_default(),
-            admission = ?self.shared.admission.as_ref().map(|admission| admission.policy()),
-            "lh-gateway serving"
-        );
+        let shared = &self.shared;
+        let admission = shared.nodes[0].admission.as_ref();
+        let admission = admission.map(|admission| admission.policy());
+        let listeners = self.local_addrs().unwrap_or_default();
+        match &shared.placement {
+            None => tracing::info!(
+                upstream = %shared.nodes[0].upstream.authority(),
+                listeners = ?listeners,
+                admission = ?admission,
+                "lh-gateway serving"
+            ),
+            Some(placement) => {
+                let nodes: Vec<String> = shared
+                    .nodes
+                    .iter()
+                    .map(|node| {
+                        format!(
+                            "{}={}",
+                            node.name.as_deref().unwrap_or_default(),
+                            node.upstream.authority()
+                        )
+                    })
+                    .collect();
+                tracing::info!(
+                    nodes = ?nodes,
+                    placement = placement.policy().as_str(),
+                    listeners = ?listeners,
+                    admission = ?admission,
+                    "lh-gateway serving"
+                );
+                for index in 0..shared.nodes.len() {
+                    let probe =
+                        placement::probe(Arc::downgrade(shared), index, placement.probe_interval());
+                    tokio::spawn(probe);
+                }
+            }
+        }
         // Dropping `stop` tells every listener to shut down.
         let (stop, stopped) = watch::channel(());
         let mut serving = JoinSet::new();
@@ -200,7 +275,12 @@ where
 }
 
 fn router(app: App) -> Router {
-    Router::new()
+    let mut router = Router::new();
+    // Only a gateway with [nodes] places sessions: with one upstream, /v1/sessions is no route, as before.
+    if app.shared.placement.is_some() {
+        router = router.route("/v1/sessions", post(placement::post));
+    }
+    router
         .route("/v1/chat/completions", inference(Route::ChatCompletions))
         .route("/v1/completions", inference(Route::Completions))
         .route("/v1/responses", inference(Route::Responses))
@@ -259,15 +339,24 @@ async fn metrics(State(app): State<App>) -> Response {
     ([(CONTENT_TYPE, content_type)], app.shared.metrics.encode()).into_response()
 }
 
-/// 200 while the upstream's `/health` has answered within [`READY_WINDOW`]; otherwise it asks once more.
+/// 200 while the upstream's `/health` has answered within [`READY_WINDOW`]; otherwise it asks once more. With
+/// `[nodes]`, 200 while a node answers its readiness probe.
 async fn ready(State(app): State<App>) -> Response {
     let shared = &app.shared;
+    if shared.placement.is_some() {
+        return if shared.nodes.iter().any(Node::ready) {
+            (StatusCode::OK, "ready\n").into_response()
+        } else {
+            (StatusCode::SERVICE_UNAVAILABLE, "no node is ready\n").into_response()
+        };
+    }
+    let upstream = &shared.nodes[0].upstream;
     let last = *shared
         .healthy_at
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     let fresh = last.is_some_and(|at| at.elapsed() < READY_WINDOW);
-    if fresh || shared.upstream.healthy(READY_WINDOW).await {
+    if fresh || upstream.healthy(READY_WINDOW).await {
         if !fresh {
             *shared
                 .healthy_at

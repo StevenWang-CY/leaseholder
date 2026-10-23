@@ -1,8 +1,12 @@
 //! The gateway's Prometheus metrics, in a registry it owns (no global state), rendered at `GET /metrics`.
 //!
-//! Every label takes its values from a fixed set or from the configuration (tenant names), so the number of
-//! series is bounded. Every series except those of requests (labeled with a status) and lifecycle events is
-//! created at start, so it exports zero before traffic.
+//! Every label takes its values from a fixed set or from the configuration (tenant and node names), so the
+//! number of series is bounded. Every series except those of requests (labeled with a status) and lifecycle
+//! events is created at start, so it exports zero before traffic.
+//!
+//! With `[nodes]`, the series each node keeps (its admission point's, its realtime sessions', its upstream errors)
+//! carry a `node` label, and a handle for one node ([`Metrics::on`]) records them; the others are the gateway's.
+//! A gateway with one upstream exports every series as it always has, without the label.
 
 use std::hash::Hash;
 use std::sync::Arc;
@@ -10,15 +14,17 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use lh_core::admission::Deferral;
+use lh_core::placement;
 use lh_proto::SloClass;
-use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::encoding::text::encode;
+use prometheus_client::encoding::{EncodeLabelSet, LabelSetEncoder};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::{Family, MetricConstructor};
 use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
-use prometheus_client::registry::{Registry, Unit};
+use prometheus_client::registry::{Metric, Registry, Unit};
 
+use crate::placement::Reason;
 use crate::realtime::Phase;
 use crate::usage::Usage;
 
@@ -30,6 +36,8 @@ pub(crate) enum Route {
     Responses,
     Models,
     Events,
+    /// The placement endpoint, with `[nodes]`.
+    Sessions,
     /// Any path or method the gateway does not serve.
     Other,
 }
@@ -42,6 +50,7 @@ impl Route {
             Self::Responses => "/v1/responses",
             Self::Models => "/v1/models",
             Self::Events => "/v1/events",
+            Self::Sessions => "/v1/sessions",
             Self::Other => "other",
         }
     }
@@ -165,6 +174,26 @@ struct ClassLabels {
     class: &'static str,
 }
 
+/// The `node` label of the series each node keeps: none for the one upstream of a gateway without `[nodes]`.
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+pub(crate) struct NodeLabel(Option<Arc<str>>);
+
+impl EncodeLabelSet for NodeLabel {
+    fn encode(&self, encoder: &mut LabelSetEncoder) -> Result<(), std::fmt::Error> {
+        match &self.0 {
+            Some(node) => [("node", &**node)].encode(encoder),
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct NodeClassLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
+    class: &'static str,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct FieldLabels {
     field: &'static str,
@@ -172,6 +201,8 @@ struct FieldLabels {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct KindLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
     kind: &'static str,
 }
 
@@ -190,30 +221,84 @@ struct UsageLabels {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct RefusalLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
     class: &'static str,
     reason: &'static str,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct ReasonLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
     reason: &'static str,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct OversizeLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
     oversize: bool,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct StateLabels {
+    #[prometheus(flatten)]
+    node: NodeLabel,
     state: &'static str,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct PlacementLabels {
+    policy: &'static str,
+    reason: &'static str,
 }
 
 type Histograms<L> = Family<L, Histogram, fn() -> Histogram>;
 
-#[derive(Debug)]
+/// A series each node keeps that has no label of its own: unlabeled for a gateway with one upstream, as it has
+/// always been exported, and one per node with `[nodes]`.
+#[derive(Clone, Debug)]
+enum PerNode<M> {
+    One(M),
+    Nodes(Family<NodeLabel, M>),
+}
+
+impl<M: Clone + Default> PerNode<M> {
+    fn new(nodes: &[NodeLabel]) -> Self {
+        match nodes {
+            [NodeLabel(None)] => Self::One(M::default()),
+            _ => Self::Nodes(Family::default()),
+        }
+    }
+
+    fn of(&self, node: &NodeLabel) -> M {
+        match self {
+            Self::One(metric) => metric.clone(),
+            Self::Nodes(family) => family.get_or_create_owned(node),
+        }
+    }
+}
+
+impl<M> PerNode<M>
+where
+    M: Metric + Clone,
+    Family<NodeLabel, M>: Metric,
+{
+    fn register(&self, registry: &mut Registry, name: &str, help: &str) {
+        match self {
+            Self::One(metric) => registry.register(name, help, metric.clone()),
+            Self::Nodes(family) => registry.register(name, help, family.clone()),
+        }
+    }
+}
+
+/// The gateway's metrics, as one node records them: cloning a handle shares every series.
+#[derive(Clone, Debug)]
 pub(crate) struct Metrics {
-    registry: Registry,
+    registry: Arc<Registry>,
+    /// The node this handle records the per-node series for.
+    node: NodeLabel,
     requests: Family<RequestLabels, Counter>,
     outcomes: Family<OutcomeLabels, Counter>,
     overhead: Histograms<RouteLabels>,
@@ -226,26 +311,54 @@ pub(crate) struct Metrics {
     upstream_errors: Family<KindLabels, Counter>,
     events: Family<EventLabels, Counter>,
     usage_tokens: Family<UsageLabels, Counter>,
-    admitted: Family<ClassLabels, Counter>,
-    waiting: Family<ClassLabels, Gauge>,
-    admission_wait: Histograms<ClassLabels>,
+    admitted: Family<NodeClassLabels, Counter>,
+    waiting: Family<NodeClassLabels, Gauge>,
+    admission_wait: Histograms<NodeClassLabels>,
     refused: Family<RefusalLabels, Counter>,
-    resubmits: Family<ClassLabels, Counter>,
-    discarded_tokens: Family<ClassLabels, Counter>,
+    resubmits: Family<NodeClassLabels, Counter>,
+    discarded_tokens: Family<NodeClassLabels, Counter>,
     deferred: Family<ReasonLabels, Counter>,
     deferral: Histograms<ReasonLabels>,
     aged: Family<OversizeLabels, Counter>,
-    degraded: Counter,
-    false_alarms: Counter,
-    false_alarm_token_seconds: Counter<f64, AtomicU64>,
+    degraded: PerNode<Counter>,
+    false_alarms: PerNode<Counter>,
+    false_alarm_token_seconds: PerNode<Counter<f64, AtomicU64>>,
     realtime_sessions: Family<StateLabels, Gauge>,
     state_timeouts: Family<StateLabels, Counter>,
+    /// With `[nodes]` only: the sessions placed on each node, the placements, and the nodes' readiness.
+    sessions: Family<NodeClassLabels, Gauge>,
+    placements: Family<PlacementLabels, Counter>,
+    node_ready: Family<NodeLabel, Gauge>,
 }
 
 impl Metrics {
+    /// The metrics of a gateway with one upstream.
     pub fn new() -> Self {
+        Self::build(&[NodeLabel(None)], None)
+    }
+
+    /// The metrics of a gateway whose `[nodes]` are `nodes`, placing sessions by `policy`: the gateway's handle,
+    /// whose [`Metrics::on`] gives each node's.
+    pub fn with_nodes(nodes: &[Arc<str>], policy: placement::Policy) -> Self {
+        let nodes: Vec<NodeLabel> = nodes
+            .iter()
+            .map(|node| NodeLabel(Some(Arc::clone(node))))
+            .collect();
+        Self::build(&nodes, Some(policy))
+    }
+
+    /// The handle with which `node` records the series it keeps.
+    pub fn on(&self, node: &Arc<str>) -> Self {
+        Self {
+            node: NodeLabel(Some(Arc::clone(node))),
+            ..self.clone()
+        }
+    }
+
+    fn build(nodes: &[NodeLabel], policy: Option<placement::Policy>) -> Self {
         let metrics = Self {
-            registry: Registry::with_prefix("lh_gateway"),
+            registry: Arc::new(Registry::default()),
+            node: NodeLabel(None),
             requests: Family::default(),
             outcomes: Family::default(),
             overhead: Family::new_with_constructor(|| Histogram::new(OVERHEAD_BUCKETS)),
@@ -267,11 +380,14 @@ impl Metrics {
             deferred: Family::default(),
             deferral: Family::new_with_constructor(|| Histogram::new(LATENCY_BUCKETS)),
             aged: Family::default(),
-            degraded: Counter::default(),
-            false_alarms: Counter::default(),
-            false_alarm_token_seconds: Counter::default(),
+            degraded: PerNode::new(nodes),
+            false_alarms: PerNode::new(nodes),
+            false_alarm_token_seconds: PerNode::new(nodes),
             realtime_sessions: Family::default(),
             state_timeouts: Family::default(),
+            sessions: Family::default(),
+            placements: Family::default(),
+            node_ready: Family::default(),
         };
         for class in SloClass::ALL.map(SloClass::as_str) {
             for outcome in Outcome::ALL.map(Outcome::as_str) {
@@ -280,47 +396,94 @@ impl Metrics {
             for kind in ["prompt", "completion", "cached"] {
                 create(&metrics.usage_tokens, UsageLabels { class, kind });
             }
-            for reason in Refusal::ALL.map(Refusal::as_str) {
-                create(&metrics.refused, RefusalLabels { class, reason });
+            for node in nodes {
+                for reason in Refusal::ALL.map(Refusal::as_str) {
+                    let node = node.clone();
+                    create(
+                        &metrics.refused,
+                        RefusalLabels {
+                            node,
+                            class,
+                            reason,
+                        },
+                    );
+                }
             }
             create(&metrics.first_byte, ClassLabels { class });
             create(&metrics.duration, ClassLabels { class });
             create(&metrics.streams_active, ClassLabels { class });
-            create(&metrics.admitted, ClassLabels { class });
-            create(&metrics.waiting, ClassLabels { class });
-            create(&metrics.admission_wait, ClassLabels { class });
-            create(&metrics.resubmits, ClassLabels { class });
-            create(&metrics.discarded_tokens, ClassLabels { class });
+            for node in nodes {
+                let labels = NodeClassLabels {
+                    node: node.clone(),
+                    class,
+                };
+                create(&metrics.admitted, labels.clone());
+                create(&metrics.waiting, labels.clone());
+                create(&metrics.admission_wait, labels.clone());
+                create(&metrics.resubmits, labels.clone());
+                create(&metrics.discarded_tokens, labels.clone());
+                if policy.is_some() {
+                    create(&metrics.sessions, labels);
+                }
+            }
         }
         for route in [Route::ChatCompletions, Route::Completions, Route::Responses] {
             let route = route.as_str();
             create(&metrics.overhead, RouteLabels { route });
             create(&metrics.request_body, RouteLabels { route });
         }
-        for kind in UpstreamError::ALL.map(UpstreamError::as_str) {
-            create(&metrics.upstream_errors, KindLabels { kind });
+        for node in nodes {
+            for kind in UpstreamError::ALL.map(UpstreamError::as_str) {
+                let node = node.clone();
+                create(&metrics.upstream_errors, KindLabels { node, kind });
+            }
+            for reason in Deferral::ALL.map(Deferral::as_str) {
+                let labels = ReasonLabels {
+                    node: node.clone(),
+                    reason,
+                };
+                create(&metrics.deferred, labels.clone());
+                create(&metrics.deferral, labels);
+            }
+            for oversize in [false, true] {
+                let node = node.clone();
+                create(&metrics.aged, OversizeLabels { node, oversize });
+            }
+            // The node's series of the counters without labels of their own.
+            metrics.degraded.of(node);
+            metrics.false_alarms.of(node);
+            metrics.false_alarm_token_seconds.of(node);
+            for state in Phase::ALL.map(Phase::as_str) {
+                let labels = StateLabels {
+                    node: node.clone(),
+                    state,
+                };
+                create(&metrics.realtime_sessions, labels.clone());
+                if state != Phase::Idle.as_str() {
+                    create(&metrics.state_timeouts, labels);
+                }
+            }
+            if policy.is_some() {
+                create(&metrics.node_ready, node.clone());
+            }
         }
-        for reason in Deferral::ALL.map(Deferral::as_str) {
-            create(&metrics.deferred, ReasonLabels { reason });
-            create(&metrics.deferral, ReasonLabels { reason });
-        }
-        for oversize in [false, true] {
-            create(&metrics.aged, OversizeLabels { oversize });
-        }
-        for state in Phase::ALL.map(Phase::as_str) {
-            create(&metrics.realtime_sessions, StateLabels { state });
-            if state != Phase::Idle.as_str() {
-                create(&metrics.state_timeouts, StateLabels { state });
+        if let Some(policy) = policy {
+            for reason in Reason::ALL.map(Reason::as_str) {
+                let policy = policy.as_str();
+                create(&metrics.placements, PlacementLabels { policy, reason });
             }
         }
         for field in crate::sanitize::sanitized_fields() {
             create(&metrics.sanitized, FieldLabels { field });
         }
-        metrics.register()
+        metrics.register(policy.is_some())
     }
 
-    fn register(mut self) -> Self {
-        let r = &mut self.registry;
+    /// Registers every series, in the order of the exposition; those of placement only for a gateway with
+    /// `[nodes]`.
+    fn register(mut self, nodes: bool) -> Self {
+        let mut registry = Registry::with_prefix("lh_gateway");
+        let r = &mut registry;
         r.register(
             "requests",
             "API requests by tenant, route, class and response status (499: the client left before the response)",
@@ -438,22 +601,22 @@ impl Metrics {
              what the headroom leaves background requests",
             self.aged.clone(),
         );
-        r.register(
+        self.degraded.register(
+            r,
             "admission_degraded",
             "Realtime requests whose reply policy leaseholder capped, because the background requests in flight \
              left less than one turn's headroom free",
-            self.degraded.clone(),
         );
-        r.register(
+        self.false_alarms.register(
+            r,
             "admission_false_alarms",
             "Headroom armings that no realtime request of their session followed: the session left the armed \
              states, timed out or closed first",
-            self.false_alarms.clone(),
         );
-        r.register(
+        self.false_alarm_token_seconds.register(
+            r,
             "admission_false_alarm_token_seconds",
             "Estimated background tokens the headroom held back during false alarms, times how long",
-            self.false_alarm_token_seconds.clone(),
         );
         r.register(
             "realtime_sessions",
@@ -466,6 +629,25 @@ impl Metrics {
              state: a lost or missing event",
             self.state_timeouts.clone(),
         );
+        if nodes {
+            r.register(
+                "sessions",
+                "Sessions placed on each node, by the class they were placed with",
+                self.sessions.clone(),
+            );
+            r.register(
+                "placements",
+                "Sessions placed on a node, by policy and reason: new, or placed again because their node failed \
+                 readiness (node_down), which leaves their KV behind",
+                self.placements.clone(),
+            );
+            r.register(
+                "node_ready",
+                "Whether a node answers its readiness probe (1), or takes no new sessions (0)",
+                self.node_ready.clone(),
+            );
+        }
+        self.registry = Arc::new(registry);
         self
     }
 
@@ -544,16 +726,12 @@ impl Metrics {
 
     /// Counts a request as waiting at the admission point until the returned guard drops.
     pub fn waiting(&self, class: SloClass) -> GaugeGuard {
-        GaugeGuard::new(self.waiting.get_or_create_owned(&ClassLabels {
-            class: class.as_str(),
-        }))
+        GaugeGuard::new(self.waiting.get_or_create_owned(&self.on_class(class)))
     }
 
     /// A request was admitted after waiting `wait`.
     pub fn admitted(&self, class: SloClass, wait: Duration) {
-        let labels = ClassLabels {
-            class: class.as_str(),
-        };
+        let labels = self.on_class(class);
         self.admitted.get_or_create(&labels).inc();
         self.admission_wait
             .get_or_create(&labels)
@@ -562,23 +740,20 @@ impl Metrics {
 
     /// A preemption dropped an upstream attempt of `tokens` estimated prompt tokens.
     pub fn preempted(&self, class: SloClass, tokens: u64) {
-        let labels = ClassLabels {
-            class: class.as_str(),
-        };
+        let labels = self.on_class(class);
         self.discarded_tokens.get_or_create(&labels).inc_by(tokens);
     }
 
     /// A preempted request was sent upstream again.
     pub fn resubmitted(&self, class: SloClass) {
-        let labels = ClassLabels {
-            class: class.as_str(),
-        };
+        let labels = self.on_class(class);
         self.resubmits.get_or_create(&labels).inc();
     }
 
     /// Policy leaseholder deferred a background request.
     pub fn deferred(&self, reason: Deferral) {
         let labels = ReasonLabels {
+            node: self.node.clone(),
             reason: reason.as_str(),
         };
         self.deferred.get_or_create(&labels).inc();
@@ -587,6 +762,7 @@ impl Metrics {
     /// A deferred background request was admitted after waiting `wait`.
     pub fn deferral(&self, reason: Deferral, wait: Duration) {
         let labels = ReasonLabels {
+            node: self.node.clone(),
             reason: reason.as_str(),
         };
         self.deferral
@@ -596,24 +772,30 @@ impl Metrics {
 
     /// A deferred request was admitted regardless.
     pub fn aged(&self, oversize: bool) {
-        self.aged.get_or_create(&OversizeLabels { oversize }).inc();
+        let labels = OversizeLabels {
+            node: self.node.clone(),
+            oversize,
+        };
+        self.aged.get_or_create(&labels).inc();
     }
 
     /// A realtime request's reply was capped.
     pub fn degraded(&self) {
-        self.degraded.inc();
+        self.degraded.of(&self.node).inc();
     }
 
     /// A headroom arming ended with no realtime request, having held back `token_seconds` of background work.
     pub fn false_alarm(&self, token_seconds: f64) {
-        self.false_alarms.inc();
+        self.false_alarms.of(&self.node).inc();
         self.false_alarm_token_seconds
+            .of(&self.node)
             .inc_by(token_seconds.max(0.0));
     }
 
     /// The gauge of the realtime sessions in `phase`.
     pub fn realtime_sessions(&self, phase: Phase) -> Gauge {
         self.realtime_sessions.get_or_create_owned(&StateLabels {
+            node: self.node.clone(),
             state: phase.as_str(),
         })
     }
@@ -621,6 +803,7 @@ impl Metrics {
     /// A realtime session's `phase` timed out.
     pub fn state_timeout(&self, phase: Phase) {
         let labels = StateLabels {
+            node: self.node.clone(),
             state: phase.as_str(),
         };
         self.state_timeouts.get_or_create(&labels).inc();
@@ -628,10 +811,38 @@ impl Metrics {
 
     pub fn refused(&self, class: SloClass, reason: Refusal) {
         let labels = RefusalLabels {
+            node: self.node.clone(),
             class: class.as_str(),
             reason: reason.as_str(),
         };
         self.refused.get_or_create(&labels).inc();
+    }
+
+    /// The gauge of the sessions of `class` placed on this handle's node.
+    pub fn sessions(&self, class: SloClass) -> Gauge {
+        self.sessions.get_or_create_owned(&self.on_class(class))
+    }
+
+    /// The gauge of whether this handle's node answers its readiness probe.
+    pub fn node_ready(&self) -> Gauge {
+        self.node_ready.get_or_create_owned(&self.node)
+    }
+
+    /// A session was placed by `policy`, for `reason`.
+    pub fn placed(&self, policy: placement::Policy, reason: Reason) {
+        let labels = PlacementLabels {
+            policy: policy.as_str(),
+            reason: reason.as_str(),
+        };
+        self.placements.get_or_create(&labels).inc();
+    }
+
+    /// The labels of this handle's node and `class`.
+    fn on_class(&self, class: SloClass) -> NodeClassLabels {
+        NodeClassLabels {
+            node: self.node.clone(),
+            class: class.as_str(),
+        }
     }
 
     pub fn sanitized(&self, field: &'static str) {
@@ -644,6 +855,7 @@ impl Metrics {
 
     pub fn upstream_error(&self, kind: UpstreamError) {
         let labels = KindLabels {
+            node: self.node.clone(),
             kind: kind.as_str(),
         };
         self.upstream_errors.get_or_create(&labels).inc();
@@ -682,14 +894,15 @@ impl Metrics {
     #[cfg(test)]
     pub fn false_alarms(&self) -> (u64, f64) {
         (
-            self.false_alarms.get(),
-            self.false_alarm_token_seconds.get(),
+            self.false_alarms.of(&self.node).get(),
+            self.false_alarm_token_seconds.of(&self.node).get(),
         )
     }
 
     #[cfg(test)]
     pub fn state_timeouts(&self, phase: Phase) -> u64 {
         let labels = StateLabels {
+            node: self.node.clone(),
             state: phase.as_str(),
         };
         self.state_timeouts

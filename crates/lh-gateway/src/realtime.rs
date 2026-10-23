@@ -135,6 +135,12 @@ impl Realtime {
         }
     }
 
+    /// The sessions the headroom's trigger arms now; none with the headroom off.
+    pub fn armed(&self) -> u32 {
+        self.trigger
+            .map_or(0, |trigger| trigger.armed(self.turns()))
+    }
+
     /// From `now` on, the headroom holds back `tokens` of background work.
     pub fn held_back(&mut self, now: Instant, tokens: u64) {
         self.held.token_seconds = self.held.until(now);
