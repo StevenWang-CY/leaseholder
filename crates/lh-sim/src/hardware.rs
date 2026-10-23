@@ -479,6 +479,12 @@ fn thousands(n: u64) -> String {
     out
 }
 
+/// `x` to a tenth, with thousands separators.
+fn tenths(x: f64) -> String {
+    let t = (x * 10.0).round() as u64;
+    format!("{}.{}", thousands(t / 10), t % 10)
+}
+
 /// The GPUs: their published peaks and the costs modeled from them.
 pub fn profiles(gpus: &[Gpu]) -> String {
     let geometry = KvGeometry::QWEN3_4B_BF16;
@@ -492,15 +498,15 @@ pub fn profiles(gpus: &[Gpu]) -> String {
         let c = &t.recompute;
         writeln!(
             text,
-            "| {} | {} | {} GiB | {} GB/s | {:.1} / {:.1} TFLOPS | PCIe {}.0 x{}, {:.1} GB/s \
+            "| {} | {} | {} GiB | {} GB/s | {} / {} TFLOPS | PCIe {}.0 x{}, {:.1} GB/s \
              | {} tokens | {:.2} ms | {:.2} µs | {:.2} ns | {:.1} ns | {:.1} ms + {:.2} µs/token \
              | {:.1} ms + {:.2} µs/token + {:.3} ns/token² |",
             g.title,
             g.label(),
             g.memory_gib,
             thousands(g.bandwidth_gb_s as u64),
-            g.fp8_tflops,
-            g.bf16_tflops,
+            tenths(g.fp8_tflops),
+            tenths(g.bf16_tflops),
             g.link.generation,
             g.link.lanes,
             g.link.gb_per_s(),
@@ -848,6 +854,8 @@ mod tests {
     fn counts_get_thousands_separators() {
         let t = [0, 999, 1_000, 36_400, 1_234_567].map(thousands);
         assert_eq!(t, ["0", "999", "1,000", "36,400", "1,234,567"]);
+        let t = [189.75, 47.4375, 121.0, 1_979.0, 999.96].map(tenths);
+        assert_eq!(t, ["189.8", "47.4", "121.0", "1,979.0", "1,000.0"]);
     }
 
     /// A placement whose arms have resume TTFT p50 100 ms and p90 1,000 ms (`oracle` for
@@ -941,6 +949,7 @@ mod tests {
             gpus.contains("PCIe 4.0 x16, 31.5 GB/s | 94,656 tokens | 17.26 ms"),
             "{gpus}"
         );
+        assert!(gpus.contains("| 1,979.0 / 989.5 TFLOPS |"), "{gpus}");
         assert!(gpus.contains("| 502,432 tokens | 1.55 ms |"), "{gpus}");
     }
 }
