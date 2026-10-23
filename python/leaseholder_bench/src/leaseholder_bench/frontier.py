@@ -5,16 +5,17 @@ report``).
 summary, the per-request records of the AIPerf replay, the ``/metrics`` snapshots taken when the
 calls started and ended, and the voice worker's journal of the calls. Every metric covers that
 window. A metric that the gateway or the engine does not export is null, never zero, and a counter
-that went down (its process restarted during the calls) is an error.
+that went down (its process restarted during the calls) is an error. A point on several GPU nodes
+reports its totals as a point on one does, its engines' counters added up, and each node's share.
 
 :func:`write_report` places the points on E2's frontier: background goodput on x, voice-to-voice
 p95 on y, one frontier per arm and workload (the agents' corpus and the number of callers, since
 points of different workloads are never compared). A point is on its arm's frontier when no other
 point of the arm and workload harvests at least as much background goodput at a V2V p95 at least as
-low, and one of the two strictly better. Points measured from the same arm file in several campaigns
-are repeats of one configuration, which the frontier places at their medians; the tables keep every
-run. The stage waterfall splits each configuration's voice turn into the stages that add up to its
-mean V2V.
+low, and one of the two strictly better. A point on several GPU nodes is placed by its totals.
+Points measured from the same arm file in several campaigns are repeats of one configuration, which
+the frontier places at their medians; the tables keep every run. The stage waterfall splits each
+configuration's voice turn into the stages that add up to its mean V2V.
 
 :func:`export_point` writes a point's compact record (``lh-bench e2 export``), the few small files
 from which the report gives the same tables as from the whole run directory.
@@ -27,7 +28,7 @@ import re
 import shutil
 import statistics
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,11 +47,17 @@ DISCARDED = "lh_gateway_admission_discarded_tokens_total"
 """The prompt tokens of the attempts preempt-resubmit dropped: at most the prefill they discarded."""
 USAGE = "lh_gateway_usage_tokens_total"
 """Tokens from response usage, by class and kind, counted as each response ends."""
+PLACEMENT_ROUTE = "/v1/sessions"
+"""The gateway's placement route, whose request lines name a class but no inference request."""
 
 TURNS_LOGGER = "leaseholder_voice.turns"
 SESSIONS_LOGGER = "leaseholder_voice.events"
 """The voice worker's loggers (leaseholder_voice.events): a line per turn, and one per session as it
 ends ("session ended")."""
+PLACEMENT_LOGGER = "leaseholder_voice.placement"
+"""The voice worker's logger of each call's GPU node on several ("session placed", with its room)."""
+CALLER_ROOM = re.compile(r"lh-bot-(?P<run_id>[0-9a-f]+)-(?P<caller>\d+)")
+"""How ``lh-voice bots`` names each caller's room: after its run (bots/run.json) and the caller."""
 WATERFALL = (
     "transcript_ms",
     "end_of_turn_ms",
@@ -65,26 +72,134 @@ GPU_TIME = "%Y/%m/%d %H:%M:%S.%f"
 """nvidia-smi's timestamp, which campaign.sh has it write in UTC."""
 
 
-def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) -> dict[str, Any]:
+def summarize_point(
+    run_dir: Path, start: float, end: float, *, agents: bool, nodes: Sequence[str] = ()
+) -> dict[str, Any]:
     """The E2 metrics of the window ``start``..``end`` (epoch seconds) from a run directory. Raises
-    ``ValueError`` when the point measured nothing to place on the frontier."""
+    ``ValueError`` when the point measured nothing to place on the frontier. A point on several GPU
+    ``nodes`` adds up their engines' counters and reports each node's share under ``nodes``."""
     bots = orjson.loads((run_dir / "bots" / "summary.json").read_bytes())
     if not bots["v2v_ms"].get("n"):
         raise ValueError(f"the calls measured no voice-to-voice latency ({bots['errors']} failed)")
     metrics = run_dir / "metrics"
-    gateway = [(metrics / f"gateway-{when}.prom").read_text() for when in ("start", "end")]
-    engine = [(metrics / f"engine-{when}.prom").read_text() for when in ("start", "end")]
     records = run_dir / "aiperf" / "profile_export.jsonl"
     requests = gateway_requests(run_dir, start, end)
+    engines = {node: engine_counts(*_snapshots(metrics, f"engine-{node}")) for node in nodes}
     voice = ("turns", "errors", "v2v_ms", "barge_in_to_silence_ms", "barge_ins")
-    return {
+    summary = {
         "window_s": round(end - start, 1),
         "voice": {key: bots[key] for key in voice},
         "worker": worker(run_dir / "voice-worker.log"),
         "background": background(records, start, end) if agents else None,
-        "gateway": gateway_counts(*gateway, end - start, requests),
-        "engine": engine_counts(*engine),
+        "gateway": gateway_counts(*_snapshots(metrics, "gateway"), end - start, requests),
+        "engine": (
+            added_engine_counts(engines.values())
+            if nodes
+            else engine_counts(*_snapshots(metrics, "engine"))
+        ),
     }
+    if nodes:
+        summary["nodes"] = node_shares(run_dir, end - start, requests, engines)
+    return summary
+
+
+def _snapshots(metrics: Path, name: str) -> tuple[str, str]:
+    """The ``/metrics`` of ``name`` (``gateway``, ``engine``, ``engine-NODE``) as the calls started and
+    ended."""
+    start, end = ((metrics / f"{name}-{when}.prom").read_text() for when in ("start", "end"))
+    return start, end
+
+
+def node_shares(
+    run_dir: Path,
+    seconds: float,
+    requests: Sequence[Mapping[str, Any]] | None,
+    engines: Mapping[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Each GPU node's share of a point on several: the calls the voice worker placed on it (None when
+    its journal places none), the agent requests and the first bytes of the realtime requests the
+    gateway sent it (None without its request log), and its engine's counters."""
+    placed = call_nodes(run_dir)
+    turns = list(_json_lines((run_dir / "bots" / "turns.jsonl").read_text())) if placed else []
+    shares = {}
+    for node, engine in engines.items():
+        sent = None if requests is None else [r for r in requests if r.get("node") == node]
+        callers = {caller for caller, on in placed.items() if on == node}
+        shares[node] = {
+            "voice": (
+                call_turns([t for t in turns if t.get("caller") in callers], len(callers))
+                if placed
+                else None
+            ),
+            "background": None if sent is None else logged_background(sent, seconds),
+            "realtime_first_byte_ms": None if sent is None else logged_first_byte(sent, "realtime"),
+            "engine": engine,
+        }
+    return shares
+
+
+def call_nodes(run_dir: Path) -> dict[int, str]:
+    """Each call's GPU node, by caller: the voice worker's journal names the room of each call it placed,
+    and the callers named their rooms after their run."""
+    journal, bots = run_dir / "voice-worker.log", run_dir / "bots" / "run.json"
+    if not journal.exists() or not bots.exists():
+        return {}
+    run_id = orjson.loads(bots.read_bytes())["run_id"]
+    nodes = {}
+    for record in _json_lines(journal.read_text(errors="replace")):
+        if record.get("name") != PLACEMENT_LOGGER or record.get("message") != "session placed":
+            continue
+        room = CALLER_ROOM.fullmatch(str(record.get("room")))
+        if room and room["run_id"] == run_id:
+            nodes[int(room["caller"])] = record["node"]
+    return nodes
+
+
+def call_turns(turns: Sequence[Mapping[str, Any]], calls: int) -> dict[str, Any]:
+    """Some of the calls' numbers from their callers' turns (bots/turns.jsonl), counted as ``lh-voice
+    bots`` sums up all of them: voice-to-voice over every reply, the reply to an interruption too."""
+    ok = [t for t in turns if "error" not in t]
+    v2v = [t["v2v_ms"] for t in ok] + [t["v2v_after_barge_in_ms"] for t in ok if t["barge_in"]]
+    silence = [
+        t["barge_in_to_silence_ms"] for t in ok if t.get("barge_in_to_silence_ms") is not None
+    ]
+    return {
+        "calls": calls,
+        "turns": len(turns),
+        "errors": len(turns) - len(ok),
+        "v2v_ms": summarize(v2v),
+        "barge_in_to_silence_ms": summarize(silence),
+        "barge_ins": sum(1 for t in ok if t["barge_in"]),
+    }
+
+
+def logged_background(requests: Iterable[Mapping[str, Any]], seconds: float) -> dict[str, Any]:
+    """The agent requests among the gateway's request lines, counted as :func:`background` counts
+    AIPerf's records: the goodput of those served (completed with status 200: the gateway completes a
+    response it relays in full whatever its status), the others as lost, and their first byte."""
+    ended = [
+        r for r in requests if r.get("class") == "background" and r.get("route") != PLACEMENT_ROUTE
+    ]
+    ok = [r for r in ended if r.get("outcome") == "completed" and r.get("status") == 200]
+    tokens = sum(r.get("prompt_tokens", 0) + r.get("completion_tokens", 0) for r in ok)
+    return {
+        "requests": len(ok),
+        "errors": len(ended) - len(ok),
+        "requests_per_s": round(len(ok) / seconds, 3),
+        "tokens_per_s": round(tokens / seconds, 1),
+        "first_byte_ms": logged_first_byte(ok, "background"),
+    }
+
+
+def _json_lines(text: str) -> Iterator[dict[str, Any]]:
+    """The JSON objects among the lines of a log."""
+    for line in text.splitlines():
+        try:
+            record = orjson.loads(line)
+        except orjson.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            yield record
 
 
 def worker(journal: Path) -> dict[str, Any] | None:
@@ -114,13 +229,7 @@ def worker(journal: Path) -> dict[str, Any] | None:
 def worker_lines(journal: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The voice worker's turn lines and session-end lines among its journal's JSON lines."""
     turns, sessions = [], []
-    for line in journal.splitlines():
-        try:
-            record = orjson.loads(line)
-        except orjson.JSONDecodeError:
-            continue  # not one of the worker's JSON log lines
-        if not isinstance(record, dict):
-            continue
+    for record in _json_lines(journal):
         if record.get("name") == TURNS_LOGGER:
             turns.append(record)
         elif record.get("name") == SESSIONS_LOGGER and record.get("message") == "session ended":
@@ -241,6 +350,27 @@ def gateway_counts(
     }
 
 
+def added_engine_counts(counts: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Several engines' :func:`engine_counts` added up; a count that no engine keeps stays None."""
+    counts = list(counts)
+
+    def added(key: str) -> dict[str, int] | None:
+        kept = [c[key] for c in counts if c[key] is not None]
+        if not kept:
+            return None
+        totals: dict[str, int] = {}
+        for by in kept:
+            for name, value in by.items():
+                totals[name] = totals.get(name, 0) + value
+        return totals
+
+    return {
+        "preemptions": _added(*(c["preemptions"] for c in counts)),
+        "prompt_tokens_by_source": added("prompt_tokens_by_source"),
+        "refused": added("refused"),
+    }
+
+
 def engine_counts(before: str, after: str) -> dict[str, Any]:
     """vLLM's preemptions, prompt tokens by source and refused requests over the window."""
 
@@ -334,6 +464,14 @@ def render(summary: Mapping[str, Any]) -> str:
         ttft = "/".join(str(background["ttft_ms"].get(p)) for p in ("p50", "p99"))
         line += f"; background {background['requests_per_s']} requests/s"
         line += f", {background['tokens_per_s']:,.0f} tokens/s, agent TTFT p50/p99 {ttft} ms"
+    for node, share in (summary.get("nodes") or {}).items():
+        parts = []
+        if calls := share["voice"]:
+            parts.append(f"{calls['calls']} calls, V2V p95 {calls['v2v_ms'].get('p95')} ms")
+        if served := share["background"]:
+            parts.append(f"{served['tokens_per_s']:,.0f} background tokens/s")
+        if parts:
+            line += f"; {node}: {', '.join(parts)}"
     return line
 
 
@@ -379,6 +517,7 @@ goodput."""
 STANDARD_WORKLOAD = ("weka-x32", 2)
 """The corpus and callers of an arm file that names neither (e2's Agents.data and Voice.callers):
 the workload drawn in frontier.svg."""
+NODE_COLUMNS = ("nodes",)
 WORKER_COLUMNS = (
     *(f"{stage.removesuffix('_ms')}_{q}_ms" for stage in WATERFALL for q in ("p50", "p95")),
     "events_sent",
@@ -386,9 +525,10 @@ WORKER_COLUMNS = (
     "events_failed",
 )
 GPU_COLUMNS = ("gpu_sm_clock_p50_mhz", "gpu_temperature_max_c")
-"""Columns that only some points have, each group shown when one of them has it: the voice worker's
-stage times and lifecycle events, and the GPU's median SM clock and highest temperature during the
-calls."""
+"""Columns that only some points have, each group shown when one of them has it: the GPU nodes of a
+point on several, which every other column then totals; the voice worker's stage times and lifecycle
+events; and the GPU's median SM clock and highest temperature during the calls (over every node's
+GPU on several)."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -432,6 +572,8 @@ def _workload(data: str, callers: int) -> str:
 
 
 def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
+    """A point's row of frontier.csv; a point on several GPU nodes also carries each node's numbers
+    (``by_node``) for frontier.md."""
     arm, voice = run["arm"], summary["voice"]
     background = summary["background"] or {}
     gateway, engine = summary["gateway"], summary["engine"]
@@ -487,11 +629,10 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     row["data"] = arm["agents"]["data"]
     row["stage_means"] = {s: (c["n"], c["mean"]) for s, c in waterfall.items() if "mean" in c}
     row["v2v_samples"] = v2v_samples(run_dir / "bots" / "turns.jsonl")
-    samples = run_dir / "gpu.csv"
-    # A compact record keeps the GPU's clocks in its summary.
-    if not samples.exists() and "gpu" in summary:
-        return row | {f"gpu_{key}": value for key, value in summary["gpu"].items()}
-    return row | gpu(samples, window)
+    nodes = summary.get("nodes") or {}
+    row["nodes"] = " ".join(nodes) or None
+    row["by_node"] = [_node_row(run_dir, node, share, window) for node, share in nodes.items()]
+    return row | _gpu(run_dir, _gpu_samples(nodes), summary, window)
 
 
 def v2v_samples(turns: Path) -> list[float]:
@@ -508,13 +649,56 @@ def v2v_samples(turns: Path) -> list[float]:
     return samples
 
 
-def gpu(samples: Path, window: Mapping[str, float] | None) -> dict[str, int | None]:
-    """The GPU's median SM clock (MHz) and highest temperature (°C) during the calls, from the samples
-    campaign.sh takes once a second on the GPU node (gpu.csv); None without them."""
+def _node_row(
+    run_dir: Path, node: str, share: Mapping[str, Any], window: Mapping[str, float] | None
+) -> dict[str, Any]:
+    """One node's share of a point, for frontier.md's table of GPU nodes."""
+    voice, background = share["voice"] or {}, share["background"] or {}
+    v2v, first_byte = voice.get("v2v_ms", {}), background.get("first_byte_ms", {})
+    return {
+        "node": node,
+        "calls": voice.get("calls"),
+        "v2v_p50_ms": v2v.get("p50"),
+        "v2v_p95_ms": v2v.get("p95"),
+        "v2v_p99_ms": v2v.get("p99"),
+        "voice_turns": voice.get("turns"),
+        "voice_errors": voice.get("errors"),
+        "background_tokens_per_s": background.get("tokens_per_s"),
+        "background_requests_per_s": background.get("requests_per_s"),
+        "agent_first_byte_p50_ms": first_byte.get("p50"),
+        "agent_first_byte_p99_ms": first_byte.get("p99"),
+        "realtime_first_byte_p95_ms": (share["realtime_first_byte_ms"] or {}).get("p95"),
+        "engine_preemptions": share["engine"]["preemptions"],
+    } | _gpu(run_dir, _gpu_samples([node]), share, window)
+
+
+def _gpu_samples(nodes: Iterable[str]) -> list[str]:
+    """The files of GPU samples campaign.sh leaves in a run directory: gpu.csv, or gpu-NODE.csv for
+    each of several GPU nodes."""
+    return [f"gpu-{node}.csv" for node in nodes] or ["gpu.csv"]
+
+
+def _gpu(
+    run_dir: Path, names: Sequence[str], kept: Mapping[str, Any], window: Mapping[str, float] | None
+) -> dict[str, int | None]:
+    """The GPU columns from the samples ``names`` in the run directory; in a compact record, which
+    leaves them out, from what its summary (or a node's share in it) kept of them, ``gpu``."""
+    files = [run_dir / name for name in names]
+    if not any(path.exists() for path in files) and "gpu" in kept:
+        return {f"gpu_{key}": value for key, value in kept["gpu"].items()}
+    return gpu(files, window)
+
+
+def gpu(files: Sequence[Path], window: Mapping[str, float] | None) -> dict[str, int | None]:
+    """The GPUs' median SM clock (MHz) and highest temperature (°C) during the calls, from the samples
+    campaign.sh takes once a second on each GPU node (gpu.csv; gpu-NODE.csv for a point on several);
+    None without them."""
     clocks: list[float] = []
     temperatures: list[float] = []
-    if samples.exists() and window:
-        for line in samples.read_text(errors="replace").splitlines():
+    for path in files:
+        if not path.exists() or not window:
+            continue
+        for line in path.read_text(errors="replace").splitlines():
             fields = [field.strip() for field in line.split(",")]
             try:
                 at = datetime.strptime(fields[0], GPU_TIME).replace(tzinfo=UTC).timestamp()
@@ -724,7 +908,7 @@ def figure_name(data: str, callers: int) -> str:
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
     """The optional column groups that some point has."""
-    groups = (WORKER_COLUMNS, GPU_COLUMNS)
+    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS)
     return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
 
 
@@ -752,6 +936,12 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         )
     if gpu_columns:
         intro += " SM clock (MHz) and temperature (°C) are the GPU's during the calls."
+    if NODE_COLUMNS in measured:
+        intro += (
+            " A point on several GPU nodes (its label says how many) is placed by its totals: all its "
+            "calls, all its agent requests and its engines' counters added up; GPU nodes below gives "
+            "each node's share."
+        )
     lines = ["# E2 frontier", "", intro]
     header = (
         "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "
@@ -767,6 +957,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         for arm in sorted({r["arm"] for r in members}, key=_arm_order):
             lines += ["", f"### Arm {arm}", "", header, align]
             lines += _arm_rows([r for r in members if r["arm"] == arm], groups, gpu_columns)
+    if NODE_COLUMNS in measured:
+        lines += _nodes(rows, gpu_columns)
     if WORKER_COLUMNS in measured:
         lines += _stages(rows)
     if cells := stage_waterfall(rows):
@@ -807,7 +999,7 @@ def _arm_rows(
         if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
             first_byte = f"~{first_byte}"
         # A repeated configuration's frontier mark goes on its medians' line.
-        name, mark = f"{r['point']}: {r['label']}", "•" if r["frontier"] else ""
+        name, mark = f"{r['point']}: {_label(r)}", "•" if r["frontier"] else ""
         if len(group["runs"]) > 1:
             name, mark = f"{r['point']} ({r['campaign']})", ""
         line = (
@@ -844,13 +1036,63 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
         first_byte = f"~{first_byte}"
     first = runs[0]
     line = (
-        f"| {first['point']}: {first['label']}; median (range) of {len(runs)} runs "
+        f"| {first['point']}: {_label(first)}; median (range) of {len(runs)} runs "
         f"| {'•' if group['frontier'] else ''} | {first['sessions']} "
         f"| {spread('background_tokens_per_s')} | | {spread('v2v_p50_ms')} "
         f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} | "
         f"| {first_byte} | | |"
     )
     return line + (" | |" if gpu_columns else "")
+
+
+def _label(row: Mapping[str, Any]) -> str:
+    """A point's label in frontier.md, which gives the number of GPU nodes of a point on several."""
+    nodes = len(row["by_node"])
+    return row["label"] + (f" ({nodes} GPU nodes)" if nodes else "")
+
+
+def _nodes(rows: Sequence[Mapping[str, Any]], gpu_columns: bool) -> list[str]:
+    """Each GPU node's share of the points on several, a line per run and node."""
+    lines = [
+        "",
+        "## GPU nodes",
+        "",
+        "Each node's share of the points on several GPU nodes: the calls the voice worker placed on it, "
+        "with their voice-to-voice latency in ms; the agent requests the gateway sent it, with their "
+        "goodput by the gateway's request log and their first byte at the gateway; the first byte of "
+        "its realtime requests; its engine's preemptions.",
+        "",
+    ]
+    header = (
+        "| Point | Node | Calls | V2V p50 | V2V p95 | V2V p99 | Failed turns | Background tokens/s "
+        "| Requests/s | Agent first byte p50 / p99 | Realtime first byte p95 | Preemptions |"
+    )
+    align = "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    if gpu_columns:
+        header += " SM clock p50 | Max temp |"
+        align += "---:|---:|"
+    lines += [header, align]
+    runs = Counter(map(_configuration, rows))
+    for r in rows:
+        name = f"{r['point']} ({r['campaign']})" if runs[_configuration(r)] > 1 else r["point"]
+        for n in r["by_node"]:
+            failed = "—"
+            if n["voice_turns"] is not None:
+                failed = f"{n['voice_errors']} of {n['voice_turns']}"
+            first_byte = " / ".join(_cell(n[f"agent_first_byte_{q}_ms"]) for q in ("p50", "p99"))
+            line = (
+                f"| {name} | {n['node']} | {_cell(n['calls'])} | {_cell(n['v2v_p50_ms'])} "
+                f"| {_cell(n['v2v_p95_ms'])} | {_cell(n['v2v_p99_ms'])} | {failed} "
+                f"| {_cell(n['background_tokens_per_s'])} | {_cell(n['background_requests_per_s'], 2)} "
+                f"| {first_byte} | {_cell(n['realtime_first_byte_p95_ms'])} "
+                f"| {_cell(n['engine_preemptions'])} |"
+            )
+            if gpu_columns:
+                line += (
+                    f" {_cell(n['gpu_sm_clock_p50_mhz'])} | {_cell(n['gpu_temperature_max_c'])} |"
+                )
+            lines.append(line)
+    return lines
 
 
 def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -1263,9 +1505,10 @@ def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:
 
 RECORD = ("run.json", "arm.toml", "bots/summary.json", "bots/turns.jsonl")
 """What a point's compact record (``lh-bench e2 export``) copies from its run directory, beside its
-summary.json and a reduced engine.json. Left out: the gateway's request log and the GPU's samples,
-whose numbers the record's summary keeps; AIPerf's exports, the metric snapshots, the worker's
-journal and the tools' logs; and the callers' run.json, which names LiveKit's API key."""
+summary.json and a reduced engine.json (engine-NODE.json for each of several GPU nodes). Left out:
+the gateway's request log and the GPU's samples, whose numbers the record's summary keeps; AIPerf's
+exports, the metric snapshots, the worker's journal and the tools' logs; and the callers' run.json,
+which names LiveKit's API key."""
 
 VLLM_ENGINE = {
     "model_config": ("model", "revision", "max_model_len", "dtype", "quantization"),
@@ -1322,9 +1565,11 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
     """Write the compact record of the point in ``run_dir`` into ``out``, at CAMPAIGN/POINT as the
     run directory sits in its campaign, and return its directory; None for a point that did not
     complete. Its summary.json takes the first bytes exactly from the request log, as the report
-    does, and the GPU's median SM clock and highest temperature from gpu.csv (``gpu``), so the
-    report gives the same tables from the record as from the run directory. Its engine.json keeps
-    only what says which engine the point ran on (:func:`engine_settings`)."""
+    does, and the GPU's median SM clock and highest temperature from gpu.csv (``gpu``; on several
+    GPU nodes over all of their gpu-NODE.csv, and each node's in its share), so the report gives the
+    same tables from the record as from the run directory. Its engine.json (engine-NODE.json for
+    each of several nodes) keeps only what says which engine the point ran on
+    (:func:`engine_settings`)."""
     run_file = run_dir / "run.json"
     run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
     if run.get("status") != "complete":
@@ -1337,20 +1582,27 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
             summary["gateway"][f"{slo_class}_first_byte_ms"] = logged_first_byte(
                 requests, slo_class
             )
-    if (samples := run_dir / "gpu.csv").exists():
-        clocks = gpu(samples, window)
-        summary["gpu"] = {column.removeprefix("gpu_"): value for column, value in clocks.items()}
+
+    def clocks(names: Sequence[str]) -> dict[str, int | None]:
+        columns = gpu([run_dir / name for name in names], window)
+        return {column.removeprefix("gpu_"): value for column, value in columns.items()}
+
+    nodes = summary.get("nodes") or {}
+    if any((run_dir / name).exists() for name in _gpu_samples(nodes)):
+        summary["gpu"] = clocks(_gpu_samples(nodes))
+    for node, share in nodes.items():
+        if (run_dir / f"gpu-{node}.csv").exists():
+            share["gpu"] = clocks([f"gpu-{node}.csv"])
     record = out / run_dir.absolute().parent.name / run_dir.absolute().name
     (record / "bots").mkdir(parents=True, exist_ok=True)
     for name in RECORD:
         if (run_dir / name).exists():
             shutil.copyfile(run_dir / name, record / name)
     (record / "summary.json").write_bytes(orjson.dumps(summary, option=orjson.OPT_INDENT_2) + b"\n")
-    if (engine := run_dir / "engine.json").exists():
-        settings = engine_settings(orjson.loads(engine.read_bytes()))
-        (record / "engine.json").write_bytes(
-            orjson.dumps(settings, option=orjson.OPT_INDENT_2) + b"\n"
-        )
+    for name in [f"engine-{node}.json" for node in nodes] or ["engine.json"]:
+        if (engine := run_dir / name).exists():
+            settings = engine_settings(orjson.loads(engine.read_bytes()))
+            (record / name).write_bytes(orjson.dumps(settings, option=orjson.OPT_INDENT_2) + b"\n")
     return record
 
 
