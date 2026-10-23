@@ -126,26 +126,26 @@ There is one row per upstream request: prompt, cached (device and host), expecte
 
 ### 4.1 Crates
 
-The control plane is a Rust workspace. The policy is a library behind a narrow trait, so another router can embed it. The state column says what exists after W1.
+The control plane is a Rust workspace. The policy is to be a library behind a narrow trait, so another router can embed it. The state column says what exists after W2.
 
 | Crate | Responsibility | State |
 |---|---|---|
 | `lh-proto` | Wire types: lifecycle events, headers, engine lease hints, ledger rows. JSON Schemas for the Python components | v0 |
-| `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions over an injected clock, with no I/O. `trait Policy { admit, place, on_event, on_complete }` | v0 holds the E0 tier cost model and KV geometry; the policies arrive from W3 |
-| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane | v0, deployed on cyan: everything but the prefetch executor and the ledger sink, which come with the policies |
+| `lh-core` | The deterministic policy core: lease table, admission, placement, prefetch planner, ledger attribution. Pure functions with no I/O; the planned interface is `trait Policy { admit, place, on_event, on_complete }` | The E0 tier cost model, KV geometry, a step-time model of vLLM 0.32's step loop (W2), and `admission`: the E2 baselines (static cap, token reservation, flow control, preempt-resubmit) as a pure state machine driven by arrivals, first bytes and departures. Leaseholder's own policies and the trait arrive from W3 |
+| `lh-gateway` | The service (tokio, hyper/axum, tower): ingress and auth, SSE passthrough, cancellation, backpressure, upstream client, event ingest, prefetch executor, ledger sink, metrics. It listens on loopback TCP for the host network and on a Unix socket for the voice plane | Deployed on cyan: everything but the prefetch executor and the ledger sink, which come with the policies. Since W2 its admission point runs `lh-core`'s E2 baselines, and it sends each class's priority where the upstream reads it (`upstream_priority`) |
 | `lh-node` | A small sidecar on each GPU node. It binds the KV-event subscriber that the engine connects to, detects sequence gaps and resyncs through the engine's replay endpoint, relays events to the control plane, and reports the engine epoch and health | W3 |
-| `lh-sim` | A trace-driven two-tier KV simulator that runs `lh-core`'s cost model and, as they arrive, its policies, with a clairvoyant reference (Belady's MIN per tier) | v0: the stock arms, the clairvoyant reference and miss-ratio curves |
+| `lh-sim` | A trace-driven two-tier KV simulator over `lh-core`'s cost and step-time models, with a clairvoyant reference (Belady's MIN per tier) | The stock and E1 arms, the clairvoyant reference, miss-ratio curves, the contention model (the default service since W2, calibrated at two of three operating points) and the E1 regime sweep |
 
 ### 4.2 Request path
 
-Steps marked *planned* arrive with the `lh-core` policies; `lh-gateway` v0 runs the rest ([`lh-gateway` README](../crates/lh-gateway/README.md)).
+Steps marked *planned* arrive with the `lh-core` policies; `lh-gateway` runs the rest ([`lh-gateway` README](../crates/lh-gateway/README.md)).
 
 1. **Authenticate** the API key and resolve the tenant.
 2. **Sanitize** the engine-control headers and body fields.
 3. **Resolve** the session and class.
-4. **Admit** (*planned*). Choose among *admit now*, *defer* (queue with a deadline), *make room* (realtime only: tighten the background budget, demote) and *degrade*. Predicted time to first token is queue time plus uncached tokens over the measured prefill rate, plus restore cost from `lh-core`'s E0 model ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)).
+4. **Admit.** Since W2 the admission point runs the E2 baselines (`[admission]`: a background cap, a token reservation, llm-d-style flow control with eviction, preempt-resubmit before the first byte); a waiting request is woken on a channel, and one whose client leaves gives its place up. *Planned*, Leaseholder's own choice among *admit now*, *defer* (queue with a deadline), *make room* (realtime only: tighten the background budget, demote) and *degrade*. Predicted time to first token is queue time plus uncached tokens over the measured prefill rate, plus restore cost from `lh-core`'s E0 model ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)).
 5. **Place** (*planned*) on the holder if its epoch is valid, else on the least-loaded healthy node. v0 has one upstream.
-6. **Forward** with `X-Session-ID`, `X-Vllm-Priority` and the tenant's `cache_salt`, and (*planned*) the lease hint in `kv_transfer_params`.
+6. **Forward** with `X-Session-ID`, the class's priority where the upstream reads it (`upstream_priority`: `X-Vllm-Priority` by default, the body's `priority` for SGLang, `X-SMG-Priority` for SMG) and the tenant's `cache_salt`, and (*planned*) the lease hint in `kv_transfer_params`.
 7. **Stream back** through a bounded per-stream buffer.
    - On client disconnect, abort upstream (vLLM aborts on disconnect).
    - On completion (*planned*), update the lease and write the ledger row.
@@ -239,19 +239,19 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
 
 `lh-sim` decides, before any engine code is written, how much a retention policy can win over LRU plus CPU offload, and where. Its [README](../crates/lh-sim/README.md) gives the model, the simplifications and the validation.
 - **Replay.** The SemiAnalysis Claude Code traces, block-scaled 32× (32k context) or 64× (16k), sent as AIPerf's `agentic_replay` sends them, subagents and capped think times included. The port of AIPerf's loader and lane plan matches AIPerf's own field for field on the full corpus.
-- **Engine model.** vLLM 0.32's prefix cache over 16-token blocks: a pinned GPU pool freed tail first into an LRU queue, and the OffloadingConnector's write-through CPU tier. Time to first token comes from `lh-core`'s E0 cost model, without batching or queueing.
+- **Engine model.** vLLM 0.32's prefix cache over 16-token blocks: a pinned GPU pool freed tail first into an LRU queue, and the OffloadingConnector's write-through CPU tier. Requests are served through a model of vLLM's step loop (the 512/256 step cap, chunked prefill, priority-then-arrival order) with a step time fitted to the E0 cells and three operating points; `--service idle` keeps v0's idle-box costs without queueing.
 - **Arms.**
   - in v0: GPU-only LRU; LRU + CPU; S3-FIFO + CPU;
   - the clairvoyant reference, in v0: Belady's MIN in each tier, replayed on the LRU + CPU timeline. It is a reference, not a bound: MIN is optimal only for one tier's hit count over unit-size blocks, and here hits are prefixes served from two tiers;
-  - next: the other E1 arms, from TTL holds and prefetch by session history or oracle to the published policies ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)).
+  - since W2, the E1 arms: TTL holds, prefetch timed by session history or by an oracle, and simplified Tokencake, MORI and InferCept, with pauses from the traces or from TraceLab ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)).
 - **Outputs.** Per arm: prompt-token shares by source, with recompute split by cause; time to first token overall and for resumes; PCIe bytes, evictions and stalls; the regime coordinates (KV pressure, π, ρ). Miss-ratio curves of the GPU tier, at 32× and at the original token counts, show what block scaling keeps (reuse structure) and what it changes (timing).
-- **Calibration.** Driven by W0's measured request times, the engine model matches the measured GPU and CPU shares closely. Its own replay runs faster than the loaded box, because the cost model is the idle box's: it overstates GPU hits and understates the latency tail ([`lh-sim` README](../crates/lh-sim/README.md#validation-against-w0)). The target is 10–15% on resume TTFT at 2–3 GPU operating points, which needs a contention model (W2).
-- **Code reuse.** The cost model and KV geometry are `lh-core`'s. The policies that are to run in the gateway as well (leases, prefetch timing) are to live in `lh-core` too, so the simulator and the gateway run the same code.
+- **Calibration.** Driven by W0's measured request times, the engine model matches the measured GPU and CPU shares closely. With the contention model, its own replay reproduces resume TTFT p50/p90 within 8% at 8 and 16 session trees and is 18–30% optimistic at 24, where restores take longer than modeled ([`lh-sim` README](../crates/lh-sim/README.md#calibration-against-the-gpu-operating-points)). The E1 result built on it, G-sim's negative branch, is in [EXPERIMENTS.md](EXPERIMENTS.md#e1-parking).
+- **Code reuse.** The cost model, the step-time model and KV geometry are `lh-core`'s. The E1 arms are the simulator's own; the policies that are to run in the gateway as well (leases, headroom) are to live in `lh-core`, so the simulator and the gateway run the same code.
 
 ## 9. Observability
 
 - **Indicators, targets and alerts.** See [SLO.md](SLO.md).
-- **What exists.** `lh-gateway` serves its metrics at `/metrics` and logs one line per request and per lifecycle event ([`lh-gateway` README](../crates/lh-gateway/README.md#metrics-and-logs)).
+- **What exists.** `lh-gateway` serves its metrics at `/metrics`, among them the admission point's (`lh_gateway_admission_*`: admitted, waiting, wait time, refused by reason, resubmits, discarded tokens), and logs one line per request, with its admission wait, and per lifecycle event ([`lh-gateway` README](../crates/lh-gateway/README.md#metrics-and-logs)). E2 points snapshot these and the engine's metrics around the calls (`lh-bench e2`).
 - **Dashboards** (*planned*, as code in `ops/`):
   1. the voice turn waterfall and SLOs;
   2. KV and leases: pool occupancy, tier residency, prefetch outcomes, PCIe budget;
@@ -278,9 +278,9 @@ In v0, `lh-gateway` implements the slow-client row, tested with a stalled reader
 | Layer | Tests |
 |---|---|
 | `lh-proto` | Wire format pinned by examples; schemas kept current; ledger accounting identities |
-| `lh-core` | v0: the cost model against the measured E0 cells, and the KV geometry. With the policies: unit and property tests for the lease invariants, and deterministic simulation with seeded event sequences and an injected clock |
-| `lh-sim` | The AIPerf port against AIPerf's own plan; engine semantics on hand-made sequences; the clairvoyant tiers and MIN against exhaustive search; Mattson stack distances against a direct LRU simulation; every arm end to end on a 16-trace subset |
-| `lh-gateway` | Integration against an in-process mock engine: mid-stream disconnect, backpressure, header sanitization, event idempotency; with the policies, admission decisions. The proxy tax in process and in place ([BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
+| `lh-core` | The cost model against the measured E0 cells, the KV geometry, the step-time model, and each admission baseline's decisions on hand-made event sequences. With Leaseholder's policies: unit and property tests for the lease invariants, and deterministic simulation with seeded event sequences |
+| `lh-sim` | The AIPerf port against AIPerf's own plan; engine semantics and the step loop on hand-made sequences; the clairvoyant tiers and MIN against exhaustive search; Mattson stack distances against a direct LRU simulation; every arm end to end on a 16-trace subset; the idle service reproducing v0's outputs exactly |
+| `lh-gateway` | Integration against an in-process mock engine: mid-stream disconnect, backpressure, header sanitization, event idempotency, and the admission baselines (caps, queue limits and timeouts, eviction, transparent resubmission, a streaming response never preempted). The proxy tax in process and in place ([BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
 | Ledger | *Planned*: the injected-cause suite, at least 95% correct attribution, with the `unknown` share reported |
 | Engine plugins | CPU tests against vLLM's real offload manager (in CI); a live check on the GPU node |
 | Voice | Hermetic LiveKit barge-in and header test in the voice-plane namespace; *planned*: a nightly caller smoke test on the frozen box |
