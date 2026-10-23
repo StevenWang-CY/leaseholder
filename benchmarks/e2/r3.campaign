@@ -1,5 +1,5 @@
-# E2 discriminating scenario, W4 repeat round 3 of 4 (round 0 is w2c and a9): the headline configurations,
-# grouped by engine, the groups' order rotated from round to round.
+# E2 discriminating scenario, W4 repeat round 3 of 4 (round 0 is w2c and a9): the headline configurations and voice
+# alone, the SLO's reference (one run in w2 before these), grouped by engine, the groups' order rotated from round to round.
 #   benchmarks/e2/campaign.sh benchmarks/e2/r3.campaign
 
 # engine sglang --enable-hierarchical-cache --hicache-ratio 4 --hicache-write-policy write_through
@@ -9,6 +9,7 @@ arms/disc-a7b-sglang-hicache-s24.toml
 arms/disc-a9-s24.toml
 
 # engine frozen
+arms/a1-voice.toml
 arms/disc-frozen-s24.toml
 arms/disc-a6-reserve2048-s24.toml
 arms/disc-a8c-resubmit-s24.toml
