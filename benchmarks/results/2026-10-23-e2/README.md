@@ -1,6 +1,6 @@
 # E2 records (2026-10-23)
 
-The compact records of E2's points ([E2](../../../docs/EXPERIMENTS.md#e2-voice-under-agent-load)), from which `make reproduce-e2` regenerates the report: `frontier.md`, `frontier.csv`, `frontier.svg` and `waterfall.svg`, written into `build/reproduce-e2` (`E2_REPORT=DIR` to choose). [The report](../../../python/leaseholder_bench/README.md#e2-points) gives the same tables and figures, byte for byte, from these records as from the points' run directories.
+The compact records of E2's points ([E2](../../../docs/EXPERIMENTS.md#e2-voice-under-agent-load)), from which `make reproduce-e2` regenerates the report into `build/reproduce-e2` (`E2_REPORT=DIR` to choose): `frontier.md`, `frontier.csv` and a frontier figure per workload (for w2b `frontier.svg` and the calls-per-GPU points' `frontier-4-callers.svg` and `frontier-6-callers.svg`), and `waterfall.svg` once a campaign with the voice worker's turn lines is added. [The report](../../../python/leaseholder_bench/README.md#e2-points) gives the same tables and figures, byte for byte, from these records as from the points' run directories.
 
 Each point is `CAMPAIGN/POINT/`, as `lh-bench e2 export` writes it from the run directory that [`campaign.sh`](../../e2/README.md) fetched:
 

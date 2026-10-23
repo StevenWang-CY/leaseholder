@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from leaseholder_bench.cli import main
-from leaseholder_bench.e2 import SECRETS
+from leaseholder_bench.e2 import SECRETS, Agents, Voice
 from leaseholder_bench.frontier import (
     COLUMNS,
     GPU_COLUMNS,
@@ -23,6 +23,7 @@ from leaseholder_bench.frontier import (
     SESSIONS_LOGGER,
     SGLANG_ENGINE,
     STACKED,
+    STANDARD_WORKLOAD,
     TURNS_LOGGER,
     WATERFALL,
     WORKER_COLUMNS,
@@ -30,6 +31,7 @@ from leaseholder_bench.frontier import (
     configurations,
     engine_counts,
     engine_settings,
+    figure_name,
     first_byte_ms,
     gateway_counts,
     gateway_requests,
@@ -248,6 +250,9 @@ def point(
     tokens_per_s: float | None,
     p95: float,
     status: str = "complete",
+    *,
+    callers: int = 2,
+    data: str = "weka-x32",
 ) -> Path:
     """A run directory as lh-bench e2 run leaves it."""
     run_dir = root / name
@@ -256,8 +261,8 @@ def point(
         "arm": arm,
         "label": f"{name} label",
         "router": None,
-        "voice": {"callers": 2, "preemptive_generation": True},
-        "agents": {"sessions": 0 if tokens_per_s is None else 16},
+        "voice": {"callers": callers, "preemptive_generation": True},
+        "agents": {"sessions": 0 if tokens_per_s is None else 16, "data": data},
         "engine": {"variant": "frozen", "flags": ["--max-num-seqs", "12"]},
     }
     run = {"kind": "e2-point", "name": name, "status": status, "arm": settings}
@@ -295,7 +300,7 @@ def point(
     return run_dir
 
 
-def test_each_arm_has_its_own_frontier(tmp_path: Path) -> None:
+def test_each_arm_has_its_own_frontier_in_each_workload(tmp_path: Path) -> None:
     dirs = [
         point(tmp_path, "a1-voice", "1", None, 1760),
         point(tmp_path, "a2-s8", "2", 3000, 2000),
@@ -303,15 +308,20 @@ def test_each_arm_has_its_own_frontier(tmp_path: Path) -> None:
         point(tmp_path, "a2-s24", "2", 4500, 3000),  # less goodput at a worse p95
         point(tmp_path, "a7a-seqs12", "7a", 4000, 3100),  # beaten by arm 2, but on its own frontier
         point(tmp_path, "a2-failed", "2", None, 0, status="failed"),
+        # Arm 2 again, each beating every point above, but measured on another workload.
+        point(tmp_path, "disc-a2", "2", 6000, 1900, data="weka-x32-long"),
+        point(tmp_path, "calls4-a2", "2", 5500, 1950, callers=4),
     ]
     rows, incomplete = load_points(dirs)
     assert incomplete == [tmp_path / "a2-failed"]
-    assert [(r["point"], r["frontier"]) for r in rows] == [
-        ("a1-voice", True),
-        ("a2-s8", True),
-        ("a2-s24", False),
-        ("a2-s16", True),
-        ("a7a-seqs12", True),
+    assert [(r["point"], r["workload"], r["frontier"]) for r in rows] == [
+        ("a1-voice", "weka-x32, 2 callers", True),
+        ("a2-s8", "weka-x32, 2 callers", True),
+        ("a2-s24", "weka-x32, 2 callers", False),
+        ("a2-s16", "weka-x32, 2 callers", True),
+        ("a7a-seqs12", "weka-x32, 2 callers", True),
+        ("calls4-a2", "weka-x32, 4 callers", True),  # the arm file's own corpus first
+        ("disc-a2", "weka-x32-long, 2 callers", True),
     ]
     assert rows[0]["background_tokens_per_s"] == 0.0 and rows[0]["agent_ttft_p50_ms"] is None
     assert rows[1]["engine"] == "frozen --max-num-seqs 12"
@@ -319,12 +329,55 @@ def test_each_arm_has_its_own_frontier(tmp_path: Path) -> None:
 
 def test_ties_are_not_dominated() -> None:
     rows = [
-        {"arm": "4", "background_tokens_per_s": 100.0, "v2v_p95_ms": 2000.0},
-        {"arm": "4", "background_tokens_per_s": 100.0, "v2v_p95_ms": 2000.0},
-        {"arm": "4", "background_tokens_per_s": 50.0, "v2v_p95_ms": None},
+        {"arm": "4", "workload": "w", "background_tokens_per_s": 100.0, "v2v_p95_ms": 2000.0},
+        {"arm": "4", "workload": "w", "background_tokens_per_s": 100.0, "v2v_p95_ms": 2000.0},
+        {"arm": "4", "workload": "w", "background_tokens_per_s": 50.0, "v2v_p95_ms": None},
     ]
     mark_frontier(rows)
     assert [r.get("frontier") for r in rows] == [True, True, None]
+
+
+def test_each_workload_has_its_section_its_voice_slo_and_its_figure(tmp_path: Path) -> None:
+    dirs = [
+        point(tmp_path, "a1-voice", "1", None, 1760),
+        point(tmp_path, "a2-s16", "2", 5000, 2600),
+        point(tmp_path, "calls4-s16", "4-calls", 5000, 2700, callers=4),
+        point(tmp_path, "disc-a4", "4", 4000, 9000, data="weka-x32-long"),
+    ]
+    rows, _ = load_points(dirs)
+    out = tmp_path / "report"
+    written = write_report(rows, out)
+    with (out / "frontier.csv").open() as f:
+        assert [r["workload"] for r in csv.DictReader(f)] == [
+            "weka-x32, 2 callers",
+            "weka-x32, 2 callers",
+            "weka-x32, 4 callers",
+            "weka-x32-long, 2 callers",
+        ]
+    table = (out / "frontier.md").read_text()
+    sections = [line for line in table.splitlines() if line.startswith("## Workload: ")]
+    assert sections == [
+        "## Workload: weka-x32, 2 callers",
+        "## Workload: weka-x32, 4 callers",
+        "## Workload: weka-x32-long, 2 callers",
+    ]
+    assert "### Arm 4-calls" in table and "### Arm 2" in table
+    # Voice alone replays no corpus: with as many callers, it sets every corpus's SLO.
+    slo = (
+        "The voice SLO allows a V2V p95 of 2,010 ms, 250 ms above voice alone with as many callers"
+    )
+    assert f"{slo} (a1-voice: 1,760 ms). Figure: `frontier.svg`." in table
+    assert f"{slo} (a1-voice: 1,760 ms). Figure: `frontier-weka-x32-long.svg`." in table
+    assert "No point of voice alone with 4 callers sets a voice SLO." in table
+    assert (Agents.data, Voice.callers) == STANDARD_WORKLOAD  # an arm file that names neither
+    assert figure_name("weka-x32", 4) == "frontier-4-callers.svg"
+    assert figure_name("traces/long", 6) == "frontier-traces-long-6-callers.svg"
+    if importlib.util.find_spec("matplotlib"):
+        figures = ["frontier.svg", "frontier-4-callers.svg", "frontier-weka-x32-long.svg"]
+        assert [p.name for p in written if p.suffix == ".svg"] == figures
+        texts = {name: (out / name).read_text() for name in figures}
+        assert "E2 frontier, weka-x32, 2 callers" in texts["frontier.svg"]
+        assert "arm 1" not in texts["frontier-weka-x32-long.svg"]  # only its workload's points
 
 
 def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None:
@@ -351,7 +404,8 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
         "histogram",
     )
     table = (out / "frontier.md").read_text()
-    assert "## Arm 2" in table and "## Arm 10" in table
+    assert "\n## Workload: weka-x32, 2 callers\n" in table
+    assert "\n### Arm 2\n" in table and "\n### Arm 10\n" in table
     assert "| a2-s8: a2-s8 label | • | 16 | 3,000 | 3.00 | 1,600 | 2,000 | 2,500 |" in table
     assert "| 0 of 50 | 140 / 8,000 | ~120 | 4 | — / 3 / — |" in table
     assert "Voice turn stages" not in table and "SM clock" not in table

@@ -8,11 +8,13 @@ window. A metric that the gateway or the engine does not export is null, never z
 that went down (its process restarted during the calls) is an error.
 
 :func:`write_report` places the points on E2's frontier: background goodput on x, voice-to-voice
-p95 on y, one frontier per arm. A point is on its arm's frontier when no other point of the arm
-harvests at least as much background goodput at a V2V p95 at least as low, and one of the two
-strictly better. Points measured from the same arm file in several campaigns are repeats of one
-configuration, which the frontier places at their medians; the tables keep every run. The stage
-waterfall splits each configuration's voice turn into the stages that add up to its mean V2V.
+p95 on y, one frontier per arm and workload (the agents' corpus and the number of callers, since
+points of different workloads are never compared). A point is on its arm's frontier when no other
+point of the arm and workload harvests at least as much background goodput at a V2V p95 at least as
+low, and one of the two strictly better. Points measured from the same arm file in several campaigns
+are repeats of one configuration, which the frontier places at their medians; the tables keep every
+run. The stage waterfall splits each configuration's voice turn into the stages that add up to its
+mean V2V.
 
 :func:`export_point` writes a point's compact record (``lh-bench e2 export``), the few small files
 from which the report gives the same tables as from the whole run directory.
@@ -339,6 +341,7 @@ def render(summary: Mapping[str, Any]) -> str:
 
 COLUMNS = (
     "arm",
+    "workload",
     "point",
     "campaign",
     "label",
@@ -366,12 +369,16 @@ COLUMNS = (
     "resubmitted",
     "gateway_background_tokens_per_s",
 )
-"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. A run's
-campaign is the directory that holds its run directory (campaign.sh measures a campaign's points
-into CAMPAIGN/POINT). The realtime first byte is the gateway's, from its request log ("log",
-exact) or its histogram ("histogram", interpolated). Refused adds up the gateway's admission point
-and the engine's queue limits; the gateway's own count of the background tokens it served checks
-AIPerf's goodput."""
+"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. A point's
+workload is the agents' corpus and the number of callers ("weka-x32, 2 callers"). A run's campaign
+is the directory that holds its run directory (campaign.sh measures a campaign's points into
+CAMPAIGN/POINT). The realtime first byte is the gateway's, from its request log ("log", exact) or
+its histogram ("histogram", interpolated). Refused adds up the gateway's admission point and the
+engine's queue limits; the gateway's own count of the background tokens it served checks AIPerf's
+goodput."""
+STANDARD_WORKLOAD = ("weka-x32", 2)
+"""The corpus and callers of an arm file that names neither (e2's Agents.data and Voice.callers):
+the workload drawn in frontier.svg."""
 WORKER_COLUMNS = (
     *(f"{stage.removesuffix('_ms')}_{q}_ms" for stage in WATERFALL for q in ("p50", "p95")),
     "events_sent",
@@ -385,9 +392,10 @@ calls."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
-    """One row per complete point, with its arm's frontier marked, and the run directories whose
-    point did not complete. The runs of a configuration measured in several campaigns go together,
-    and the frontier places the configuration at their medians."""
+    """One row per complete point, with its arm's frontier in its workload marked, and the run
+    directories whose point did not complete. The rows go by workload, the arm file's own first,
+    then by arm. The runs of a configuration measured in several campaigns go together, and the
+    frontier places the configuration at their medians."""
     rows, incomplete = [], []
     for run_dir in run_dirs:
         run_file = run_dir / "run.json"
@@ -398,16 +406,29 @@ def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Pa
         rows.append(_row(run_dir, run, orjson.loads((run_dir / "summary.json").read_bytes())))
     groups = configurations(rows)
     mark_frontier(groups)
-    placed = {(g["arm"], g["point"]): g for g in groups}
+    placed = {_configuration(g): g for g in groups}
     for row in rows:
-        row["frontier"] = placed[row["arm"], row["point"]]["frontier"]
+        row["frontier"] = placed[_configuration(row)]["frontier"]
 
     def order(r: Mapping[str, Any]) -> tuple[Any, ...]:
-        goodput = placed[r["arm"], r["point"]]["background_tokens_per_s"]
-        return (_arm_order(r["arm"]), goodput, r["point"], r["campaign"])
+        goodput = placed[_configuration(r)]["background_tokens_per_s"]
+        # The arm file's own workload first, then the rest of its corpus, then the other corpora.
+        data, callers = r["data"], r["callers"]
+        first = ((data, callers) != STANDARD_WORKLOAD, data != STANDARD_WORKLOAD[0], data, callers)
+        return (*first, _arm_order(r["arm"]), goodput, r["point"], r["campaign"])
 
     rows.sort(key=order)
     return rows, incomplete
+
+
+def _configuration(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    """What makes the runs of one configuration: its workload, its arm and its arm file's name."""
+    return row["workload"], row["arm"], row["point"]
+
+
+def _workload(data: str, callers: int) -> str:
+    """A workload's name, as frontier.csv and frontier.md give it."""
+    return f"{data}, {callers} caller{'' if callers == 1 else 's'}"
 
 
 def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
@@ -426,6 +447,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     waterfall, events = worker.get("waterfall") or {}, worker.get("events") or {}
     row = {
         "arm": str(arm["arm"]),
+        "workload": _workload(arm["agents"]["data"], arm["voice"]["callers"]),
         "point": run["name"],
         "campaign": run_dir.absolute().parent.name,
         "label": arm["label"],
@@ -460,14 +482,14 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         for q in ("p50", "p95")
     }
     row |= {f"events_{kind}": events.get(kind) for kind in ("sent", "dropped", "failed")}
-    # The stage waterfall's inputs, which frontier.csv leaves out: the count and mean of each of the
-    # worker's stages, and the callers' voice-to-voice samples.
+    # What frontier.csv leaves out: the corpus, which the workload names, and the stage waterfall's
+    # inputs, the count and mean of each of the worker's stages and the callers' V2V samples.
+    row["data"] = arm["agents"]["data"]
     row["stage_means"] = {s: (c["n"], c["mean"]) for s, c in waterfall.items() if "mean" in c}
     row["v2v_samples"] = v2v_samples(run_dir / "bots" / "turns.jsonl")
     samples = run_dir / "gpu.csv"
-    if (
-        not samples.exists() and "gpu" in summary
-    ):  # a compact record keeps the clocks in its summary
+    # A compact record keeps the GPU's clocks in its summary.
+    if not samples.exists() and "gpu" in summary:
         return row | {f"gpu_{key}": value for key, value in summary["gpu"].items()}
     return row | gpu(samples, window)
 
@@ -540,14 +562,14 @@ def configurations(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The configurations the rows measured, in the order of their first runs: each arm file's runs,
     one per campaign that measured it, with the median of each REPEATED column over the runs that
     measured it (the run's own value for a configuration measured once)."""
-    runs: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    runs: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for row in rows:
-        runs.setdefault((row["arm"], row["point"]), []).append(row)
+        runs.setdefault(_configuration(row), []).append(row)
     return [
-        {"arm": arm, "point": point, "runs": measured}
+        {"workload": workload, "arm": arm, "point": point, "runs": measured}
         | {"frontier": all(r["frontier"] for r in measured)}
         | {column: _median(r[column] for r in measured) for column in REPEATED}
-        for (arm, point), measured in runs.items()
+        for (workload, arm, point), measured in runs.items()
     ]
 
 
@@ -557,7 +579,7 @@ def _median(values: Iterable[float | None]) -> float | None:
 
 
 def mark_frontier(rows: Sequence[dict[str, Any]]) -> None:
-    """Mark the points that no other point of their arm dominates."""
+    """Mark the points that no other point of their arm and workload dominates."""
 
     def dominates(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
         ax, ay = a["background_tokens_per_s"], a["v2v_p95_ms"]
@@ -566,8 +588,33 @@ def mark_frontier(rows: Sequence[dict[str, Any]]) -> None:
 
     placed = [r for r in rows if r["v2v_p95_ms"] is not None]
     for row in placed:
-        rivals = (r for r in placed if r is not row and r["arm"] == row["arm"])
+        rivals = (
+            r
+            for r in placed
+            if r is not row and (r["arm"], r["workload"]) == (row["arm"], row["workload"])
+        )
         row["frontier"] = not any(dominates(rival, row) for rival in rivals)
+
+
+SLO_MARGIN_MS = 250.0
+"""The voice V2V target (docs/SLO.md): p95 at most 250 ms above voice alone."""
+
+
+def voice_slo(groups: Sequence[Mapping[str, Any]], callers: int) -> tuple[float, list[str]] | None:
+    """The V2V p95 that the voice SLO allows with ``callers`` callers, and the configurations of
+    voice alone it is read against: arm 1's with as many callers, from whichever corpus, since
+    voice alone replays none. Their median V2V p95 plus SLO_MARGIN_MS; None without one."""
+    alone = [
+        g
+        for g in groups
+        if _arm_order(g["arm"])[0] == 1
+        and g["runs"][0]["callers"] == callers
+        and g["v2v_p95_ms"] is not None
+    ]
+    if not alone:
+        return None
+    p95 = statistics.median(g["v2v_p95_ms"] for g in alone)
+    return p95 + SLO_MARGIN_MS, [g["point"] for g in alone]
 
 
 def _arm_order(arm: str) -> tuple[int, str]:
@@ -627,9 +674,10 @@ def _pooled(runs: Iterable[Mapping[str, Any]], stage: str) -> float | None:
 def write_report(
     rows: Sequence[Mapping[str, Any]], out_dir: Path, waterfall: Sequence[str] = ()
 ) -> list[Path]:
-    """frontier.csv, frontier.md and, when matplotlib is installed, frontier.svg and waterfall.svg:
-    the stage waterfall of the points ``waterfall`` names, in its order, or of every configuration
-    with turn lines. Naming a point without turn lines in the report is a ValueError."""
+    """frontier.csv, frontier.md and, when matplotlib is installed, a frontier figure per workload
+    (:func:`figure_name`) and waterfall.svg: the stage waterfall of the points ``waterfall`` names,
+    in its order, or of every configuration with turn lines. Naming a point without turn lines in
+    the report is a ValueError."""
     cells = stage_waterfall(rows)
     if waterfall:
         missing = [name for name in waterfall if name not in {c["point"] for c in cells}]
@@ -644,11 +692,32 @@ def write_report(
         writer.writeheader()
         writer.writerows(rows)
     written[1].write_text(markdown(rows))
-    if plot(rows, out_dir / "frontier.svg"):
-        written.append(out_dir / "frontier.svg")
+    for members in _by_workload(rows):
+        figure = out_dir / figure_name(members[0]["data"], members[0]["callers"])
+        if plot(members, figure):
+            written.append(figure)
     if cells and plot_waterfall(cells, out_dir / "waterfall.svg"):
         written.append(out_dir / "waterfall.svg")
     return written
+
+
+def _by_workload(rows: Sequence[Mapping[str, Any]]) -> list[list[Mapping[str, Any]]]:
+    """The rows of each workload, in the rows' order."""
+    members: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        members.setdefault(row["workload"], []).append(row)
+    return list(members.values())
+
+
+def figure_name(data: str, callers: int) -> str:
+    """A workload's frontier figure: frontier.svg for STANDARD_WORKLOAD, else named after the
+    corpus when it is another (frontier-weka-x32-long.svg) and the callers when they are."""
+    name = "frontier"
+    if data != STANDARD_WORKLOAD[0]:
+        name += "-" + data.replace("/", "-")
+    if callers != STANDARD_WORKLOAD[1]:
+        name += f"-{callers}-callers"
+    return name + ".svg"
 
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
@@ -658,18 +727,21 @@ def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
 
 
 def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
-    """The frontier as a table per arm, ordered by background goodput, then the voice worker's stage
-    times when the points have them, and the stage waterfall of the configurations with turn lines."""
+    """The frontier as a section per workload, with its voice SLO, and in it a table per arm,
+    ordered by background goodput; then the voice worker's stage times when the points have them,
+    and the stage waterfall of the configurations with turn lines."""
     measured = _measured(rows)
     gpu_columns = GPU_COLUMNS in measured
-    groups = {(g["arm"], g["point"]): g for g in configurations(rows)}
+    groups = {_configuration(g): g for g in configurations(rows)}
     intro = (
         "Background goodput (prompt and completion tokens per second of the agent requests that "
-        "completed during the calls) against voice-to-voice latency in ms. • marks the points on "
-        "their arm's frontier. The realtime first byte is the gateway's, from its request log; ~ "
-        "marks one interpolated inside its histogram's buckets, for a point without the log. Refused "
-        "counts the gateway's admission point and the engine's queue limits; — is a count the "
-        "point's gateway or engine does not keep."
+        "completed during the calls) against voice-to-voice latency in ms, by workload: the agents' "
+        "corpus (`[agents] data`) and the number of callers, since points of different workloads "
+        "are not compared. • marks the points on their arm's frontier in their workload. The "
+        "realtime first byte is the gateway's, from its request log; ~ marks one interpolated "
+        "inside its histogram's buckets, for a point without the log. Refused counts the gateway's "
+        "admission point and the engine's queue limits; — is a count the point's gateway or engine "
+        "does not keep."
     )
     if any(len(g["runs"]) > 1 for g in groups.values()):
         intro += (
@@ -688,39 +760,67 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     if gpu_columns:
         header += " SM clock p50 | Max temp |"
         align += "---:|---:|"
-    arms = sorted({r["arm"] for r in rows}, key=_arm_order)
-    for arm in arms:
-        lines += ["", f"## Arm {arm}", "", header, align]
-        for r in (r for r in rows if r["arm"] == arm):
-            runs = groups[r["arm"], r["point"]]["runs"]
-            counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
-            ttft = f"{_cell(r['agent_ttft_p50_ms'])} / {_cell(r['agent_ttft_p99_ms'])}"
-            first_byte = _cell(r["realtime_first_byte_p95_ms"])
-            if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
-                first_byte = f"~{first_byte}"
-            # A repeated configuration's frontier mark goes on its medians' line.
-            name, mark = f"{r['point']}: {r['label']}", "•" if r["frontier"] else ""
-            if len(runs) > 1:
-                name, mark = f"{r['point']} ({r['campaign']})", ""
-            line = (
-                f"| {name} | {mark} | {r['sessions']} "
-                f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
-                f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
-                f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
-                f"| {_cell(r['engine_preemptions'])} | {counts} |"
-            )
-            if gpu_columns:
-                line += (
-                    f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
-                )
-            lines.append(line)
-            if len(runs) > 1 and r is runs[-1]:
-                lines.append(_spread(groups[r["arm"], r["point"]], gpu_columns))
+    for members in _by_workload(rows):
+        lines += ["", f"## Workload: {members[0]['workload']}", "", _slo_line(members[0], groups)]
+        for arm in sorted({r["arm"] for r in members}, key=_arm_order):
+            lines += ["", f"### Arm {arm}", "", header, align]
+            lines += _arm_rows([r for r in members if r["arm"] == arm], groups, gpu_columns)
     if WORKER_COLUMNS in measured:
         lines += _stages(rows)
     if cells := stage_waterfall(rows):
         lines += _waterfall_table(cells)
     return "\n".join(lines) + "\n"
+
+
+def _slo_line(
+    row: Mapping[str, Any], groups: Mapping[tuple[str, str, str], Mapping[str, Any]]
+) -> str:
+    """The sentence that opens the section of ``row``'s workload: its voice SLO, and its figure."""
+    callers, figure = row["callers"], figure_name(row["data"], row["callers"])
+    slo = voice_slo(list(groups.values()), callers)
+    if slo is None:
+        return (
+            f"No point of voice alone with {callers} callers sets a voice SLO. Figure: `{figure}`."
+        )
+    allowed, alone = slo
+    return (
+        f"The voice SLO allows a V2V p95 of {allowed:,.0f} ms, {SLO_MARGIN_MS:.0f} ms above voice "
+        f"alone with as many callers ({', '.join(alone)}: {allowed - SLO_MARGIN_MS:,.0f} ms). "
+        f"Figure: `{figure}`."
+    )
+
+
+def _arm_rows(
+    rows: Sequence[Mapping[str, Any]],
+    groups: Mapping[tuple[str, str, str], Mapping[str, Any]],
+    gpu_columns: bool,
+) -> list[str]:
+    """An arm's table rows in a workload: a line per run, and a repeated configuration's medians."""
+    lines = []
+    for r in rows:
+        group = groups[_configuration(r)]
+        counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
+        ttft = f"{_cell(r['agent_ttft_p50_ms'])} / {_cell(r['agent_ttft_p99_ms'])}"
+        first_byte = _cell(r["realtime_first_byte_p95_ms"])
+        if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
+            first_byte = f"~{first_byte}"
+        # A repeated configuration's frontier mark goes on its medians' line.
+        name, mark = f"{r['point']}: {r['label']}", "•" if r["frontier"] else ""
+        if len(group["runs"]) > 1:
+            name, mark = f"{r['point']} ({r['campaign']})", ""
+        line = (
+            f"| {name} | {mark} | {r['sessions']} "
+            f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
+            f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
+            f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
+            f"| {_cell(r['engine_preemptions'])} | {counts} |"
+        )
+        if gpu_columns:
+            line += f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
+        lines.append(line)
+        if len(group["runs"]) > 1 and r is group["runs"][-1]:
+            lines.append(_spread(group, gpu_columns))
+    return lines
 
 
 def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
@@ -768,14 +868,14 @@ def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         "| Turn to first sentence | TTS first audio | End to end | Events sent / dropped / failed |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
-    runs = Counter((r["arm"], r["point"]) for r in rows)
+    runs = Counter(map(_configuration, rows))
     for r in rows:
         stages = [
             " / ".join(_cell(r[f"{stage.removesuffix('_ms')}_{q}_ms"]) for q in ("p50", "p95"))
             for stage in WATERFALL
         ]
         events = " / ".join(_cell(r[f"events_{kind}"]) for kind in ("sent", "dropped", "failed"))
-        name = f"{r['point']} ({r['campaign']})" if runs[r["arm"], r["point"]] > 1 else r["point"]
+        name = f"{r['point']} ({r['campaign']})" if runs[_configuration(r)] > 1 else r["point"]
         lines.append(f"| {name} | {' | '.join(stages)} | {events} |")
     return lines
 
@@ -835,11 +935,11 @@ def _save_svg(fig: Any, path: Path, **options: Any) -> None:
 
 
 def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
-    """frontier.svg: each arm's frontier as a line, its dominated points as open markers. A point
-    measured in several campaigns sits at its runs' medians, with whiskers over their range on both
-    axes: one marker per configuration keeps each frontier a line through what frontier.md marks,
-    and the whiskers still show a run that collapsed. Arms past the eighth take the colors again
-    with another marker. False without matplotlib."""
+    """A workload's frontier figure: each arm's frontier as a line, its dominated points as open
+    markers. A point measured in several campaigns sits at its runs' medians, with whiskers over
+    their range on both axes: one marker per configuration keeps each frontier a line through what
+    frontier.md marks, and the whiskers still show a run that collapsed. Arms past the eighth take
+    the colors again with another marker. False without matplotlib."""
     try:
         import matplotlib
     except ImportError:
@@ -893,7 +993,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
                 alpha=0.6,
                 zorder=1,
             )
-    title = "E2 frontier: open markers are dominated points"
+    title = f"E2 frontier, {rows[0]['workload']}: open markers are dominated points"
     if any(len(g["runs"]) > 1 for g in groups):
         title += ", whiskers span repeated runs"
     ax.set_xlabel("Background goodput (tokens/s)", color=_INK)
