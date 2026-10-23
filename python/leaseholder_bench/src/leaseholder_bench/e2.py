@@ -652,22 +652,29 @@ def _get_json(url: str, **kwargs: Any) -> dict[str, Any]:
 # Processes
 
 
+TOOL_MARK = "LH_E2_TOOL"
+"""The environment variable that marks every process a tool of e2 run started, its children too."""
+
+
 class Process:
     """A tool in its own process group, so that stopping it reaches every process it started:
-    AIPerf renames its processes, so they cannot be found by name. Output goes to ``log``."""
+    AIPerf renames its processes, so they cannot be found by name. Each is also marked in its
+    environment, which its children inherit: AIPerf starts some services in sessions of their own,
+    out of the group's reach. Output goes to ``log``."""
 
     def __init__(
         self, name: str, command: Sequence[str], log: Path, env: Mapping[str, str]
     ) -> None:
         self.name = name
         self.log = log
+        self.mark = f"{os.getpid()}-{time.monotonic_ns()}"
         with log.open("ab") as out:
             self.popen = subprocess.Popen(
                 list(command),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=subprocess.STDOUT,
-                env=dict(env),
+                env=dict(env) | {TOOL_MARK: self.mark},
                 start_new_session=True,
             )
         self.status: int | None = None
@@ -692,6 +699,7 @@ class Process:
             # A group with nothing left but its exited leader answers ESRCH (Linux) or EPERM (macOS).
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pid, signal.SIGKILL)
+            kill_marked(self.mark)
             self.status = self.popen.wait()
         return self.status
 
@@ -699,6 +707,24 @@ class Process:
         """An error naming the tool's exit status and the end of its log."""
         tail = "\n".join(self.log.read_text(errors="replace").splitlines()[-15:])
         return E2Error(f"{self.name} {what} (exit status {self.stop()}); {self.log}:\n{tail}")
+
+
+def kill_marked(mark: str | None = None) -> list[int]:
+    """Kill the processes whose environment carries ``mark`` under ``TOOL_MARK`` (any mark when
+    None), and return their pids. It reads ``/proc``, so it finds none off Linux."""
+    killed = []
+    for environ in Path("/proc").glob("[0-9]*/environ"):
+        try:
+            variables = environ.read_bytes().split(b"\0")
+        except OSError:  # another user's process, or one that just exited
+            continue
+        marks = [v.split(b"=", 1)[1] for v in variables if v.startswith(f"{TOOL_MARK}=".encode())]
+        if marks and (mark is None or marks[0] == mark.encode()):
+            pid = int(environ.parent.name)
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+                killed.append(pid)
+    return killed
 
 
 def _until(done: Any, timeout: float, message: str) -> None:
@@ -732,6 +758,11 @@ def run_point(
         shutil.copyfile(arm_file, out / "arm.toml")
         record = _Record(out, arm, host)
         record["save_audio"] = save_audio
+        # Under the lock no other run's tools are alive: a marked process is left from a run that
+        # was killed before it could stop them.
+        if leftovers := kill_marked():
+            record["leftovers_killed"] = leftovers
+            record.say(f"killed {len(leftovers)} processes left by an earlier run: {leftovers}")
         try:
             with contextlib.ExitStack() as running:
                 summary = _measure(arm, out, host, systemd, record, running, save_audio)

@@ -3,8 +3,9 @@
 It logs AIPerf's profiling line, then writes one profiling record every 20 ms to
 ``$LH_BENCH_ARTIFACTS/profile_export.jsonl`` until SIGINT, and saves the LH_BENCH_ settings it was
 started with to ``env.json``. ``FAKE_AIPERF`` picks a failure: ``exit-early`` (before profiling),
-``exit-later`` (0.5 s into profiling) or ``stubborn`` (ignores SIGINT, as does a child it starts,
-whose pid goes to ``child.pid``).
+``exit-later`` (0.5 s into profiling), ``stubborn`` (ignores SIGINT, as does a child it starts,
+whose pid goes to ``child.pid``) or ``orphan`` (starts a child in a session of its own, as AIPerf
+starts some services, and leaves it behind when it exits).
 """
 
 import json
@@ -39,6 +40,9 @@ if mode == "stubborn":
     (artifacts / "child.pid").write_text(str(child.pid))
 else:
     signal.signal(signal.SIGINT, stop)
+if mode == "orphan":
+    child = subprocess.Popen([sys.executable, "-c", IGNORE_SIGINT], start_new_session=True)
+    (artifacts / "child.pid").write_text(str(child.pid))
 print("Credit phase start: profiling", flush=True)
 started = time.monotonic()
 with (artifacts / "profile_export.jsonl").open("w") as records:

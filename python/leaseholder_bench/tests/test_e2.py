@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -259,6 +260,33 @@ def test_stopping_a_tool_kills_its_whole_process_group(tmp_path: Path) -> None:
     assert tool.stop(grace=0.3) == -9  # it ignored SIGINT, so it was killed
     assert gone(child)  # and so was the process it started
     assert tool.exited() and tool.stop() == -9
+
+
+PROC = pytest.mark.skipif(not Path("/proc/self/environ").exists(), reason="reads /proc (Linux)")
+
+
+@PROC
+def test_stopping_a_tool_kills_what_it_started_in_a_session_of_its_own(tmp_path: Path) -> None:
+    """AIPerf starts some services with setsid, out of its process group: its mark reaches them."""
+    artifacts = tmp_path / "aiperf"
+    env = os.environ | {"LH_BENCH_ARTIFACTS": str(artifacts), "FAKE_AIPERF": "orphan"}
+    tool = Process("AIPerf", [sys.executable, str(FAKES / "fake_aiperf.py")], tmp_path / "log", env)
+    child = int(wait_for(artifacts / "child.pid").read_text())
+    assert os.getpgid(child) != tool.popen.pid
+    assert tool.stop(grace=5) == 0  # it stopped on SIGINT
+    assert gone(child)
+
+
+@PROC
+def test_a_marked_process_left_by_an_earlier_run_is_found_and_killed() -> None:
+    env = os.environ | {e2.TOOL_MARK: "an-earlier-run"}
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
+    try:
+        assert e2.kill_marked("another-run") == []
+        assert e2.kill_marked() == [sleeper.pid]
+        assert sleeper.wait(timeout=5) == -9
+    finally:
+        sleeper.kill()
 
 
 def wait_for(path: Path, timeout: float = 10.0) -> Path:
