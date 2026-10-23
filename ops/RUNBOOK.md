@@ -5,6 +5,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 | Host | Units | Ports (all loopback) |
 |---|---|---|
 | Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (bound by `lh-node` from W3; the engine connects to it), KV-event replay 5558 |
+| Gray (second GPU node, booked windows) | The same units as Phastform, with Gray's drop-ins (`deploy/gray/systemd/`: the CUDA compiler from the engine venv, the engine on cores 0–7 of NUMA node 0, the GPU's, and the audio servers on cores 8–15 of node 1). `leaseholder.target` is not enabled at boot | As on Phastform |
 | cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker`; `lh-smg` for E2 arm 8b only | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only; SMG 18090, its metrics 18091 |
 
 **Cores on cyan** (48 threads):
@@ -26,6 +27,7 @@ From a workstation with SSH access to the hosts:
 export LH_SSH="ssh -F $HOME/.ssh/penn_config"   # your SSH command for the hosts
 deploy/deploy.sh phastform.cis.upenn.edu       # sync the repo to ~/leaseholder/src and install the units
 deploy/deploy.sh cyan.cis.upenn.edu
+deploy/deploy.sh gray.cis.upenn.edu            # the second GPU node
 ```
 
 `deploy.sh` writes the deployed commit to `~/leaseholder/src/DEPLOYED` on the host. Do not deploy to cyan while an E2 campaign runs: the points read their arm files and the harness from that tree.
@@ -34,8 +36,9 @@ deploy/deploy.sh cyan.cis.upenn.edu
 1. Enable lingering: `loginctl enable-linger $USER`.
 2. Run its bootstrap:
    - Phastform: `deploy/phastform/bootstrap.sh` builds `~/leaseholder/venvs/{engine,tts}` from the lock files, plus the Kokoro checkout, the FlashInfer JIT workspace and the curand header links.
+   - Gray: `deploy/gray/bootstrap.sh` runs Phastform's. It needs uv 0.11.27 or newer (set `UV`), and the models it downloads are the revisions `engine.yaml` and `stt.yaml` pin.
    - cyan: `deploy/cyan/bootstrap.sh` installs the LiveKit server, builds `~/leaseholder/venvs/{voice,bench}` from the lock files with uv (set `UV` when uv is neither in `~/.local/bin` nor on `PATH`), checks that the worker's models load offline, and generates the LiveKit keys in `~/.config/leaseholder/livekit.env` (mode 600) and the tunnel key. Stop `lh-voice-worker` before re-running it, because the sync may change the voice venv. Write the tunnel's SSH target to `~/.config/leaseholder/tunnel-phastform.env` as `LH_TUNNEL_TARGET=<user>@<gpu node>`.
-3. Authorize the tunnel key on each GPU node: `deploy/authorize-tunnel.sh cyan.cis.upenn.edu phastform.cis.upenn.edu`. The entry may forward only the listed loopback ports, with no shell. Re-running the script replaces the entry.
+3. Authorize the tunnel key on each GPU node: `deploy/authorize-tunnel.sh cyan.cis.upenn.edu phastform.cis.upenn.edu` (and `gray.cis.upenn.edu`). The entry may forward only the listed loopback ports, with no shell. Re-running the script replaces the entry.
 4. On cyan, install the gateway:
    - Build it on a Linux host (`cargo build --release -p lh-gateway`) and copy `target/release/lh-gateway` to `~/leaseholder/bin/`.
    - Write `~/.config/leaseholder/gateway.toml` (mode 600) from `deploy/cyan/gateway.example.toml`. For each keyed tenant, make a key, give it to the client, and put only its digest in the file: `printf '%s' "$key" | sha256sum`.
@@ -45,7 +48,7 @@ deploy/deploy.sh cyan.cis.upenn.edu
 
 ```sh
 # Phastform
-systemctl --user start leaseholder.target        # STT and TTS first, then the LLM; ~2 min warm, ~7.5 min on first boot
+systemctl --user start leaseholder.target        # STT and TTS first, then the LLM; ~2 min warm, ~7.5 min on first boot (Gray: ~12)
 systemctl --user stop leaseholder.target
 systemctl --user restart lh-engine               # one server; returns once /health answers
 systemctl --user list-units 'lh-*'
@@ -150,4 +153,4 @@ One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.
 
 ## Pausing
 
-Nothing should hold the shared GPU while idle. To pause the GPU node, run `systemctl --user stop leaseholder.target`; restart it with `systemctl --user start leaseholder.target`. The target stays enabled, so a reboot brings the frozen box back.
+Nothing should hold the shared GPU while idle. To pause the GPU node, run `systemctl --user stop leaseholder.target`; restart it with `systemctl --user start leaseholder.target`. The target stays enabled, so a reboot brings the frozen box back. Gray is shared with other work: start it only for a booked window (`gpu-guard` refuses while another process holds the GPU) and stop it after; the engine takes about 20 s to stop, releasing its pinned CPU tier.
