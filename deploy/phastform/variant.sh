@@ -24,11 +24,15 @@ link() { # link NAME: link NAME's drop-ins into their units
     ln -sf "$conf" "$units/$unit.service.d/variant-$1.conf"
   done
 }
+# The units' crash-loop guard (StartLimitBurst=3 in 30 min) counts every start; a switch is no crash, so it clears the
+# counters before starting (a unit not loaded keeps none).
+clear_start_limits() { systemctl --user reset-failed lh-engine lh-stt lh-tts 2>/dev/null || true; }
 
 if [[ $action != use ]]; then
   systemctl --user stop "${box[@]}"
   if [[ $action == on ]]; then link "$name"; else rm -f "$units"/*.service.d/"variant-$name.conf"; fi
   systemctl --user daemon-reload
+  clear_start_limits
   systemctl --user start leaseholder.target
   systemctl --user is-active lh-stt lh-tts lh-engine
   exit
@@ -76,5 +80,6 @@ if (($#)); then
     "$flags_line" >"$units/lh-engine.service.d/variant-flags.conf"
 fi
 systemctl --user daemon-reload
+clear_start_limits
 systemctl --user start "${restart[0]}" # leaseholder.target or lh-engine; returns once /health answers
 systemctl --user is-active lh-stt lh-tts lh-engine
