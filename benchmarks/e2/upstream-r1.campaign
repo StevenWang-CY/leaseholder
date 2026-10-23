@@ -1,0 +1,17 @@
+# E2 discriminating scenario, repeat round 1 of 2 of the engine as the vLLM PRs propose it and of arm 9 with a 48-token
+# window (round 0 is upstream.campaign and a9-window.campaign), on the same build, so that each has three runs, as each
+# of arm 9's ablations has: a configuration that misses the SLO moved by up to 1.2 s in p95 from round to round
+# (engine-only, no-degrade). The engines' order rotated from round to round.
+#   benchmarks/e2/campaign.sh benchmarks/e2/upstream-r1.campaign
+
+# engine make-room --additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap_tokens 48
+arms/disc-pr-ab48-s24.toml
+
+# engine make-room --additional-config.make_room.budget_cap_tokens 48
+arms/disc-a9-window48-s24.toml
+
+# engine make-room --additional-config.make_room.budget_cap false --additional-config.make_room.reserve_tokens 0
+arms/disc-pr-a-s24.toml
+
+# engine make-room --additional-config.make_room.reserve_tokens 0
+arms/disc-pr-ab-s24.toml
