@@ -41,11 +41,26 @@ pub type RequestId = u64;
 /// per token.
 pub const BYTES_PER_TOKEN: u64 = 4;
 
-/// The step model that prices a background prefill for the critical-window throttle: the frozen box's.
-const STEP: StepCost = StepCost::frozen_box();
+/// What a background request's prefill costs the engine, for policy leaseholder's critical-window throttle: the
+/// steps a lone prefill of its new tokens takes after the rest of its prompt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefillCost {
+    /// The step model of the engine and GPU, which `lh-sim`'s `scripts/fit_step_cost.py` fits.
+    pub steps: StepCost,
+    /// The engine's step budget, `--max-num-batched-tokens`: a lone prefill runs in steps of this many tokens.
+    pub step_tokens: u64,
+}
 
-/// The frozen box's step budget (`--max-num-batched-tokens 512`), which a lone prefill takes whole.
-const STEP_TOKENS: u64 = 512;
+impl PrefillCost {
+    /// The predicted prefill time of a request with this estimate.
+    pub fn of(&self, estimate: Estimate) -> Duration {
+        // vLLM computes at least the last prompt token.
+        let new = estimate.new.max(1);
+        let cached = estimate.tokens.saturating_sub(new);
+        let ms = self.steps.prefill_ms(new, cached, self.step_tokens);
+        Duration::from_secs_f64(ms.max(0.0) / 1e3)
+    }
+}
 
 /// An admission policy with its parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,8 +99,8 @@ pub struct Leaseholder {
     /// headroom off.
     pub headroom: Option<Trigger>,
     /// The critical-window prefill throttle: while any realtime session is in its critical window, the
-    /// background requests admitted in the window may take this much predicted prefill time in all. `None`
-    /// turns the throttle off.
+    /// background requests admitted in the window may take this much predicted prefill time in all, each
+    /// priced by the admission point's [`PrefillCost`]. `None` turns the throttle off.
     pub critical_prefill_budget: Option<Duration>,
     /// Degrade: a realtime request that arrives while the background requests in flight leave less than
     /// `headroom_tokens` of the pool free has its reply capped at this many tokens. `None` turns it off.
@@ -100,6 +115,16 @@ pub enum Trigger {
     /// The critical window alone: from the end of the user's turn, or the realtime request if it comes
     /// first, to the reply's first audio.
     Request,
+}
+
+impl Trigger {
+    /// How many of the sessions `turns` counts are armed.
+    pub const fn armed(self, turns: Turns) -> u32 {
+        match self {
+            Self::Onset => turns.speaking + turns.critical,
+            Self::Request => turns.critical,
+        }
+    }
 }
 
 /// How many realtime sessions are in the phases of a turn that policy leaseholder acts on. The caller tracks
@@ -218,6 +243,8 @@ pub struct Admission {
     background_tokens: u64,
     /// Admitted realtime requests without a first byte (preempt-resubmit).
     realtime_pending: u32,
+    /// What policy leaseholder's throttle prices a background prefill by.
+    prefill_cost: Option<PrefillCost>,
     /// The realtime sessions' turns (policy leaseholder).
     turns: Turns,
     /// The predicted prefill time of the background requests admitted in the current critical window.
@@ -236,7 +263,32 @@ struct Held {
 
 impl Admission {
     /// An admission point holding nothing, whose class queues hold at most `queue_limit` requests each.
+    ///
+    /// # Panics
+    /// Under policy leaseholder with its throttle on, which prices prefills: that admission point is made with
+    /// [`Admission::with_prefill_cost`].
     pub fn new(policy: Policy, queue_limit: usize) -> Self {
+        let throttle = matches!(
+            policy,
+            Policy::Leaseholder(Leaseholder {
+                critical_prefill_budget: Some(_),
+                ..
+            })
+        );
+        assert!(
+            !throttle,
+            "policy leaseholder's throttle prices prefills: use Admission::with_prefill_cost"
+        );
+        Self::build(policy, queue_limit, None)
+    }
+
+    /// An admission point holding nothing, whose class queues hold at most `queue_limit` requests each, and
+    /// where policy leaseholder's throttle prices a background request's prefill by `cost`.
+    pub fn with_prefill_cost(policy: Policy, queue_limit: usize, cost: PrefillCost) -> Self {
+        Self::build(policy, queue_limit, Some(cost))
+    }
+
+    fn build(policy: Policy, queue_limit: usize, prefill_cost: Option<PrefillCost>) -> Self {
         Self {
             policy,
             queue_limit,
@@ -248,6 +300,7 @@ impl Admission {
             background: Vec::new(),
             background_tokens: 0,
             realtime_pending: 0,
+            prefill_cost,
             turns: Turns::default(),
             window_prefill: Duration::ZERO,
         }
@@ -436,10 +489,7 @@ impl Admission {
     /// The tokens the background requests in flight may hold while the headroom keeps room for the armed
     /// sessions; `None` while none is armed, or with the headroom off.
     fn headroom_limit(&self, lh: &Leaseholder) -> Option<u64> {
-        let armed = match lh.headroom? {
-            Trigger::Onset => self.turns.speaking + self.turns.critical,
-            Trigger::Request => self.turns.critical,
-        };
+        let armed = lh.headroom?.armed(self.turns);
         (armed > 0).then(|| {
             lh.pool_tokens
                 .saturating_sub(lh.headroom_tokens.saturating_mul(u64::from(armed)))
@@ -469,24 +519,19 @@ impl Admission {
         }
     }
 
-    /// The predicted prefill time of a request that policy leaseholder's throttle prices: the step model's
-    /// time for its new tokens after the rest of its prompt, as the frozen box runs a lone prefill.
+    /// The predicted prefill time of a request that policy leaseholder's throttle prices.
     fn prefill(&self, class: SloClass, estimate: Estimate) -> Duration {
-        let priced = class == SloClass::Background
-            && matches!(
-                self.policy,
-                Policy::Leaseholder(Leaseholder {
-                    critical_prefill_budget: Some(_),
-                    ..
-                })
-            );
-        if !priced {
-            return Duration::ZERO;
+        let throttle = matches!(
+            self.policy,
+            Policy::Leaseholder(Leaseholder {
+                critical_prefill_budget: Some(_),
+                ..
+            })
+        );
+        match &self.prefill_cost {
+            Some(cost) if throttle && class == SloClass::Background => cost.of(estimate),
+            _ => Duration::ZERO,
         }
-        // vLLM computes at least the last prompt token.
-        let new = estimate.new.max(1);
-        let ms = STEP.prefill_ms(new, estimate.tokens.saturating_sub(new), STEP_TOKENS);
-        Duration::from_secs_f64(ms.max(0.0) / 1e3)
     }
 
     /// Flow control's eviction: sheds the newest background requests in flight that keep a realtime or
@@ -882,6 +927,46 @@ mod tests {
         Turns { speaking, critical }
     }
 
+    /// The frozen box: its step model and its 512-token steps.
+    fn frozen_box() -> PrefillCost {
+        PrefillCost {
+            steps: StepCost::frozen_box(),
+            step_tokens: 512,
+        }
+    }
+
+    /// An admission point that prices prefills as the frozen box runs them.
+    fn priced(policy: Policy, queue_limit: usize) -> Admission {
+        Admission::with_prefill_cost(policy, queue_limit, frozen_box())
+    }
+
+    #[test]
+    fn a_prefill_is_priced_by_the_engine_it_runs_on() {
+        let cost = frozen_box();
+        let ms = |estimate| cost.of(estimate).as_secs_f64() * 1e3;
+        assert!((ms(chunk(0)) - 38.2).abs() < 0.1);
+        assert!((ms(chunk(30_000)) - 268.7).abs() < 0.1);
+        // A cached prompt still costs the step that computes its last token.
+        let resent = Estimate {
+            tokens: 30_000,
+            new: 0,
+        };
+        assert!((ms(resent) - cost.steps.prefill_ms(1, 29_999, 512)).abs() < 1e-6);
+        // Another engine's step budget: 1,024 tokens in one step, not two.
+        let wide = PrefillCost {
+            step_tokens: 1_024,
+            ..frozen_box()
+        };
+        let cold = estimate(1_024);
+        assert!(wide.of(cold) < cost.of(cold));
+    }
+
+    #[test]
+    #[should_panic(expected = "use Admission::with_prefill_cost")]
+    fn a_throttle_needs_a_prefill_cost() {
+        Admission::new(Policy::Leaseholder(leaseholder()), 8);
+    }
+
     /// 512 new tokens after `context` cached ones: 38 ms of prefill on an empty context, 269 ms after 30,000.
     fn chunk(context: u64) -> Estimate {
         Estimate {
@@ -894,7 +979,7 @@ mod tests {
     fn realtime_goes_upstream_at_once_whatever_waits() {
         let policy = Policy::Leaseholder(leaseholder());
         assert!(policy.holds(Realtime) && policy.holds(Background) && !policy.holds(Interactive));
-        let mut a = Admission::new(policy, 1);
+        let mut a = priced(policy, 1);
         assert_eq!(a.set_turns(turns(0, 1)), []);
         let deferred = waits(&mut a, Background, 9_500);
         assert_eq!(a.arrive(Background, estimate(1)), Err(QueueFull));
@@ -914,7 +999,7 @@ mod tests {
             degrade_max_tokens: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         // With no session armed, background holds what it will.
         let early = admitted(&mut a, Background, 8_500);
         assert_eq!(a.set_turns(turns(1, 0)), []);
@@ -941,7 +1026,7 @@ mod tests {
             critical_prefill_budget: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         assert_eq!(a.set_turns(turns(2, 0)), []);
         admitted(&mut a, Background, 9_000);
         assert_eq!(a.set_turns(turns(1, 1)), []);
@@ -957,7 +1042,7 @@ mod tests {
             degrade_max_tokens: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         // Admitted before the window, so not charged to it.
         a.arrive(Background, chunk(30_000)).unwrap();
         assert_eq!(a.set_turns(turns(0, 1)), []);
@@ -987,7 +1072,7 @@ mod tests {
 
     #[test]
     fn aging_admits_a_deferred_request_regardless() {
-        let mut a = Admission::new(Policy::Leaseholder(leaseholder()), 8);
+        let mut a = priced(Policy::Leaseholder(leaseholder()), 8);
         // Four armed sessions leave background 6,000 tokens: 7,000 cannot go even alone.
         assert_eq!(a.set_turns(turns(4, 0)), []);
         let oversize = waits(&mut a, Background, 7_000);
@@ -1005,7 +1090,7 @@ mod tests {
 
     #[test]
     fn an_aged_prefill_spends_the_critical_window_budget() {
-        let mut a = Admission::new(Policy::Leaseholder(leaseholder()), 8);
+        let mut a = priced(Policy::Leaseholder(leaseholder()), 8);
         assert_eq!(a.set_turns(turns(0, 1)), []);
         // A cold 4,000-token prefill takes more than the window's 300 ms; a 100-token one would fit.
         let cold = a.arrive(Background, estimate(4_000)).unwrap();
@@ -1024,7 +1109,7 @@ mod tests {
             critical_prefill_budget: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         assert_eq!(a.set_turns(turns(1, 0)), []);
         let background = admitted(&mut a, Background, 9_001);
         let realtime = a.arrive(Realtime, estimate(0)).unwrap();
@@ -1042,7 +1127,7 @@ mod tests {
             degrade_max_tokens: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(off, 8);
+        let mut a = priced(off, 8);
         admitted(&mut a, Background, POOL);
         assert_eq!(a.arrive(Realtime, estimate(0)).unwrap().reply_cap, None);
     }
@@ -1055,7 +1140,7 @@ mod tests {
             degrade_max_tokens: None,
             ..leaseholder()
         });
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         assert_eq!(a.set_turns(turns(3, 3)), []);
         for _ in 0..3 {
             admitted(&mut a, Background, POOL);
@@ -1066,7 +1151,7 @@ mod tests {
 
     #[test]
     fn the_headroom_and_the_throttle_together() {
-        let mut a = Admission::new(Policy::Leaseholder(leaseholder()), 8);
+        let mut a = priced(Policy::Leaseholder(leaseholder()), 8);
         assert_eq!(a.set_turns(turns(0, 1)), []);
         // 8,000 cold tokens fit beside one turn's headroom, but their prefill does not fit the window.
         let cold = a.arrive(Background, estimate(8_000)).unwrap();
@@ -1086,7 +1171,7 @@ mod tests {
         let policy = Policy::StaticCap {
             background_max_in_flight: 1,
         };
-        let mut a = Admission::new(policy, 8);
+        let mut a = priced(policy, 8);
         admitted(&mut a, Background, 0);
         let waiting = waits(&mut a, Background, 0);
         assert_eq!(a.set_turns(turns(1, 1)), []);
