@@ -116,7 +116,7 @@ The frozen box is `deploy/phastform/engine.yaml` and the units in `deploy/phastf
 - **`sglang`**: SGLang 0.5.22 on the engine's port. Build its environment once with `bash ~/leaseholder/src/deploy/phastform/variants/sglang/install.sh`. Its unit counts as started only after one sampled request, because the first one compiles FlashInfer's kernels for minutes.
 - **`mps`**: the three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 
-`systemctl --user cat lh-engine` shows what the box runs. `variant.sh on|off NAME` adds or removes a single variant, for work outside E2. `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check with its own drop-in and always restores the frozen configuration.
+`systemctl --user cat lh-engine` shows what the box runs. The generated variants (`pr54530`, `make-room`) build their scheduler module when the engine starts, and `variant.sh` restarts only for a change of drop-ins or flags: after deploying a change to a variant's `build.py`, run `systemctl --user restart lh-engine`, or the engine keeps the module it built before. `variant.sh on|off NAME` adds or removes a single variant, for work outside E2. `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check with its own drop-in and always restores the frozen configuration.
 
 ## E2 points
 
