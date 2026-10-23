@@ -1,0 +1,9 @@
+# E2 standard scenario, W4 repeat round 2 of 2 at 16 session trees, the realistic operating point: the frozen box (round
+# 0 in w2.campaign) and arm 9 (round 0 in a9-standard.campaign), the engines' order rotated from round to round.
+#   benchmarks/e2/campaign.sh benchmarks/e2/s2.campaign
+
+# engine make-room
+arms/a9-s16.toml
+
+# engine frozen
+arms/a4-b512-t256-s16.toml

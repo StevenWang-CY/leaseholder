@@ -1,0 +1,8 @@
+# E2 arm 9, Leaseholder, in the standard scenario (the whole corpus) at 8, 16 and 24 session trees, as W2 measured arms 2
+# to 8 (w2.campaign, w2b.campaign), so that arm 9 has its frontier beside theirs.
+#   benchmarks/e2/campaign.sh benchmarks/e2/a9-standard.campaign
+
+# engine make-room
+arms/a9-s8.toml
+arms/a9-s16.toml
+arms/a9-s24.toml
