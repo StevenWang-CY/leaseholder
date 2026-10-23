@@ -18,10 +18,18 @@
 //! A second table prices each admission policy: background requests, which every policy holds, through one
 //! gateway per policy with limits the runs never reach, so that what a policy adds is its bookkeeping and never
 //! a wait. "Added" there is over a gateway without a policy, which runs the same requests just before; each
-//! gateway's `lh_gateway_overhead_seconds` follows.
+//! gateway's `lh_gateway_overhead_seconds` follows. Its realtime rows send voice requests, which flow control,
+//! preempt-resubmit and policy leaseholder hold. Policy leaseholder runs twice: alone, where no realtime session
+//! is in a turn, and with events, while a task posts a lifecycle event every millisecond (four voice sessions in
+//! turn, through speech onset, end of turn, playback and its end), so that requests are decided beside sessions
+//! that speak and are in their critical windows.
+//!
+//! A third table times `POST /v1/events`, batches of one and four events, through a gateway without a policy
+//! and through policy leaseholder, which moves its sessions by each event under the admission lock.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -44,6 +52,8 @@ use tokio::net::TcpListener;
 use tokio::runtime::{Handle, Runtime};
 
 const KEY: &str = "overhead-bench-key";
+/// The key of the voice tenant, whose requests are realtime.
+const VOICE_KEY: &str = "overhead-bench-voice-key";
 const CHUNKS: usize = 8;
 const CHUNK_GAP: Duration = Duration::from_millis(1);
 const WORKERS: usize = 4;
@@ -51,8 +61,12 @@ const WORKERS: usize = 4;
 const INTERACTIVE: &str = "interactive";
 /// The class of the policy table's requests: every policy holds background requests.
 const BACKGROUND: &str = "background";
+/// The class of the voice tenant's requests.
+const REALTIME: &str = "realtime";
+/// The time between two lifecycle events while events flow.
+const EVENT_GAP: Duration = Duration::from_millis(1);
 /// Each admission policy, with limits no run reaches.
-const POLICIES: [(&str, &str); 4] = [
+const POLICIES: [(&str, &str); 5] = [
     (
         "static-cap",
         "policy = \"static-cap\"\nbackground_max_in_flight = 4096",
@@ -66,6 +80,11 @@ const POLICIES: [(&str, &str); 4] = [
         "policy = \"flow-control\"\nceilings = { realtime = 4096, interactive = 4096, background = 4096 }",
     ),
     ("preempt-resubmit", "policy = \"preempt-resubmit\""),
+    (
+        "leaseholder",
+        "policy = \"leaseholder\"\npool_tokens = 1000000000\nheadroom_tokens = 1024\n\
+         critical_prefill_budget_ms = 1000000000\ndegrade_max_tokens = 64",
+    ),
 ];
 const RESPONSE: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1792650000,"model":"qwen",
 "choices":[{"index":0,"message":{"role":"assistant","content":"The table for four is booked for seven tonight. We will hold it for fifteen minutes."},"finish_reason":"stop"}],
@@ -111,21 +130,44 @@ fn main() {
         addr: bare_rt.block_on(start_bare_proxy(engine)),
         runtime: Some(bare_rt.handle().clone()),
     };
-    let gateway = |admission: &str| Target {
-        addr: gateway_rt.block_on(start_gateway(engine, admission)),
+    let gateway = |config: &str| Target {
+        addr: gateway_rt.block_on(start_gateway(engine, config)),
         runtime: Some(gateway_rt.handle().clone()),
     };
     let targets = [direct, bare, gateway("")];
-    // A gateway without a policy for the policy table, with its own overhead histogram.
-    let policies: Vec<(&str, Target)> = [("none", "")]
+    // A gateway without a policy for the policy table, with its own overhead histogram, and policy leaseholder
+    // once more for the run with events. These gateways have a voice tenant too.
+    let voice = format!(
+        "[tenants.voice]\nkeys_sha256 = [\"{}\"]\ntrusted = true\ndefault_class = \"realtime\"",
+        digest(VOICE_KEY)
+    );
+    let mut policies: Vec<Priced> = [("none", "")]
         .into_iter()
         .chain(POLICIES)
-        .map(|(name, admission)| (name, gateway(&format!("[admission]\n{admission}"))))
+        .map(|(name, admission)| Priced {
+            name,
+            target: gateway(&format!("{voice}\n[admission]\n{admission}")),
+            events: false,
+        })
         .collect();
+    let leaseholder = POLICIES[POLICIES.len() - 1].1;
+    policies.push(Priced {
+        name: "leaseholder, with events",
+        target: gateway(&format!("{voice}\n[admission]\n{leaseholder}")),
+        events: true,
+    });
     client_rt.block_on(async {
         measure(targets).await;
         price_policies(&policies).await;
+        time_events(&[&policies[0], &policies[POLICIES.len()]]).await;
     });
+}
+
+/// A gateway of the policy table: its policy, and whether lifecycle events flow while its requests run.
+struct Priced {
+    name: &'static str,
+    target: Target,
+    events: bool,
 }
 
 fn runtime() -> Runtime {
@@ -192,16 +234,21 @@ async fn start_bare_proxy(engine: SocketAddr) -> SocketAddr {
     .await
 }
 
-/// A gateway in front of `engine`, with `admission` (an `[admission]` table, or nothing) in its configuration.
-async fn start_gateway(engine: SocketAddr, admission: &str) -> SocketAddr {
-    let digest: String = Sha256::digest(KEY)
+fn digest(key: &str) -> String {
+    Sha256::digest(key)
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect();
+        .collect()
+}
+
+/// A gateway in front of `engine`, with `extra` (more tenants, an `[admission]` table, or nothing) in its
+/// configuration.
+async fn start_gateway(engine: SocketAddr, extra: &str) -> SocketAddr {
     let config = Config::from_toml(&format!(
         "upstream = \"http://{engine}\"\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
-         [tenants.agents]\nkeys_sha256 = [\"{digest}\"]\ntrusted = true\ndefault_class = \"background\"\n\
-         max_class = \"interactive\"\n{admission}"
+         [tenants.agents]\nkeys_sha256 = [\"{}\"]\ntrusted = true\ndefault_class = \"background\"\n\
+         max_class = \"interactive\"\n{extra}",
+        digest(KEY)
     ))
     .unwrap();
     let server = Server::bind(config, Arc::new(LogSink)).await.unwrap();
@@ -315,12 +362,14 @@ async fn measure(targets: [Target; 3]) {
 }
 
 /// The policy table: each scenario through a gateway without a policy and through one per policy.
-async fn price_policies(gateways: &[(&str, Target)]) {
+async fn price_policies(gateways: &[Priced]) {
     let client = http_client();
     let small = chat_body(2 << 10, false);
     let streaming = chat_body(2 << 10, true);
-    for (_, target) in gateways {
+    for gateway in gateways {
+        let target = &gateway.target;
         run(&client, target, &small, Kind::Json, 64, 2_000, BACKGROUND).await;
+        run(&client, target, &small, Kind::Json, 8, 2_000, REALTIME).await;
         run(
             &client,
             target,
@@ -333,29 +382,79 @@ async fn price_policies(gateways: &[(&str, Target)]) {
         .await;
     }
     println!(
-        "\nAdmission policies: background requests, limits never reached. Microseconds, p50 / p99.\n"
+        "\nAdmission policies: background and realtime requests, limits never reached. Microseconds, p50 / p99.\n"
     );
     println!(
         "| Policy | Scenario | Concurrency | lh-gateway | Added over none | CPU per request |"
     );
     println!("|---|---|---:|---:|---:|---:|");
-    let scenarios: [(&str, &Bytes, Kind, usize, usize); 4] = [
-        ("Non-streaming, 2 KiB body", &small, Kind::Json, 1, 5_000),
-        ("Non-streaming, 2 KiB body", &small, Kind::Json, 8, 40_000),
-        ("Non-streaming, 2 KiB body", &small, Kind::Json, 64, 40_000),
-        ("Streaming, first byte", &streaming, Kind::Stream, 8, 4_000),
+    let scenarios: [(&str, &Bytes, Kind, usize, usize, &str); 6] = [
+        (
+            "Non-streaming, 2 KiB body",
+            &small,
+            Kind::Json,
+            1,
+            5_000,
+            BACKGROUND,
+        ),
+        (
+            "Non-streaming, 2 KiB body",
+            &small,
+            Kind::Json,
+            8,
+            40_000,
+            BACKGROUND,
+        ),
+        (
+            "Non-streaming, 2 KiB body",
+            &small,
+            Kind::Json,
+            64,
+            40_000,
+            BACKGROUND,
+        ),
+        (
+            "Streaming, first byte",
+            &streaming,
+            Kind::Stream,
+            8,
+            4_000,
+            BACKGROUND,
+        ),
+        (
+            "Realtime, non-streaming, 2 KiB body",
+            &small,
+            Kind::Json,
+            1,
+            5_000,
+            REALTIME,
+        ),
+        (
+            "Realtime, non-streaming, 2 KiB body",
+            &small,
+            Kind::Json,
+            8,
+            40_000,
+            REALTIME,
+        ),
     ];
-    for (scenario, body, kind, concurrency, count) in scenarios {
+    for (scenario, body, kind, concurrency, count, class) in scenarios {
         let mut none = None;
-        for (policy, target) in gateways {
-            let run = run(&client, target, body, kind, concurrency, count, BACKGROUND).await;
+        for gateway in gateways {
+            let target = &gateway.target;
+            let events = gateway.events.then(|| flow_events(&client, target));
+            let run = run(&client, target, body, kind, concurrency, count, class).await;
+            if let Some((stop, poster)) = events {
+                stop.store(true, Ordering::Relaxed);
+                assert!(poster.await.unwrap() > 0, "events flowed");
+            }
             let samples = match kind {
                 Kind::Json => &run.requests,
                 Kind::Stream => &run.first_bytes,
             };
             let us = |q: f64| quantile(samples, q) as f64 / 1e3;
             let base = none.get_or_insert_with(|| (us(0.5), us(0.99)));
-            let added = if *policy == "none" {
+            let added = if gateway.name == "none" {
                 "".to_owned()
             } else {
                 format!(
@@ -365,7 +464,8 @@ async fn price_policies(gateways: &[(&str, Target)]) {
                 )
             };
             println!(
-                "| {policy} | {scenario} | {concurrency} | {:.0} / {:.0} | {added} | {:.0} |",
+                "| {} | {scenario} | {concurrency} | {:.0} / {:.0} | {added} | {:.0} |",
+                gateway.name,
                 us(0.5),
                 us(0.99),
                 run.busy.as_secs_f64() * 1e6 / count as f64,
@@ -373,9 +473,125 @@ async fn price_policies(gateways: &[(&str, Target)]) {
         }
     }
     println!();
-    for (policy, target) in gateways {
-        report_gateway_metric(&client, target, policy).await;
+    for gateway in gateways {
+        report_gateway_metric(&client, &gateway.target, gateway.name).await;
     }
+}
+
+/// Posts lifecycle events to `target`, one every [`EVENT_GAP`], until the flag is set; the task returns how many
+/// it posted. Its posts are not counted as the gateway's requests, but its CPU is the gateway's.
+fn flow_events(
+    client: &HttpClient,
+    target: &Target,
+) -> (Arc<AtomicBool>, tokio::task::JoinHandle<u64>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (client, addr, flag) = (client.clone(), target.addr, Arc::clone(&stop));
+    let poster = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(EVENT_GAP);
+        let mut posted = 0;
+        while !flag.load(Ordering::Relaxed) {
+            tick.tick().await;
+            post_events(&client, addr, 1).await;
+            posted += 1;
+        }
+        posted
+    });
+    (stop, poster)
+}
+
+/// The third table: `POST /v1/events` through a gateway without a policy and through policy leaseholder.
+async fn time_events(gateways: &[&Priced]) {
+    let client = http_client();
+    for gateway in gateways {
+        run_events(&client, &gateway.target, 8, 2_000, 1).await;
+    }
+    println!(
+        "\n`POST /v1/events`: four voice sessions through their turns. Microseconds, p50 / p99.\n"
+    );
+    println!(
+        "| Policy | Concurrency | Events per POST | POSTs | Latency | CPU per POST | Events per second |"
+    );
+    println!("|---|---:|---:|---:|---:|---:|---:|");
+    for (concurrency, per_post, posts) in [(1, 1, 5_000), (8, 1, 40_000), (8, 4, 20_000)] {
+        for gateway in gateways {
+            let started = Instant::now();
+            let run = run_events(&client, &gateway.target, concurrency, posts, per_post).await;
+            let elapsed = started.elapsed().as_secs_f64();
+            let us = |q: f64| quantile(&run.requests, q) as f64 / 1e3;
+            println!(
+                "| {} | {concurrency} | {per_post} | {posts} | {:.0} / {:.0} | {:.0} | {:.0} |",
+                gateway.name,
+                us(0.5),
+                us(0.99),
+                run.busy.as_secs_f64() * 1e6 / posts as f64,
+                (posts * per_post) as f64 / elapsed,
+            );
+        }
+    }
+}
+
+/// Posts `total` batches of `per_post` events from `concurrency` tasks, timing each POST.
+async fn run_events(
+    client: &HttpClient,
+    target: &Target,
+    concurrency: usize,
+    total: usize,
+    per_post: usize,
+) -> Samples {
+    let busy_before = target.busy();
+    let tasks: Vec<_> = (0..concurrency)
+        .map(|task| {
+            let (client, addr) = (client.clone(), target.addr);
+            let count = total / concurrency + usize::from(task < total % concurrency);
+            tokio::spawn(async move {
+                let mut samples = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let started = Instant::now();
+                    post_events(&client, addr, per_post).await;
+                    samples.push(started.elapsed().as_nanos() as u64);
+                }
+                samples
+            })
+        })
+        .collect();
+    let mut all = Samples::default();
+    for task in tasks {
+        all.requests.extend(task.await.unwrap());
+    }
+    all.busy = target.busy() - busy_before;
+    all.requests.sort_unstable();
+    all
+}
+
+/// Posts `count` lifecycle events in one batch: four voice sessions in turn, each through speech onset, end of
+/// turn, playback and its end, with ids unique in the process.
+async fn post_events(client: &HttpClient, addr: SocketAddr, count: usize) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    const TYPES: [&str; 4] = [
+        "user_speech_started",
+        "user_turn_ended",
+        "playback_started",
+        "playback_ended",
+    ];
+    let first = NEXT.fetch_add(count as u64, Ordering::Relaxed);
+    let events: Vec<String> = (first..first + count as u64)
+        .map(|n| {
+            format!(
+                r#"{{"event_id":"bench-{n}","session_id":"voice-bench-{}","at_ms":1792650010000,"source":"voice-worker","type":"{}","played_ms":0}}"#,
+                n / 4 % 4,
+                TYPES[n as usize % 4]
+            )
+        })
+        .collect();
+    let request = http::Request::post(format!("http://{addr}/v1/events"))
+        .header(HOST, "gateway")
+        .header(AUTHORIZATION, format!("Bearer {KEY}"))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(format!("[{}]", events.join(",")))))
+        .unwrap();
+    let response = client.request(request).await.unwrap();
+    assert_eq!(response.status(), http::StatusCode::ACCEPTED);
+    response.into_body().collect().await.unwrap();
 }
 
 fn row(
@@ -463,9 +679,10 @@ async fn one(
     class: &str,
     samples: &mut Samples,
 ) {
+    let key = if class == REALTIME { VOICE_KEY } else { KEY };
     let request = http::Request::post(format!("http://{addr}/v1/chat/completions"))
         .header(HOST, "gateway")
-        .header(AUTHORIZATION, format!("Bearer {KEY}"))
+        .header(AUTHORIZATION, format!("Bearer {key}"))
         .header(CONTENT_TYPE, "application/json")
         .header("x-session-id", "0f3c2a9e-5b1d-4c8e-9a77-2d6f1e0b8c41")
         .header("x-lh-class", class)
