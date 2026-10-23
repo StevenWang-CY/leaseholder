@@ -115,7 +115,7 @@ docs/                     architecture, protocol, SLOs, experiments, benchmarks,
   - a recompute ledger validated by injected causes;
   - measurements of when lifecycle timing beats static reservation and engine priority, and when it does not.
 - **The gateway is a harness.** `lh-gateway` is a small Rust proxy for experiments on one GPU without Kubernetes. It runs `lh-core`'s admission policies: E2's baselines since W2, Leaseholder's own since W3. It does not compete with fleet routers. The policy is to be proposed where production runs:
-  - the engine fix, as a vLLM scheduler PR under #40004;
+  - the engine fix, as two vLLM scheduler PRs under #40004: [#63350](https://github.com/vllm-project/vllm/pull/63350) lets a waiting request preempt lower-priority work for KV, and [#63351](https://github.com/vllm-project/vllm/pull/63351) holds lower-priority prefill out of its first tokens;
   - the agent-side lease and prefetch policy, in vllm-project/router on RFCs #427 (engine-confirmed retention) and #428 (prefetch before a tool returns);
   - the lifecycle-event sink and cache-control pass-through, in agentic-api (#364, #330).
 

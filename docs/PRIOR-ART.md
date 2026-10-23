@@ -231,7 +231,7 @@ Each point below rests on the sources above, as of 2026-10-22.
 2. **The engine "make room" fix.**
    - vLLM preempts among running requests but never for a waiting one (#40004, open since 2026-04-16); its open fixes cover only the `max_num_seqs` cap.
    - SGLang's priority preemption does not fire when KV memory runs out; the fix is a draft opened on 2026-10-21 (#45686).
-   - Leaseholder's version is planned as a vLLM PR under #40004 that keeps or offloads the victim's KV. Preempting work and resuming it from kept KV is published (ConServe); the contribution is the change to vLLM's scheduler, not the idea.
+   - Leaseholder's version is proposed as vLLM [#63350](https://github.com/vllm-project/vllm/pull/63350) under #40004, a victim's KV kept in the CPU tier when an offloading connector is configured, with [#63351](https://github.com/vllm-project/vllm/pull/63351) holding lower-priority prefill out of the request's first tokens. Preempting work and resuming it from kept KV is published (ConServe); the contribution is the change to vLLM's scheduler, not the idea.
 3. **A recompute ledger validated by injected causes.** The stacks above expose per-request cached-token counts (vLLM) or a cache-discontinuity log (vllm-project/router Progress-TTL). We found none that attributes recomputed tokens to causes. This is observability, not a research result.
 
 Two measurements carry the rest:
