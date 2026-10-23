@@ -4,9 +4,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use lh_core::TierCapacity;
+use lh_core::{FROZEN_BOX_POOL_TOKENS, KvGeometry, TierCapacity};
 use lh_sim::aiperf::{PlanOptions, reference};
 use lh_sim::corpus::Corpus;
+use lh_sim::hardware::{self, Gpu, H100_SXM, RTX_5060_TI};
+use lh_sim::regime;
 use lh_sim::replay::{Pauses, ReplayConfig};
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
 use serde_json::Value;
@@ -224,4 +226,51 @@ fn the_e1_arms_run_consistently_and_repeat_exactly() {
     assert_eq!(by_name("lru-cpu").engine.prefetched_blocks, 0);
     assert!(by_name("oracle-prefetch").engine.prefetched_blocks > 0);
     assert!(by_name("tokencake").engine.prefetched_blocks > 0);
+}
+
+#[test]
+fn the_box_places_as_the_regime_sweep_runs_it_and_an_h100_elsewhere() {
+    let qwen = KvGeometry::QWEN3_4B_BF16;
+    let traces = testdata("weka-x32-sub16");
+    let replay = ReplayConfig {
+        realtime_tokens: 2 * hardware::TOKENS_PER_CALL,
+        ..ReplayConfig::default()
+    };
+    let cell = |gpu: Gpu| regime::Cell {
+        pauses: Pauses::Trace,
+        sessions: 8,
+        cpu_ratio: 4.0,
+        capacity: gpu.capacity(&qwen, 4.0),
+    };
+    let cells = [RTX_5060_TI, H100_SXM].map(|gpu| hardware::Cell {
+        gpu,
+        token_scale: 1,
+        seed: 11,
+        regime: cell(gpu),
+    });
+    let placed = hardware::sweep(&traces, PlanOptions::default(), &replay, &cells, 2).unwrap();
+    let base = RunConfig::frozen_box(replay);
+    let frozen_box = regime::Cell {
+        capacity: TierCapacity::with_cpu_ratio(&qwen, FROZEN_BOX_POOL_TOKENS, 4.0),
+        ..cell(RTX_5060_TI)
+    };
+    let mapped = regime::sweep(&traces, PlanOptions::default(), &base, &[frozen_box], 1).unwrap();
+    assert_eq!(placed[0].result.arms, mapped[0].arms);
+    // The H100's pool is 13.8 times the box's and its restores are 8 times faster per token.
+    let (b, h) = (
+        placed[0].result.arm(Arm::LruCpu),
+        placed[1].result.arm(Arm::LruCpu),
+    );
+    assert!(h.regime.kv_pressure_mean < b.regime.kv_pressure_mean / 5.0);
+    assert!(
+        h.regime.pi > 2.0 * b.regime.pi,
+        "{} vs {}",
+        h.regime.pi,
+        b.regime.pi
+    );
+    assert!(h.resume_ttft_ms.p50 < b.resume_ttft_ms.p50);
+    let share = |s: &lh_sim::metrics::Summary| s.replay.realtime_blocked_share.unwrap();
+    assert!(share(h) <= share(b) && share(b) < 1.0);
+    let table = hardware::csv(&placed);
+    assert_eq!(table.lines().count(), 1 + 2 * Arm::E1.len());
 }

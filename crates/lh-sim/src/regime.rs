@@ -138,7 +138,7 @@ pub(crate) fn par_map<C: Sync, R: Send>(
         .collect())
 }
 
-fn pauses_name(p: Pauses) -> &'static str {
+pub(crate) fn pauses_name(p: Pauses) -> &'static str {
     match p {
         Pauses::Trace => "trace",
         Pauses::TraceLab { .. } => "tracelab",

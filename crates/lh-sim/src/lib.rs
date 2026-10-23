@@ -5,12 +5,14 @@
 //! through a model of vLLM 0.32's GPU prefix cache and OffloadingConnector CPU tier ([`engine`]),
 //! served by vLLM's step loop ([`scheduler`], priced by `lh-core`'s step-time model) or at E0's
 //! idle-box cost. [`run`] runs the arms and the clairvoyant reference, [`retention`] holds the E1
-//! arms' policies, [`metrics`] summarizes a run, [`regime`] sweeps the E1 regime map, [`mrc`]
-//! computes miss-ratio curves, and [`replay_log`] drives the engine model with a measured AIPerf run.
+//! arms' policies, [`metrics`] summarizes a run, [`regime`] sweeps the E1 regime map, [`hardware`]
+//! places other GPUs on it from modeled costs, [`mrc`] computes miss-ratio curves, and
+//! [`replay_log`] drives the engine model with a measured AIPerf run.
 
 pub mod aiperf;
 pub mod corpus;
 pub mod engine;
+pub mod hardware;
 pub mod metrics;
 pub mod mrc;
 pub mod pauses;
