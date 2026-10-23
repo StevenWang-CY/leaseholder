@@ -2,6 +2,9 @@
 # lh-engine.service runs `vllm serve --config <this file>`. Every experiment shares these values; a sweep
 # overrides single flags on the command line (vLLM gives the command line precedence over this file).
 model: Qwen/Qwen3-4B-Instruct-2507-FP8
+# The measured weights. The units run offline, and a download by commit writes no refs/main, so the pin is what a
+# fresh host resolves; bootstrap.sh downloads the revision named here.
+revision: 8591804019c8b22094c3b5b4454e0edc05dffc98
 host: 127.0.0.1
 port: 8000
 max-model-len: 32768

@@ -36,11 +36,11 @@ if [[ ! -f $kokoro/api/src/models/v1_0/kokoro-v1_0.pth ]]; then
   (cd "$kokoro" && "$root/venvs/tts/bin/python" docker/scripts/download_model.py --output api/src/models/v1_0)
 fi
 
-# The units run offline (HF_HUB_OFFLINE=1), so the models are fetched here, at the revisions every result was
-# measured with.
-for model in Qwen/Qwen3-4B-Instruct-2507-FP8@8591804019c8b22094c3b5b4454e0edc05dffc98 \
-  openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9; do
-  "$root/venvs/engine/bin/hf" download -q "${model%@*}" --revision "${model#*@}" >/dev/null
+# The units run offline (HF_HUB_OFFLINE=1), so the models are fetched here, at the revisions their configs pin.
+for config in "$here/engine.yaml" "$here/stt.yaml"; do
+  read -r model revision < <(awk '$1 == "model:" {m = $2} $1 == "revision:" {r = $2} END {print m, r}' "$config")
+  [[ -n $revision ]] || { echo "bootstrap: $config pins no revision" >&2; exit 2; }
+  "$root/venvs/engine/bin/hf" download -q "$model" --revision "$revision" >/dev/null
 done
 
 # FlashInfer's JIT needs curand headers that /usr/local/cuda-13.0 lacks on this host; expose the venv's copies.

@@ -1,6 +1,8 @@
 # Frozen-box speech-to-text on Phastform: vLLM 0.32.0 serving Whisper large-v3-turbo at /v1/audio/transcriptions.
 # lh-stt.service runs `vllm serve --config <this file>`. About 2.4 GiB of GPU memory.
 model: openai/whisper-large-v3-turbo
+# The measured weights, pinned as in engine.yaml.
+revision: 41f01f3fe87f28c78e2fbf8b568835947dd65ed9
 host: 127.0.0.1
 port: 8100
 gpu-memory-utilization: 0.15
