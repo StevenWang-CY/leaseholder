@@ -85,13 +85,14 @@ def scheduler(
     max_model_len: int = 24 * BLOCK,
     watermark: float = 0.0,
     prefix_caching: bool = False,
+    max_num_seqs: int = 16,
 ):
     """A scheduler over a KV pool of ``num_blocks`` blocks of 16 tokens (one of them vLLM's null block)."""
     model_config = ModelConfig(
         model=model, dtype="float16", seed=42, skip_tokenizer_init=True, max_model_len=max_model_len
     )
     scheduler_config = SchedulerConfig(
-        max_num_seqs=16,
+        max_num_seqs=max_num_seqs,
         max_num_batched_tokens=max_num_batched_tokens,
         max_model_len=max_model_len,
         long_prefill_token_threshold=long_prefill_token_threshold,
@@ -575,6 +576,29 @@ def test_a_higher_priority_request_loading_its_kv_holds_lower_priority_prefill(
     sched._inflight_prefills.add(voice)
     tokens = step(sched).num_scheduled_tokens
     assert tokens == ({"decode": 1} if make_room else {"decode": 1, "prefill": 256})
+
+
+def test_with_every_running_slot_taken_a_loading_request_holds_nothing_back(module, model):
+    """A request whose load is done needs a running slot to be promoted. With both slots taken by priority-2
+    requests, a priority-0 request loading its KV holds nothing back: otherwise the running prefill would sit out
+    every step until the decode finished, and with no decode running, forever."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        400,
+        {"budget_cap": True},
+        long_prefill_token_threshold=256,
+        max_model_len=4096,
+        max_num_seqs=2,
+    )
+    run(sched, request("decode", 40, priority=2, arrival=0))
+    sched.add_request(request("prefill", 3000, priority=2, arrival=1))
+    step(sched)
+    voice = request("voice", 300, priority=0, arrival=2)
+    sched.add_request(voice)
+    voice.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+    sched._inflight_prefills.add(voice)
+    assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 256}
 
 
 # The reserve

@@ -23,7 +23,8 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
    its KV from a connector or prefills, until it has its first ``budget_cap_tokens`` output tokens (16: a voice
    reply's first sentence). Those steps carry its tokens and the decodes alone; decodes are never cut. A request
    whose load is done waits for the waiting loop, which runs only on budget the running prefills leave. A waiting
-   request that does not fit holds nothing back, so prefills that will free its blocks go on.
+   request that does not fit holds nothing back, so prefills that will free its blocks go on; nor does a waiting or
+   loading request while every running slot is taken, since it could not be promoted.
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
    sequence, the blocks in-flight prefills still need and this reserve all fit in the free blocks, so a request of
    priority 0 (Leaseholder's realtime class) usually finds room without preempting anyone. With
@@ -152,9 +153,9 @@ HELPERS = '''
     ) -> int | None:
         """The highest priority of the requests whose first tokens are due, if
         the budget cap is on: the running ones with fewer than
-        `budget_cap_tokens` output tokens, the in-flight prefills (async KV
-        loads included), and `waiting_req` once it fits beside them, deferred
-        frees counted."""
+        `budget_cap_tokens` output tokens and, while a running slot is free, the
+        in-flight prefills (async KV loads included) and `waiting_req` once it
+        fits beside them, deferred frees counted."""
         if not self.prefill_budget_cap:
             return None
         priorities = [
@@ -162,20 +163,20 @@ HELPERS = '''
             for req in self.running
             if req.num_output_tokens < self.prefill_budget_cap_tokens
         ]
-        # Admitted but still prefilling, or loading its KV from a connector:
-        # once its load is done, only budget left by the running loop lets the
-        # waiting loop promote it.
-        priorities.extend(req.priority for req in self._inflight_prefills)
-        if waiting_req is not None:
-            num_active = len(self.running) + self.num_waiting_for_streaming_input
-            num_deferred = self._num_freeable_blocks(
-                *(blocks for _, blocks in self.deferred_frees)
-            )
-            if (
-                num_active < self.max_num_active_reqs
-                and self._num_blocks_short(waiting_req) <= num_deferred
-            ):
-                priorities.append(waiting_req.priority)
+        # A request admitted with its KV loading from a connector, or waiting,
+        # needs a running slot to be promoted: with none free, holding prefill
+        # back would only stall the running requests.
+        num_active = len(self.running) + self.num_waiting_for_streaming_input
+        if num_active < self.max_num_active_reqs:
+            # Once its load is done, only budget left by the running loop lets
+            # the waiting loop promote it.
+            priorities.extend(req.priority for req in self._inflight_prefills)
+            if waiting_req is not None:
+                num_deferred = self._num_freeable_blocks(
+                    *(blocks for _, blocks in self.deferred_frees)
+                )
+                if self._num_blocks_short(waiting_req) <= num_deferred:
+                    priorities.append(waiting_req.priority)
         return min(priorities, default=None)
 
     def _num_blocks_short(self, request: Request) -> int:
