@@ -376,7 +376,7 @@ def _add_voice_turn(commands: Commands) -> None:
 
 def _e2(args: argparse.Namespace) -> int:
     from leaseholder_bench.e2 import E2Error, Host, Systemd, load_arm, reset_cyan, run_point
-    from leaseholder_bench.frontier import load_points, render, write_report
+    from leaseholder_bench.frontier import export_point, load_points, render, write_report
 
     try:
         if args.action == "engine":
@@ -395,6 +395,17 @@ def _e2(args: argparse.Namespace) -> int:
                 print(f"lh-bench e2: {args.arm.stem} interrupted", file=sys.stderr)
                 return 130
             print(render(summary))
+        elif args.action == "export":
+            records = []
+            for run_dir in args.run_dirs:
+                if (record := export_point(run_dir, args.out)) is None:
+                    print(f"lh-bench e2: {run_dir}: the point did not complete", file=sys.stderr)
+                else:
+                    records.append(record)
+                    print(record)
+            if not records:
+                print("lh-bench e2: no complete point to export", file=sys.stderr)
+                return 1
         else:
             rows, incomplete = load_points(args.run_dirs)
             for run_dir in incomplete:
@@ -451,6 +462,16 @@ def _add_e2(commands: Commands) -> None:
         help="draw only this point's configuration in waterfall.svg (repeatable, in this order; "
         "default every one with turn lines)",
     )
+    export = actions.add_parser(
+        "export",
+        help="write the compact records of run directories, from which report gives the same tables",
+        description="Write each complete point's compact record into DIR/CAMPAIGN/POINT: its "
+        "run.json, arm.toml and engine.json, the callers' summary.json and turns.jsonl, and a "
+        "summary.json with the first bytes taken exactly from the request log and the GPU's "
+        "clocks; no request log, AIPerf export, journal or credential.",
+    )
+    export.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    export.add_argument("--out", type=Path, required=True, help="records directory")
     engine = actions.add_parser(
         "engine",
         help="print the engine an arm file needs, as deploy/phastform/variant.sh use takes it",

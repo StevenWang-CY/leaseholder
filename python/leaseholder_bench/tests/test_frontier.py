@@ -17,6 +17,7 @@ from leaseholder_bench.cli import main
 from leaseholder_bench.frontier import (
     COLUMNS,
     GPU_COLUMNS,
+    RECORD,
     SESSIONS_LOGGER,
     STACKED,
     TURNS_LOGGER,
@@ -554,6 +555,63 @@ def test_the_stage_waterfall_stacks_each_configurations_stages_to_its_mean_v2v(
         write_report(rows, out)
         figure = (out / "waterfall.svg").read_text()
         assert "disc-frozen (2 runs)" in figure and "a1-voice" not in figure
+
+
+def whole(run_dir: Path) -> Path:
+    """A run directory with everything lh-bench e2 run and campaign.sh leave in one."""
+    turn_lines(
+        run_dir,
+        {"transcript_ms": 790, "end_of_turn_ms": 800, "llm_ttft_ms": 2500}
+        | {"turn_to_first_sentence_ms": 3000, "tts_first_audio_ms": 300, "e2e_ms": 4110},
+        2,
+        answered(4400, 4500),
+    )
+    (run_dir / "gateway.jsonl").write_text(REQUESTS + "\n")  # exact first bytes; p95 955 ms
+    samples = [smi(T0 + 10, "2805 MHz", "61"), smi(T0 + 20, "2745 MHz", "71")]
+    (run_dir / "gpu.csv").write_text("\n".join(samples) + "\n")
+    (run_dir / "voice-worker.log").write_text("registered worker\n")
+    (run_dir / "arm.toml").write_text('arm = 4\nlabel = "x"\n')
+    (run_dir / "engine.json").write_text(json.dumps({"model_config": {"hf_token": None}}))
+    (run_dir / "bots" / "summary.json").write_text(json.dumps({"turns": 2, "errors": 0}))
+    callers = {"config": {"api_key": "lh2a17802e4561", "api_secret": "<redacted>"}}
+    (run_dir / "bots" / "run.json").write_text(json.dumps(callers))
+    for name in ("aiperf/profile_export.jsonl", "metrics/gateway-end.prom", "bots.log"):
+        (run_dir / name).parent.mkdir(exist_ok=True)
+        (run_dir / name).write_text("raw\n")
+    return run_dir
+
+
+def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, capsys) -> None:
+    runs = tmp_path / "runs"
+    dirs = [
+        whole(point(runs / "w2c", "disc-frozen", "4", 3700, 10800)),
+        whole(point(runs / "r1", "disc-frozen", "4", 3500, 9800)),
+        point(runs / "w2c", "disc-cap2", "6", 3400, 8500),  # a summary from before the logs
+        point(runs / "w2c", "disc-cap8", "6", None, 0, status="failed"),
+    ]
+    out = tmp_path / "records"
+    assert main(["e2", "export", *map(str, dirs), "--out", str(out)]) == 0
+    records = [out / "w2c" / "disc-frozen", out / "r1" / "disc-frozen", out / "w2c" / "disc-cap2"]
+    printed = capsys.readouterr()
+    assert printed.out.split() == [str(record) for record in records]  # CAMPAIGN/POINT
+    assert "disc-cap8: the point did not complete" in printed.err
+    record = records[0]
+    kept = sorted(str(p.relative_to(record)) for p in record.rglob("*") if p.is_file())
+    assert kept == sorted([*RECORD, "summary.json"])
+    assert not any("lh2a17802e4561" in p.read_text() for p in out.rglob("*") if p.is_file())
+    summary = json.loads((record / "summary.json").read_text())
+    assert summary["gateway"]["realtime_first_byte_ms"]["p95"] == 955.0  # exact, from the log
+    assert summary["gateway"]["background_first_byte_ms"]["source"] == "log"
+    assert summary["gpu"] == {"sm_clock_p50_mhz": 2775, "temperature_max_c": 71}
+    full, _ = load_points(dirs[:3])
+    compact, _ = load_points(records)
+    assert compact == full
+    assert full[0]["campaign"] == "r1" and full[0]["gpu_sm_clock_p50_mhz"] == 2775
+    reports = [write_report(rows, tmp_path / name) for name, rows in (("a", full), ("b", compact))]
+    for a, b in zip(*reports, strict=True):
+        assert a.read_bytes() == b.read_bytes(), a.name  # the figures too: same bytes every time
+    assert main(["e2", "export", str(dirs[3]), "--out", str(out)]) == 1
+    assert "no complete point to export" in capsys.readouterr().err
 
 
 def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:

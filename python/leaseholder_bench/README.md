@@ -16,7 +16,7 @@ the tier cost model (E0) and server-side voice turns.
 | `lh-bench tiers` | `tiers.py` | E0: time to first token from the GPU pool, the CPU tier and recompute, verified per sample by vLLM's prefix-cache counters; optional background load |
 | `lh-bench voice-turn` | `voice_turn.py` | One server-side voice turn timed per stage (STT, LLM first sentence, TTS first audio); optional background load |
 | `lh-bench kv-metrics` | `kv_metrics.py` | KV block lifecycle histograms compared across a run |
-| `lh-bench e2` | `e2.py`, `frontier.py` | E2 points: one measured from its arm file on cyan (`run`), and the frontier across points (`report`) |
+| `lh-bench e2` | `e2.py`, `frontier.py` | E2 points: one measured from its arm file on cyan (`run`), the frontier across points (`report`), and their compact records (`export`) |
 | background load | `load.py` | `prefill:<tokens>x<n>` (cold prefills) or `decode:<tokens>x<n>` (long decodes) beside a probe |
 
 Python 3.12, pinned to `aiperf==0.13.0`. Installing the package registers both AIPerf plugins
@@ -252,6 +252,7 @@ lh-bench e2 engine a2-stock-s16.toml     # the engine an arm needs, as variant.s
 lh-bench e2 report ~/leaseholder/runs/e2/w2/{a1-voice,a2-stock-s16} --out ~/leaseholder/runs/e2/first
 lh-bench e2 report ~/leaseholder/runs/e2/{w2c,a9,r1,r2}/disc-* --out ~/leaseholder/runs/e2/disc \
   --waterfall disc-frozen-s24 --waterfall disc-a9-s24   # repeats across rounds; two configurations' waterfall
+lh-bench e2 export ~/leaseholder/runs/e2/w2b/* --out benchmarks/results/2026-10-23-e2   # compact records
 lh-bench e2 reset                        # cyan's units as gateway.toml and the worker's defaults have them
 ```
 
@@ -314,6 +315,7 @@ A component that fails fails the point: `run.json` keeps `failed` and the error,
 | `background` | Null for voice alone. From AIPerf's records of the agent requests that ended during the calls: requests, errors (failed and cancelled requests count as lost), requests/s, prompt, completion and total tokens/s from the server's usage counts, and `ttft_ms` |
 | `gateway` | `realtime_first_byte_ms` and `background_first_byte_ms` (n, mean, p50, p95, p99): exact, from `gateway.jsonl` (`"source": "log"`), or interpolated inside the first-byte histogram's buckets, whose bounds are 0.1, 0.25, 0.5 and 1 s in the range that matters for voice (`"source": "histogram"`, without the log); what its admission point shed, refused and resubmitted, and the prompt tokens of the attempts it dropped; `background_tokens_per_s`, its own count from response usage; and every counter that moved |
 | `engine` | vLLM's preemptions, prompt tokens by source (local compute, GPU-pool and CPU-tier hits) and queue-limit rejections |
+| `gpu` | Only in a compact record (`lh-bench e2 export`): from `gpu.csv`, the GPU's median SM clock (`sm_clock_p50_mhz`) and highest temperature (`temperature_max_c`) during the calls |
 
 The background goodput comes from AIPerf's records rather than from the gateway's request outcomes, whose `completed` counts a response relayed in full whatever its status: it cannot tell a request the engine refused from one it served. The gateway's token rate stays beside it as a check.
 
@@ -321,7 +323,9 @@ The background goodput comes from AIPerf's records rather than from the gateway'
 - **Repeats.** Points measured from the same arm file in several campaigns, under the same point name, are repeats of one configuration. `frontier.md` keeps a row per run, named by its campaign (`frontier.csv`'s `campaign`: the directory that holds the run directory), then gives the configuration's median and range (min–max) of V2V p50/p95/p99, background tokens/s, the realtime first byte p95 and failed turns, with its run count. The frontier places the configuration at its medians, and `frontier.svg` draws it there with whiskers over its runs' range on both axes: one marker per configuration keeps each frontier a line through what `frontier.md` marks, and a run that collapsed still shows as a long whisker. A configuration measured once is shown as before.
 - **The realtime first byte** is exact from the run directory's `gateway.jsonl`, even one fetched after the run (from the journal, for the window in `run.json`), and otherwise the summary's; `realtime_first_byte_source` says which, and `frontier.md` marks an interpolated value with `~`.
 - **The stage waterfall** (`waterfall.svg`, and its table in `frontier.md`) splits each configuration's voice turn into stages that follow one another, as means over the replies of its runs: endpointing (`end_of_turn_ms`), the reply to its first sentence (`turn_to_first_sentence_ms`) and TTS to first audio (`tts_first_audio_ms`), from the worker's turn lines, then the rest of the callers' V2V, transport and playout (the mean V2V less the three). So a bar is as long as the mean V2V; a line marks the median V2V and a triangle the p95, over the callers' samples in `bots/turns.jsonl`. A thin bar under it is the LLM's own time to first token (`llm_ttft_ms`), from its request: under preemptive generation the request starts at the final transcript, before the end of the turn, so it lies across the first two stages. `--waterfall POINT` (repeatable) draws only those configurations, in that order; by default every one with turn lines.
-- **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts, and, from `gpu.csv`, the GPU's median SM clock and highest temperature during the calls.
+- **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts, and, from `gpu.csv` (or a compact record's summary), the GPU's median SM clock and highest temperature during the calls.
+
+**The compact record.** `lh-bench e2 export RUN_DIR... --out DIR` writes each complete point's record into `DIR/CAMPAIGN/POINT`, where its run directory sits in its campaign: `run.json`, `arm.toml`, `engine.json`, the callers' `summary.json` and `turns.jsonl`, and a `summary.json` that keeps what the report takes from the files the record leaves out: the first bytes of both classes exactly from `gateway.jsonl` (`"source": "log"`), and from `gpu.csv` the GPU's clock and temperature (`gpu`). A record is about 30 kB and holds no credential: the callers' `run.json`, which names LiveKit's API key, stays out. The report gives the same tables and figures from the records as from the run directories, byte for byte (its figures carry no date), so the records are what goes into the repository. The raw records (the gateway's request log, AIPerf's exports, the metric snapshots, the worker's journal, the GPU's samples, the tools' logs) are published as an asset of the GitHub release that carries the results.
 
 ## Mock server
 
@@ -399,4 +403,5 @@ the logs a point keeps: the gateway's request lines and the worker's journal, wa
 sessions to end only when they will. `tests/test_frontier.py` covers the summary over the window,
 the exact first bytes from a request log, the Pareto marking, repeated points placed at their
 medians with every run kept, the stage waterfall's means and V2V marks, the report's columns that
-only some points have, and the names of the lines the voice worker writes.
+only some points have, compact records that give the report of their run directories byte for
+byte, and the names of the lines the voice worker writes.

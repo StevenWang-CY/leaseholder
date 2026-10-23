@@ -13,12 +13,16 @@ harvests at least as much background goodput at a V2V p95 at least as low, and o
 strictly better. Points measured from the same arm file in several campaigns are repeats of one
 configuration, which the frontier places at their medians; the tables keep every run. The stage
 waterfall splits each configuration's voice turn into the stages that add up to its mean V2V.
+
+:func:`export_point` writes a point's compact record (``lh-bench e2 export``), the few small files
+from which the report gives the same tables as from the whole run directory.
 """
 
 from __future__ import annotations
 
 import csv
 import re
+import shutil
 import statistics
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -460,7 +464,12 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     # worker's stages, and the callers' voice-to-voice samples.
     row["stage_means"] = {s: (c["n"], c["mean"]) for s, c in waterfall.items() if "mean" in c}
     row["v2v_samples"] = v2v_samples(run_dir / "bots" / "turns.jsonl")
-    return row | gpu(run_dir / "gpu.csv", window)
+    samples = run_dir / "gpu.csv"
+    if (
+        not samples.exists() and "gpu" in summary
+    ):  # a compact record keeps the clocks in its summary
+        return row | {f"gpu_{key}": value for key, value in summary["gpu"].items()}
+    return row | gpu(samples, window)
 
 
 def v2v_samples(turns: Path) -> list[float]:
@@ -816,6 +825,15 @@ _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9
 _SECONDARY = "#52514e"
 
 
+def _save_svg(fig: Any, path: Path) -> None:
+    """Write a figure as SVG, the same bytes for the same figure: no date, and the ids salted by
+    the file's name rather than at random."""
+    import matplotlib
+
+    with matplotlib.rc_context({"svg.hashsalt": path.name}):
+        fig.savefig(path, format="svg", facecolor=_SURFACE, metadata={"Date": None})
+
+
 def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
     """frontier.svg: each arm's frontier as a line, its dominated points as open markers. A point
     measured in several campaigns sits at its runs' medians, with whiskers over their range on both
@@ -895,7 +913,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
         for text in legend.get_texts():
             text.set_color(_INK)
     fig.tight_layout()
-    fig.savefig(path, format="svg", facecolor=_SURFACE)
+    _save_svg(fig, path)
     plt.close(fig)
     return True
 
@@ -968,6 +986,45 @@ def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:
     legend = fig.legend(artists, labels, loc="outside lower left", ncols=3, frameon=False)
     for text in legend.get_texts():
         text.set_color(_INK)
-    fig.savefig(path, format="svg", facecolor=_SURFACE)
+    _save_svg(fig, path)
     plt.close(fig)
     return True
+
+
+# The compact record
+
+RECORD = ("run.json", "arm.toml", "engine.json", "bots/summary.json", "bots/turns.jsonl")
+"""What a point's compact record (``lh-bench e2 export``) copies from its run directory, beside its
+summary.json. Left out: the gateway's request log and the GPU's samples, whose numbers the record's
+summary keeps; AIPerf's exports, the metric snapshots, the worker's journal and the tools' logs; and
+the callers' run.json, which names LiveKit's API key."""
+
+
+def export_point(run_dir: Path, out: Path) -> Path | None:
+    """Write the compact record of the point in ``run_dir`` into ``out``, at CAMPAIGN/POINT as the
+    run directory sits in its campaign, and return its directory; None for a point that did not
+    complete. Its summary.json takes the first bytes exactly from the request log, as the report
+    does, and the GPU's median SM clock and highest temperature from gpu.csv (``gpu``), so the
+    report gives the same tables from the record as from the run directory."""
+    run_file = run_dir / "run.json"
+    run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
+    if run.get("status") != "complete":
+        return None
+    summary = orjson.loads((run_dir / "summary.json").read_bytes())
+    window = run.get("window")
+    requests = gateway_requests(run_dir, window["start"], window["end"]) if window else None
+    if requests is not None:
+        for slo_class in ("realtime", "background"):
+            summary["gateway"][f"{slo_class}_first_byte_ms"] = logged_first_byte(
+                requests, slo_class
+            )
+    if (samples := run_dir / "gpu.csv").exists():
+        clocks = gpu(samples, window)
+        summary["gpu"] = {column.removeprefix("gpu_"): value for column, value in clocks.items()}
+    record = out / run_dir.absolute().parent.name / run_dir.absolute().name
+    (record / "bots").mkdir(parents=True, exist_ok=True)
+    for name in RECORD:
+        if (run_dir / name).exists():
+            shutil.copyfile(run_dir / name, record / name)
+    (record / "summary.json").write_bytes(orjson.dumps(summary, option=orjson.OPT_INDENT_2) + b"\n")
+    return record
