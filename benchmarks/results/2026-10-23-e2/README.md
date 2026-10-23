@@ -8,7 +8,7 @@ Each point is `CAMPAIGN/POINT/`, as `lh-bench e2 export` writes it from the run 
 |---|---|
 | `run.json` | The point's record: the arm as read, versions, the engine and its checked flags, what cyan ran, the window of the calls |
 | `arm.toml` | The arm file as run |
-| `engine.json` | The engine's configuration from its `/server_info`, without credentials |
+| `engine.json` | The engine the point ran on, from its `/server_info`: the model and its revision, the context, dtype and quantization, the KV cache and pool, the scheduler settings the arms' flags set, the CPU tier's connector and `additional_config` (for SGLang the same of its server arguments), with home paths written from `~` |
 | `summary.json` | The point's E2 metrics, with the first bytes taken exactly from the gateway's request log and, where the campaign sampled the GPU, its median SM clock and highest temperature during the calls (`gpu`) |
 | `bots/summary.json`, `bots/turns.jsonl` | The callers' summary and their line per turn |
 

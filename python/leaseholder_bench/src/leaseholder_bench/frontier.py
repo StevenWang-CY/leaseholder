@@ -825,13 +825,13 @@ _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9
 _SECONDARY = "#52514e"
 
 
-def _save_svg(fig: Any, path: Path) -> None:
+def _save_svg(fig: Any, path: Path, **options: Any) -> None:
     """Write a figure as SVG, the same bytes for the same figure: no date, and the ids salted by
-    the file's name rather than at random."""
+    the file's name rather than at random. ``options`` go to savefig."""
     import matplotlib
 
     with matplotlib.rc_context({"svg.hashsalt": path.name}):
-        fig.savefig(path, format="svg", facecolor=_SURFACE, metadata={"Date": None})
+        fig.savefig(path, format="svg", facecolor=_SURFACE, metadata={"Date": None}, **options)
 
 
 def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
@@ -986,18 +986,68 @@ def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:
     legend = fig.legend(artists, labels, loc="outside lower left", ncols=3, frameon=False)
     for text in legend.get_texts():
         text.set_color(_INK)
-    _save_svg(fig, path)
+    _save_svg(fig, path, bbox_inches="tight", pad_inches=0.1)  # the rows and the legend, no more
     plt.close(fig)
     return True
 
 
 # The compact record
 
-RECORD = ("run.json", "arm.toml", "engine.json", "bots/summary.json", "bots/turns.jsonl")
+RECORD = ("run.json", "arm.toml", "bots/summary.json", "bots/turns.jsonl")
 """What a point's compact record (``lh-bench e2 export``) copies from its run directory, beside its
-summary.json. Left out: the gateway's request log and the GPU's samples, whose numbers the record's
-summary keeps; AIPerf's exports, the metric snapshots, the worker's journal and the tools' logs; and
-the callers' run.json, which names LiveKit's API key."""
+summary.json and a reduced engine.json. Left out: the gateway's request log and the GPU's samples,
+whose numbers the record's summary keeps; AIPerf's exports, the metric snapshots, the worker's
+journal and the tools' logs; and the callers' run.json, which names LiveKit's API key."""
+
+VLLM_ENGINE = {
+    "model_config": ("model", "revision", "max_model_len", "dtype", "quantization"),
+    "cache_config": (
+        "block_size",
+        "enable_prefix_caching",
+        "cache_dtype",
+        "kv_cache_memory_bytes",
+        "num_gpu_blocks",
+    ),
+    "scheduler_config": (
+        "policy",
+        "max_num_batched_tokens",
+        "long_prefill_token_threshold",
+        "max_num_seqs",
+        "async_scheduling",
+        "watermark",
+        "max_num_queued_tokens",
+    ),
+    "kv_transfer_config": ("kv_connector", "kv_connector_extra_config"),
+}
+"""What a record keeps of a vLLM engine's configuration, beside all of its additional_config: the
+settings lh-bench e2 run checks the arms' flags against, and what it takes to serve the same engine
+again (the model and its revision, the context, dtype and quantization, the KV pool, the CPU tier)."""
+SGLANG_ENGINE = (
+    "model_path",
+    "revision",
+    "context_length",
+    "dtype",
+    "quantization",
+    "kv_cache_dtype",
+    "page_size",
+    "disable_radix_cache",
+    "mem_fraction_static",
+    "max_total_tokens",
+    "max_total_num_tokens",
+    "schedule_policy",
+    "chunked_prefill_size",
+    "max_running_requests",
+    "enable_priority_scheduling",
+    "schedule_low_priority_values_first",
+    "priority_scheduling_preemption_threshold",
+    "enable_hierarchical_cache",
+    "hicache_ratio",
+    "hicache_write_policy",
+)
+"""The same of an SGLang engine's server arguments."""
+_SNAPSHOT = re.compile(r"models--(?P<name>[^/]+)/snapshots/(?P<revision>[0-9a-f]+)")
+"""A model in the Hugging Face cache: models--ORG--NAME/snapshots/REVISION."""
+_HOME = re.compile(r"/(?:home|Users)/[^/\s]+|/root(?=/)")
 
 
 def export_point(run_dir: Path, out: Path) -> Path | None:
@@ -1005,7 +1055,8 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
     run directory sits in its campaign, and return its directory; None for a point that did not
     complete. Its summary.json takes the first bytes exactly from the request log, as the report
     does, and the GPU's median SM clock and highest temperature from gpu.csv (``gpu``), so the
-    report gives the same tables from the record as from the run directory."""
+    report gives the same tables from the record as from the run directory. Its engine.json keeps
+    only what says which engine the point ran on (:func:`engine_settings`)."""
     run_file = run_dir / "run.json"
     run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
     if run.get("status") != "complete":
@@ -1027,4 +1078,37 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
         if (run_dir / name).exists():
             shutil.copyfile(run_dir / name, record / name)
     (record / "summary.json").write_bytes(orjson.dumps(summary, option=orjson.OPT_INDENT_2) + b"\n")
+    if (engine := run_dir / "engine.json").exists():
+        settings = engine_settings(orjson.loads(engine.read_bytes()))
+        (record / "engine.json").write_bytes(
+            orjson.dumps(settings, option=orjson.OPT_INDENT_2) + b"\n"
+        )
     return record
+
+
+def engine_settings(config: Mapping[str, Any]) -> dict[str, Any]:
+    """An engine's configuration (engine.json, from its /server_info) reduced to VLLM_ENGINE or
+    SGLANG_ENGINE, with the model named by its Hugging Face id and revision rather than its path in
+    the cache, and every path under a home directory from ``~``."""
+    if "model_config" not in config:  # SGLang's server arguments
+        return _home({key: config.get(key) for key in SGLANG_ENGINE})
+    settings: dict[str, Any] = {
+        section: None if config.get(section) is None else {k: config[section].get(k) for k in keys}
+        for section, keys in VLLM_ENGINE.items()
+    }
+    settings["additional_config"] = config.get("additional_config")
+    model = settings["model_config"]
+    if model and (cached := _SNAPSHOT.search(str(model["model"]))):
+        model |= {"model": cached["name"].replace("--", "/", 1), "revision": cached["revision"]}
+    return _home(settings)
+
+
+def _home(value: Any) -> Any:
+    """``value`` with every path under a home directory written from ``~``."""
+    if isinstance(value, str):
+        return _HOME.sub("~", value)
+    if isinstance(value, Mapping):
+        return {key: _home(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_home(item) for item in value]
+    return value

@@ -6,6 +6,7 @@ import ast
 import csv
 import importlib.util
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from leaseholder_bench.frontier import (
     GPU_COLUMNS,
     RECORD,
     SESSIONS_LOGGER,
+    SGLANG_ENGINE,
     STACKED,
     TURNS_LOGGER,
     WATERFALL,
@@ -27,6 +29,7 @@ from leaseholder_bench.frontier import (
     background,
     configurations,
     engine_counts,
+    engine_settings,
     first_byte_ms,
     gateway_counts,
     gateway_requests,
@@ -560,6 +563,47 @@ def test_the_stage_waterfall_stacks_each_configurations_stages_to_its_mean_v2v(
         assert "disc-frozen (2 runs)" in figure and "a1-voice" not in figure
 
 
+SNAPSHOT = (
+    "/home/alice/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507-FP8/snapshots/859180"
+)
+VLLM_CONFIG = {
+    "model_config": {"model": SNAPSHOT, "tokenizer": SNAPSHOT, "revision": None, "hf_token": None}
+    | {"max_model_len": 32768, "dtype": "torch.bfloat16", "quantization": "fp8"},
+    "cache_config": {"block_size": 16, "enable_prefix_caching": True, "cache_dtype": "auto"}
+    | {"kv_cache_memory_bytes": 5368709120, "num_gpu_blocks": 2275, "gpu_memory_utilization": 0.7},
+    "scheduler_config": {"policy": "priority", "max_num_batched_tokens": 512, "max_num_seqs": 256}
+    | {"long_prefill_token_threshold": 256, "async_scheduling": True, "watermark": 0.1}
+    | {"max_num_queued_tokens": None, "enable_chunked_prefill": True},
+    "kv_transfer_config": {"kv_connector": "OffloadingConnector", "kv_role": "kv_both"}
+    | {"kv_connector_extra_config": {"cpu_bytes_to_use": 21474836480, "spill": "/home/alice/kv"}},
+    "additional_config": {"make_room": {"max_preemptions_per_step": 2}},
+    "compilation_config": {"cache_dir": "/home/alice/.cache/vllm/torch_compile_cache"},
+    "lora_config": None,
+}
+"""A vLLM engine's configuration as /server_info gives it, in a few of its 30-odd sections."""
+
+
+def test_a_records_engine_json_says_what_the_point_ran_on() -> None:
+    assert engine_settings(VLLM_CONFIG) == {
+        "model_config": {"model": "Qwen/Qwen3-4B-Instruct-2507-FP8", "revision": "859180"}
+        | {"max_model_len": 32768, "dtype": "torch.bfloat16", "quantization": "fp8"},
+        "cache_config": {"block_size": 16, "enable_prefix_caching": True, "cache_dtype": "auto"}
+        | {"kv_cache_memory_bytes": 5368709120, "num_gpu_blocks": 2275},
+        "scheduler_config": {"policy": "priority", "max_num_batched_tokens": 512}
+        | {"long_prefill_token_threshold": 256, "max_num_seqs": 256, "async_scheduling": True}
+        | {"watermark": 0.1, "max_num_queued_tokens": None},
+        "kv_transfer_config": {"kv_connector": "OffloadingConnector"}
+        | {"kv_connector_extra_config": {"cpu_bytes_to_use": 21474836480, "spill": "~/kv"}},
+        "additional_config": {"make_room": {"max_preemptions_per_step": 2}},
+    }
+    bare = engine_settings({"model_config": {"model": "Qwen/Qwen3-4B"}, "kv_transfer_config": None})
+    assert bare["model_config"]["model"] == "Qwen/Qwen3-4B" and bare["kv_transfer_config"] is None
+    sglang = {"model_path": "/Users/bob/models/qwen", "context_length": 32768, "api_key": None}
+    settings = engine_settings(sglang | {"chunked_prefill_size": 512, "port": 8000})
+    assert list(settings) == list(SGLANG_ENGINE) and settings["model_path"] == "~/models/qwen"
+    assert (settings["chunked_prefill_size"], settings["page_size"]) == (512, None)
+
+
 def whole(run_dir: Path) -> Path:
     """A run directory with everything lh-bench e2 run and campaign.sh leave in one."""
     turn_lines(
@@ -574,7 +618,7 @@ def whole(run_dir: Path) -> Path:
     (run_dir / "gpu.csv").write_text("\n".join(samples) + "\n")
     (run_dir / "voice-worker.log").write_text("registered worker\n")
     (run_dir / "arm.toml").write_text('arm = 4\nlabel = "x"\n')
-    (run_dir / "engine.json").write_text(json.dumps({"model_config": {"hf_token": None}}))
+    (run_dir / "engine.json").write_text(json.dumps(VLLM_CONFIG))
     (run_dir / "bots" / "summary.json").write_text(json.dumps({"turns": 2, "errors": 0}))
     callers = {"config": {"api_key": "lh2a17802e4561", "api_secret": "<redacted>"}}
     (run_dir / "bots" / "run.json").write_text(json.dumps(callers))
@@ -600,8 +644,10 @@ def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, 
     assert "disc-cap8: the point did not complete" in printed.err
     record = records[0]
     kept = sorted(str(p.relative_to(record)) for p in record.rglob("*") if p.is_file())
-    assert kept == sorted([*RECORD, "summary.json"])
-    assert not any("lh2a17802e4561" in p.read_text() for p in out.rglob("*") if p.is_file())
+    assert kept == sorted([*RECORD, "summary.json", "engine.json"])
+    assert json.loads((record / "engine.json").read_text()) == engine_settings(VLLM_CONFIG)
+    written = [p.read_text() for p in out.rglob("*") if p.is_file()]
+    assert not any("lh2a17802e4561" in text or "/home/" in text for text in written)
     summary = json.loads((record / "summary.json").read_text())
     assert summary["gateway"]["realtime_first_byte_ms"]["p95"] == 955.0  # exact, from the log
     assert summary["gateway"]["background_first_byte_ms"]["source"] == "log"
@@ -639,9 +685,11 @@ def test_the_committed_records_give_the_report_and_hold_no_credential(tmp_path: 
     assert len(rows) == len(dirs) and not incomplete
     for run_dir in dirs:
         kept = sorted(str(p.relative_to(run_dir)) for p in run_dir.rglob("*") if p.is_file())
-        assert kept == sorted([*RECORD, "summary.json"]), run_dir
+        assert kept == sorted([*RECORD, "summary.json", "engine.json"]), run_dir
         for path in run_dir.rglob("*.json"):
             assert not unredacted(json.loads(path.read_text())), path
+        for path in (p for p in run_dir.rglob("*") if p.is_file()):
+            assert not re.search(r"/(home|Users|root)/", path.read_text()), path  # no account
     write_report(rows, tmp_path)
     assert (tmp_path / "frontier.md").read_text().startswith("# E2 frontier")
 

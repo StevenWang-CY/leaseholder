@@ -472,9 +472,10 @@ def _add_e2(commands: Commands) -> None:
         "export",
         help="write the compact records of run directories, from which report gives the same tables",
         description="Write each complete point's compact record into DIR/CAMPAIGN/POINT: its "
-        "run.json, arm.toml and engine.json, the callers' summary.json and turns.jsonl, and a "
-        "summary.json with the first bytes taken exactly from the request log and the GPU's "
-        "clocks; no request log, AIPerf export, journal or credential.",
+        "run.json and arm.toml, the callers' summary.json and turns.jsonl, a summary.json with "
+        "the first bytes taken exactly from the request log and the GPU's clocks, and an "
+        "engine.json reduced to the engine the point ran on; no request log, AIPerf export, "
+        "journal, credential or home path.",
     )
     export.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
     export.add_argument("--out", type=Path, required=True, help="records directory")
