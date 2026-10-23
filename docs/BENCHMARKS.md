@@ -269,19 +269,23 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 |---|---|---|
 | Stock vLLM 0.32.0, priority scheduling | 290, 302 ms | 1,226, 1,226 ms |
 | `make-room` as first built (e0d8ac7: the budget cap only leaves a waiting request its first chunk) | 324, 339 ms | 1,248, 1,277 ms |
-| `make-room`: the budget cap keeps lower-priority prefill out of the steps of a request's first tokens | 280, 374 ms | 576, 671 ms |
+| `make-room`: the budget cap keeps lower-priority prefill out of the steps of a request's first tokens | 282, 354 ms | 578, 651 ms |
 
 - **Why.** Every step of the reply carried the agents' prefill chunks, up to 512 tokens, so its tokens came about 60 ms apart; with the budget cap they come about 18 ms apart. The first token still waits for the step in flight when the turn arrives. E2's first arm-9 point, on the first module, showed the same loss at scale: its waterfall put it in the reply's first sentence (1,335 ms at the median against 536 ms to the first token).
-- **The KV case on the final module:** 228 and 288 ms to the first token, 517 and 577 ms to the 16th.
+- **The KV case on the final module:** 225 and 297 ms to the first token, 514 and 586 ms to the 16th.
 
 **The calls' first-token tail.** `deploy/phastform/variants/make-room/tail.py` runs 12 closed-loop agent sessions at priority 2 beside two calls at priority 0 for 240 s and gives the calls' time to first token. The agents' prompts are 6–30k tokens, either fresh each turn, as E2's discriminating replay computes 98% of its prompt tokens, or growing by a tool result each turn, so that they reuse the CPU tier; a call turns every 4–8 s with 16 output tokens. On Gray, 2026-10-23:
 
 | Scheduler | Agents' prompts | Call turns | TTFT p50 / p90 / p95 / max |
 |---|---|---:|---|
-| `make-room` before its KV-load rule | growing | 70 | 424 / 619 / 3,311 / 3,544 ms |
+| Stock vLLM 0.32.0, priority scheduling (the frozen box) | fresh | 47 | 3,081 / 6,894 / 9,067 / 11,094 ms |
+| Stock vLLM 0.32.0, priority scheduling (the frozen box) | growing | 50 | 1,359 / 6,894 / 7,942 / 8,692 ms |
 | `make-room` before its KV-load rule | fresh | 68 | 361 / 1,897 / 3,176 / 4,120 ms |
-| `make-room` | fresh | 74 | 208 / 290 / 318 / 438 ms |
-| `make-room` | growing | 73 | 202 / 286 / 305 / 462 ms |
+| `make-room` before its KV-load rule | growing | 70 | 424 / 619 / 3,311 / 3,544 ms |
+| `make-room` | fresh | 73 | 202 / 291 / 324 / 398 ms |
+| `make-room` | growing | 73 | 202 / 291 / 336 / 678 ms |
+
+The rows before the KV-load rule ran with the scheduler's state logged for each call that waited over 0.3 s; the stock rows' p95 is that of E2's frozen box in the discriminating scenario (the realtime first byte, 8,556 ms).
 
 - **Why.** Between a call's turns, the agents' prefills cycle the GPU's free blocks, so the turn's prefix is evicted and loads back from the CPU tier, asynchronously. Every slow turn was in `WAITING_FOR_REMOTE_KVS` (the scheduler's state logged each step), with KV to spare. Once its load is done, a request waits for the waiting loop to promote it, and the waiting loop runs only on budget the running loop leaves; the agents' 512-token chunks left none. The budget cap now holds lower-priority prefill while a higher-priority request loads, as while it prefills.
 - **E2's points show the same tail:** disc-a9-s24 on the module before this rule had its first token after 334 ms at the median and 2,146 ms at p95, against preempt-resubmit's 251 and 394 ms; its turns loaded about 40k tokens from the CPU tier, about their own prefixes.
