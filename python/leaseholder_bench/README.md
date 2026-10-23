@@ -297,6 +297,7 @@ A point runs in this order:
 | `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom` |
 | `gateway.jsonl` | The gateway's request lines for the window (`journalctl --user -u lh-gateway --since --until`, the JSON lines whose message is `request`): class, status, outcome, `first_byte_ms`, `total_ms`, `admission_wait_ms` and tokens of each request. Absent when the gateway logs text |
 | `voice-worker.log` | The voice worker's journal from the start of the calls: a line per turn with its stage times, and a line per session at its end with its lifecycle-event counts ([`leaseholder-voice`](../leaseholder_voice/README.md#lifecycle-events-and-turn-lines)) |
+| `gpu.csv` | Written by `campaign.sh`, not by `e2 run`: the GPU node's `nvidia-smi` samples, once a second while the point ran (timestamps in UTC, SM and memory clocks, temperature, power, clock event reasons) |
 | `summary.json` | The point's E2 metrics |
 
 A component that fails fails the point: `run.json` keeps `failed` and the error, and a tool's error gives its exit status and the last lines of its log. AIPerf and the callers run in process groups of their own and are stopped through them, with SIGINT and then SIGKILL for whatever is left, also when the point fails or `lh-bench e2 run` gets SIGINT or SIGTERM. Closing the SSH session that started it does not stop a point. A complete point is never overwritten; an incomplete one is moved aside to `DIR.incomplete-<UTC time>`, and a directory that holds anything else is refused. One `e2 run` or `e2 reset` runs at a time; the lock file, `~/leaseholder/runs/.lh-bench-e2.lock`, holds its pid.
@@ -316,7 +317,7 @@ The background goodput comes from AIPerf's records rather than from the gateway'
 
 **The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
 - **The realtime first byte** is exact from the run directory's `gateway.jsonl`, even one fetched after the run (from the journal, for the window in `run.json`), and otherwise the summary's; `realtime_first_byte_source` says which, and `frontier.md` marks an interpolated value with `~`.
-- **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts.
+- **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts, and, from `gpu.csv`, the GPU's median SM clock and highest temperature during the calls.
 
 ## Mock server
 

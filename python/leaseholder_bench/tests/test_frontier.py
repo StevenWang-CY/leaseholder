@@ -14,6 +14,7 @@ import pytest
 from leaseholder_bench.cli import main
 from leaseholder_bench.frontier import (
     COLUMNS,
+    GPU_COLUMNS,
     SESSIONS_LOGGER,
     TURNS_LOGGER,
     WATERFALL,
@@ -353,27 +354,45 @@ def test_the_report_takes_a_request_log_fetched_after_the_run(tmp_path: Path) ->
     assert "| 140 / 8,000 | 955 | 4 |" in write_report([row], tmp_path / "report")[1].read_text()
 
 
-def test_the_report_shows_the_stages_only_for_points_that_have_them(tmp_path: Path) -> None:
+def smi(at: float, clock: str, temperature: str) -> str:
+    """One sample of campaign.sh's nvidia-smi query, timestamped in UTC."""
+    stamp = datetime.fromtimestamp(at, UTC).strftime("%Y/%m/%d %H:%M:%S.%f")[:-3]
+    return f"{stamp}, {clock}, 13801 MHz, {temperature}, 150.21 W, 0x0000000000000000"
+
+
+def test_the_report_shows_stages_and_clocks_only_for_points_that_have_them(tmp_path: Path) -> None:
     dirs = [point(tmp_path, "a2-s8", "2", 3000, 2000), point(tmp_path, "a2-s16", "2", 5000, 2600)]
     summary = json.loads((dirs[1] / "summary.json").read_text())
     stages = {s: {"n": 50, "p50": 100.0 * n, "p95": 150.0 * n} for n, s in enumerate(WATERFALL, 1)}
     events = {"sent": 300, "dropped": 0, "failed": 1}
     summary["worker"] = {"sessions": 2, "turns": 50, "waterfall": stages, "events": events}
     (dirs[1] / "summary.json").write_text(json.dumps(summary))
+    samples = [
+        smi(T0 - 10, "1530 MHz", "40"),  # before the calls: not counted
+        smi(T0 + 10, "2805 MHz", "61"),
+        smi(T0 + 20, "2745 MHz", "70"),
+        smi(T0 + 30, "2685 MHz", "71"),
+        smi(T0 + 40, "[N/A]", "[N/A]"),
+        "2027/01/15 08:0",  # cut short when the sampling stopped
+    ]
+    (dirs[1] / "gpu.csv").write_text("\n".join(samples) + "\n")
     rows, _ = load_points(dirs)
     out = tmp_path / "report"
     write_report(rows, out)
     with (out / "frontier.csv").open() as f:
         written = {r["point"]: r for r in csv.DictReader(f)}
-    assert list(written["a2-s8"]) == [*COLUMNS, *WORKER_COLUMNS]
-    assert written["a2-s8"]["e2e_p95_ms"] == ""
+    assert list(written["a2-s8"]) == [*COLUMNS, *WORKER_COLUMNS, *GPU_COLUMNS]
+    assert {c: written["a2-s8"][c] for c in GPU_COLUMNS} == dict.fromkeys(GPU_COLUMNS, "")
     sixteen = written["a2-s16"]
     assert (sixteen["transcript_p50_ms"], sixteen["e2e_p95_ms"], sixteen["events_failed"]) == (
         "100.0",
         "1050.0",
         "1",
     )
+    assert (sixteen["gpu_sm_clock_p50_mhz"], sixteen["gpu_temperature_max_c"]) == ("2745", "71")
     table = (out / "frontier.md").read_text()
+    assert "| SM clock p50 | Max temp |" in table and "| — / 3 / — | 2,745 | 71 |" in table
+    assert "| — / 3 / — | — | — |" in table  # a2-s8, sampled by no campaign
     assert "| a2-s16 | 100 / 150 | 200 / 300 | 300 / 450 |" in table
     assert "| 700 / 1,050 | 300 / 0 / 1 |" in table
     assert "| a2-s8 | — / — |" in table

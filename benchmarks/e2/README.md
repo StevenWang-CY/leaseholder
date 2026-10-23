@@ -11,14 +11,14 @@ benchmarks/e2/campaign.sh --pause benchmarks/e2/w2.campaign     # measure, then 
 For each point whose run directory on cyan is not complete, `campaign.sh`:
 
 1. switches the GPU node to the arm's engine with [`variant.sh use`](../../deploy/phastform/variants/README.md), which restarts only what changes and returns once the engine answers `/health`;
-2. runs `lh-bench e2 run` on cyan, into `~/leaseholder/runs/e2/CAMPAIGN/POINT`;
+2. runs `lh-bench e2 run` on cyan, into `~/leaseholder/runs/e2/CAMPAIGN/POINT`. Meanwhile it samples the GPU node's `nvidia-smi` once a second (SM and memory clocks, temperature, power and clock event reasons, timestamps in UTC), because a consumer card's boost clock follows its temperature, and puts the samples into that directory as `gpu.csv` when the point ends, failed or not;
 3. fetches that directory into `$LH_E2_RESULTS/CAMPAIGN/POINT` (default `~/leaseholder/runs/e2`), without AIPerf's `inputs.json`.
 
 A complete point is skipped, so running a stopped campaign again resumes it. The first failure stops the campaign, with the partial run directory fetched and its `run.json` saying what failed. At the end, `lh-bench e2 report` writes the frontier of the campaign's points (fetched into `CAMPAIGN/report`: `frontier.md`, `frontier.csv`, `frontier.svg`) and `lh-bench e2 reset` puts cyan's units back. `--pause` then stops the GPU node's units, which nothing should hold while idle. `campaign.log` beside the points keeps every step.
 
 Points that share an engine go together in a campaign file: a switch restarts the engine, about 2 minutes with warm caches. A point takes about 12 minutes: AIPerf builds its dataset for about 4 (its cache does not apply to this dataset type, see `configs/aiperf.env`), then a minute of warm-up and the calls.
 
-**Stopping.** Ctrl-C stops `campaign.sh`, but a point already running on cyan goes on to its end: closing its SSH session does not stop it. To stop it as well, send SIGINT to its pid, which `~/leaseholder/runs/.lh-bench-e2.lock` holds on cyan; `lh-bench e2 run` then stops AIPerf and the callers and marks the point failed. While a point runs, `campaign.sh` refuses to switch the engine under it.
+**Stopping.** Ctrl-C stops `campaign.sh` and its sampling of the GPU, but a point already running on cyan goes on to its end: closing its SSH session does not stop it. To stop it as well, send SIGINT to its pid, which `~/leaseholder/runs/.lh-bench-e2.lock` holds on cyan; `lh-bench e2 run` then stops AIPerf and the callers and marks the point failed. While a point runs, `campaign.sh` refuses to switch the engine under it.
 
 ## Before the first campaign
 

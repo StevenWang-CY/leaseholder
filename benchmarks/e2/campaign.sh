@@ -3,7 +3,8 @@
 # to both hosts, like deploy/deploy.sh. CAMPAIGN names arm files, one per line, relative to itself. For each point
 # whose run directory on cyan is not complete, in order, it
 #   1. switches the GPU node to the arm's engine (deploy/phastform/variant.sh use, with what lh-bench e2 engine prints),
-#   2. measures the point on cyan (lh-bench e2 run) into ~/leaseholder/runs/e2/CAMPAIGN/POINT,
+#   2. measures the point on cyan (lh-bench e2 run) into ~/leaseholder/runs/e2/CAMPAIGN/POINT, sampling the GPU's clocks
+#      and temperature once a second meanwhile into that directory's gpu.csv,
 #   3. fetches that run directory into $LH_E2_RESULTS/CAMPAIGN/POINT (default ~/leaseholder/runs/e2).
 # A complete point is skipped, so running a stopped campaign again resumes it; the first failure stops it. At the end
 # it writes the campaign's frontier (lh-bench e2 report, fetched into CAMPAIGN/report) and puts cyan's units back
@@ -69,6 +70,24 @@ if $dry_run; then exit 0; fi
 fetch() { # fetch POINT: mirror its run directory, without AIPerf's copy of the dataset
   rsync -a --delete -e "$ssh" --exclude aiperf/inputs.json "$cyan:$runs/$1/" "$results/$1/"
 }
+# A consumer card's boost clock follows its temperature, so each point keeps the clocks it ran at: nvidia-smi on the GPU
+# node, once a second while the point runs (line-buffered, timestamps in UTC); it stops when its ssh does.
+gpu_query=timestamp,clocks.sm,clocks.mem,temperature.gpu,power.draw,clocks_event_reasons.active
+sampler=""
+trap '[[ -z $sampler ]] || kill "$sampler" 2>/dev/null' EXIT
+sample_gpu() { # sample_gpu POINT
+  $ssh "$gpu" "exec env TZ=UTC stdbuf -oL nvidia-smi --query-gpu=$gpu_query --format=csv,noheader -l 1" \
+    >"$results/$1.gpu.csv" 2>>"$results/campaign.log" &
+  sampler=$!
+}
+stop_gpu() { # stop_gpu POINT: end the sampling and put the samples into the point's run directory on cyan
+  kill "$sampler" 2>/dev/null || true
+  wait "$sampler" 2>/dev/null || true
+  sampler=""
+  $ssh "$cyan" "cat >$runs/$1/gpu.csv" <"$results/$1.gpu.csv" ||
+    { log "$1: the GPU's samples stay in $results/$1.gpu.csv"; return; }
+  rm "$results/$1.gpu.csv"
+}
 for i in "${!points[@]}"; do
   point=${points[$i]}
   if $ssh "$cyan" "$(complete "$point")"; then
@@ -82,9 +101,11 @@ for i in "${!points[@]}"; do
   $ssh "$gpu" "bash leaseholder/src/deploy/phastform/variant.sh use ${engines[$i]}" 2>&1 |
     tee -a "$results/campaign.log" || die "$point: the GPU node did not start ${engines[$i]} (journalctl there)"
   log "$point: measuring"
+  sample_gpu "$point"
   status=0
   $ssh "$cyan" "$bench e2 run $runs/arms/$point.toml --out $runs/$point" 2>&1 | tee -a "$results/campaign.log" ||
     status=$?
+  stop_gpu "$point"
   if ((status == 255)); then
     die "$point: lost the connection to cyan; the point may still be running there"
   elif ((status)); then

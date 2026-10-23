@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import csv
 import re
+import statistics
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,8 @@ WATERFALL = (
     "e2e_ms",
 )
 """The stage times of the worker's turn lines, in the order of a turn (its ``STAGES``)."""
+GPU_TIME = "%Y/%m/%d %H:%M:%S.%f"
+"""nvidia-smi's timestamp, which campaign.sh has it write in UTC."""
 
 
 def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) -> dict[str, Any]:
@@ -365,8 +368,10 @@ WORKER_COLUMNS = (
     "events_dropped",
     "events_failed",
 )
-"""Columns that only some points have, shown when one of them has them: the voice worker's stage
-times and lifecycle events."""
+GPU_COLUMNS = ("gpu_sm_clock_p50_mhz", "gpu_temperature_max_c")
+"""Columns that only some points have, each group shown when one of them has it: the voice worker's
+stage times and lifecycle events, and the GPU's median SM clock and highest temperature during the
+calls."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -434,7 +439,39 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         for q in ("p50", "p95")
     }
     row |= {f"events_{kind}": events.get(kind) for kind in ("sent", "dropped", "failed")}
-    return row
+    return row | gpu(run_dir / "gpu.csv", window)
+
+
+def gpu(samples: Path, window: Mapping[str, float] | None) -> dict[str, int | None]:
+    """The GPU's median SM clock (MHz) and highest temperature (°C) during the calls, from the samples
+    campaign.sh takes once a second on the GPU node (gpu.csv); None without them."""
+    clocks: list[float] = []
+    temperatures: list[float] = []
+    if samples.exists() and window:
+        for line in samples.read_text(errors="replace").splitlines():
+            fields = [field.strip() for field in line.split(",")]
+            try:
+                at = datetime.strptime(fields[0], GPU_TIME).replace(tzinfo=UTC).timestamp()
+            except ValueError:
+                continue  # a line cut short when the sampling stopped
+            if not window["start"] <= at <= window["end"]:
+                continue
+            if (clock := _number(fields, 1)) is not None:
+                clocks.append(clock)
+            if (temperature := _number(fields, 3)) is not None:
+                temperatures.append(temperature)
+    return {
+        "gpu_sm_clock_p50_mhz": round(statistics.median(clocks)) if clocks else None,
+        "gpu_temperature_max_c": round(max(temperatures)) if temperatures else None,
+    }
+
+
+def _number(fields: Sequence[str], index: int) -> float | None:
+    """A field of an nvidia-smi line without its unit ("2805 MHz"); None for "[N/A]" and the like."""
+    try:
+        return float(fields[index].split()[0])
+    except (IndexError, ValueError):
+        return None
 
 
 def _added(*counts: int | None) -> int | None:
@@ -480,13 +517,15 @@ def write_report(rows: Sequence[Mapping[str, Any]], out_dir: Path) -> list[Path]
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
     """The optional column groups that some point has."""
-    groups = (WORKER_COLUMNS,)
+    groups = (WORKER_COLUMNS, GPU_COLUMNS)
     return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
 
 
 def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     """The frontier as a table per arm, ordered by background goodput, then the voice worker's stage
     times when the points have them."""
+    measured = _measured(rows)
+    gpu_columns = GPU_COLUMNS in measured
     intro = (
         "Background goodput (prompt and completion tokens per second of the agent requests that "
         "completed during the calls) against voice-to-voice latency in ms. • marks the points on "
@@ -495,6 +534,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "counts the gateway's admission point and the engine's queue limits; — is a count the "
         "point's gateway or engine does not keep."
     )
+    if gpu_columns:
+        intro += " SM clock (MHz) and temperature (°C) are the GPU's during the calls."
     lines = ["# E2 frontier", "", intro]
     header = (
         "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "
@@ -502,6 +543,9 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "| Shed / refused / resubmitted |"
     )
     align = "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    if gpu_columns:
+        header += " SM clock p50 | Max temp |"
+        align += "---:|---:|"
     arms = sorted({r["arm"] for r in rows}, key=_arm_order)
     for arm in arms:
         lines += ["", f"## Arm {arm}", "", header, align]
@@ -518,8 +562,12 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
                 f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
                 f"| {_cell(r['engine_preemptions'])} | {counts} |"
             )
+            if gpu_columns:
+                line += (
+                    f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
+                )
             lines.append(line)
-    if WORKER_COLUMNS in _measured(rows):
+    if WORKER_COLUMNS in measured:
         lines += _stages(rows)
     return "\n".join(lines) + "\n"
 
