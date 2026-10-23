@@ -4,7 +4,7 @@ Leaseholder serves three classes on one GPU, the tiers API providers sell as pri
 
 | Class | Typical traffic | Resume target | Primary indicator | Admission |
 |---|---|---|---|---|
-| `realtime` | Voice turns | ≤ 250 ms to GPU-resident KV, restored while the user is still speaking | Voice-to-voice latency; LLM time to first sentence | Never queued or rejected: background work is deferred to make room, and the reply is capped when the room is not there ([ADR-0003](adr/0003-realtime-is-never-shed.md)) |
+| `realtime` | Voice turns | ≤ 250 ms to GPU-resident KV, restored while the user is still speaking (planned, with prefetch) | Voice-to-voice latency; LLM time to first sentence | Never queued or rejected: background work is deferred to make room, and the reply is capped when the room is not there ([ADR-0003](adr/0003-realtime-is-never-shed.md)) |
 | `interactive` | Agent loops with a person waiting | Warm-turn time to first token (TTFT) p95 ≤ 250 ms at ≤ 16k tokens | Warm and resumed TTFT, by source tier | Predicted-TTFT admission, queued with a deadline (planned; not held today) |
 | `background` | Batch agents, trace replays, memory consolidation | Best effort | Goodput (tokens/s) | Deferred while realtime turns need the headroom or the critical window's prefill budget; admitted regardless after `max_defer_s` (aging) |
 

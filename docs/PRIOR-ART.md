@@ -1,6 +1,6 @@
 # Prior art
 
-*Checked against primary sources (papers, issue and PR threads, release notes, documentation, code) on 2026-10-22. Status is as of that date. Dates are UTC.*
+*Checked against primary sources (papers, issue and PR threads, release notes, documentation, code) on 2026-10-22. Status is as of that date, except for Leaseholder's own upstream work, as of 2026-10-23: vLLM #63350 and #63351, opened that day, and a comment with Leaseholder's data on #40004. Dates are UTC.*
 
 This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and (planned) tool waits for agents. E2 measured that timing adding nothing beside an engine change which, with replies capped to fit its first-tokens window, holds the voice tail.
 
@@ -92,7 +92,7 @@ Checked in the v0.32.0 source:
   - `prefill_schedule_interval`: admits new prefills only every N engine steps. In v0.32.0 only the data-parallel MoE engine applies it; [#54627](https://github.com/vllm-project/vllm/pull/54627) (merged 2026-10-15, after the v0.32.0 tag) applies it to a single engine.
 - **Priority does not reach retention.** [#47802](https://github.com/vllm-project/vllm/issues/47802) (open) reports that priority is not reflected in KV retention under cache pressure.
 
-**Relation.** Baselines: priority scheduling with the step cap, `watermark`, `max_num_queued_tokens`, `prefill_schedule_interval` on a build that includes #54627, and vLLM with #54530 applied. The KV-full case is the claimed fix, planned as a vLLM PR under #40004 that keeps or offloads the victim's KV.
+**Relation.** Baselines: priority scheduling with the step cap, `watermark`, `max_num_queued_tokens`, `prefill_schedule_interval` on a build that includes #54627, and vLLM with #54530 applied. The KV-full case is the claimed fix, opened on 2026-10-23 as vLLM [#63350](https://github.com/vllm-project/vllm/pull/63350) under #40004, which keeps or offloads the victim's KV, with the budget cap in [#63351](https://github.com/vllm-project/vllm/pull/63351), stacked on it.
 
 ### SGLang 0.5.22 (2026-10-19)
 
@@ -254,6 +254,6 @@ One lifecycle-event schema for both workloads is an engineering choice with litt
   - starting the LLM before the turn ends (LiveKit preemptive generation, Endpoint Anticipation, PredGen);
   - a gap between LRU and Belady on prefix caches ("When Fancy Eviction Fails", LPC).
 - **A cache residency guarantee.** Providers promise billing eligibility, not residency, and Leaseholder reports an honor rate instead.
-- **A better router.** `lh-gateway` is a small harness for experiments on one GPU without Kubernetes, and the `lh-core` policy is to run inside it from W3. The policy is to be proposed upstream: a vLLM scheduler PR, the agent-side lease and prefetch policy on vllm-project/router RFCs #427 and #428, and the lifecycle-event sink in agentic-api.
+- **A better router.** `lh-gateway` is a small harness for experiments on one GPU without Kubernetes, and the `lh-core` policy has run inside it since W3. What goes upstream: the scheduler change, as vLLM #63350 and #63351 (opened 2026-10-23); E1's negative result for an agent-side lease and prefetch policy, on vLLM #57103 and vllm-project/router #428; and the lifecycle-event sink in agentic-api.
 - **Measured results on datacenter GPUs.** Measurements on one 16 GB consumer GPU with a 4B model and traces block-scaled 32× are stated in dimensionless terms (KV pressure, pause over restore time, restore over recompute time), and `lh-sim` places datacenter configurations on that map from modeled cost fits, labeled as modeled.
 - **Precedence.** Nothing here claims to be first or the only one. This page is a positioning statement, and each comparison rests on the sources cited.

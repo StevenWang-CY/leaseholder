@@ -24,3 +24,8 @@ Separate mechanisms per workload would duplicate the prefetch and headroom logic
 - Adding a workload means emitting events, not adding a mechanism.
 - One example file, `crates/lh-proto/testdata/events.jsonl`, pins the wire format. The Rust tests read it; the Python emitters are to test against it once they send events (W3).
 - The schema is a public interface. Changes to it are additive, or they get a new event type.
+
+## Update (2026-10-23, W4)
+
+- **What sends events.** Since W3 the voice worker posts its events to `/v1/events`, and its `tests/test_events.py` checks them against the generated `lifecycle_event.schema.json`; `events.jsonl` remains the Rust tests' example file. Under the `leaseholder` policy the gateway follows each realtime session's turn by them.
+- **The shared transitions are intended, not built.** A tool return and a speech onset drive the same lease transitions and the same prefetch only once leases and prefetch exist, and the gateway does not ingest tool-wait events yet. Today the voice events drive the gateway's headroom and critical window, whose timing E2 measured adding nothing in its discriminating scenario ([ARCHITECTURE.md §4.3](../ARCHITECTURE.md#43-turn-imminent-headroom)).

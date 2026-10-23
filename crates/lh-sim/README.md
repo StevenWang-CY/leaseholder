@@ -172,7 +172,7 @@ The measured split is the engine's `prompt_tokens_cached_by_source` counters ove
 
 With trace pauses up to 24 sessions, `mori` loses 1–15% at p50 and 10–24% at p90 against `lru-cpu` (ranking by noisy predicted returns evicts sessions that come back), and `infercept` 18–36% at p50 (its swaps turn GPU hits into restores, and the pool has no use for the memory they free).
 
-**The realistic regime.** The frozen box with the traces' think times and the CPU tier at 4× (π about 16, against 2–4 times production's per PLAN §3.2), over 20 seeds (11–30); gain over `lru-cpu`, mean (median) [range]:
+**The realistic regime.** The frozen box with the traces' think times and the CPU tier at 4× (π about 16, within 2–4 times production's), over 20 seeds (11–30); gain over `lru-cpu`, mean (median) [range]:
 
 | Sessions | Pressure | `lru-cpu` resume p50 / p90 | `oracle-prefetch` p50 | p90 | `clairvoyant` p50 / p90 | Best history arm, p90 |
 |---|---|---|---|---|---|---|
@@ -205,7 +205,7 @@ Three sequences: the 32× replay; the same admission order with every prompt cut
 
 ## Other hardware, modeled
 
-Every cost above is measured on one RTX 5060 Ti. No datacenter GPU is available (O6), so `lh-sim hardware` places other GPUs on the same map with costs modeled from their published specifications. The box's rows use its measured costs (its placement is simulated like the others'); every other row is labeled modeled.
+Every cost above is measured on one RTX 5060 Ti. No datacenter GPU is available, so `lh-sim hardware` places other GPUs on the same map with costs modeled from their published specifications. The box's rows use its measured costs (its placement is simulated like the others'); every other row is labeled modeled.
 
 **Costs.** A GPU's profile is its published peaks: memory, memory bandwidth, dense FP8 and BF16 tensor throughput, and the host link. The peaks are used only as ratios to the box's: each measured cost term is divided by the ratio of the published peaks of the kind that bounds it (bandwidth to bandwidth, FP8 to FP8, link to link), so the box's measured efficiency carries over.
 - **Memory bandwidth** scales the fixed step term and the KV reads. The fixed term is mostly the weight read: Qwen3-4B-FP8 reads 4.41 GB a step (3.63 G FP8 linear weights and the 0.78 GB BF16 embedding, tied to the LM head), 9.8 ms of the 11.56 ms at 448 GB/s.

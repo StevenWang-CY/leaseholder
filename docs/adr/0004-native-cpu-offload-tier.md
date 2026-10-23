@@ -24,3 +24,7 @@ Idle sessions must park somewhere cheaper than the 36,400-token GPU pool. Restor
 - No KV transfer code of our own. The policy is tested on CPU against vLLM's real offload manager, loaded from source in CI.
 - GPU residency after a prefetch is best-effort: restored blocks go back into the GPU LRU, so prefetch timing matters.
 - The CPU tier competes with other tenants for host RAM and `/dev/shm`. Lease grants are admission-controlled, so a floor is never promised beyond what the tier can hold.
+
+## Update (2026-10-23, W4)
+
+Gate G-sim took its negative branch in W2: in the realistic regime even the oracle level of lifecycle information gains under 7% of resume TTFT p50 over LRU plus the CPU tier ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)). CPU-tier eviction stays LRU, and `LeasePolicy` stays off. The host tier stands as decided: the frozen box runs the native `OffloadingConnector`, written through.

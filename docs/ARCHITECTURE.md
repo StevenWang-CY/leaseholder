@@ -10,15 +10,15 @@ Leaseholder is SLO-tiered serving on a shared GPU: a **never-shed realtime tier 
 
 **What is ours, and what is not.** Priority classes, budgets, eviction of best-effort work and parking with prefetch already ship (llm-d, SMG, Dynamo) or are published (ConServe, Tokencake, MORI); they are baselines here. The contributions are an engine change that lets a waiting high-priority request preempt running work under KV pressure and keeps lower-priority prefill out of its first tokens, the part E2 found necessary (§4.6); a measurement of headroom timed by lifecycle events, which E2 found adds nothing measurable beside that change (§4.3); and, planned, a validated recompute ledger. [PRIOR-ART.md](PRIOR-ART.md) gives the sources.
 
-**What exists and what is planned.** This document is the target design. After W3, the third week of a 12-week plan:
-- **deployed:** the frozen box on Phastform (§5) and, for booked windows, on Gray; on cyan the SSH tunnels, the control plane (`lh-gateway`) and the voice plane (§7);
+**What exists and what is planned.** This document is the target design. On 2026-10-23, in W4, the fourth week of a 12-week plan:
+- **deployed:** the frozen box on Phastform (§5) and, for booked windows, on Gray, which another user's work has held since 2026-10-23; on cyan the SSH tunnels, the control plane (`lh-gateway`) and the voice plane (§7);
 - **in code:** the wire types; the gateway with its admission point, E2's baseline policies and Leaseholder's own admission policy (turn-imminent headroom, the critical-window throttle, degrade and aging: §4.3); the voice worker's lifecycle events (§7); the engine's "make room" scheduler change, as an engine variant (§4.6); the cost and step-time models and KV geometry; the simulator with its contention model; the engine plugins and the E2 harness (§4.1);
-- **planned:** placement across two GPU nodes (W4); leases, prefetch and the ledger with `lh-node` (from W5). Sections that depend on them are marked *planned*.
+- **planned:** placement across two GPU nodes (W4, waiting for a free window on Gray); leases, prefetch and the ledger with `lh-node` (from W5). Sections that depend on them are marked *planned*.
 
 ## 1. Tenets
 
 1. **Mechanism in the engine, policy in the control plane.** The engine decides *what to keep* from the contract carried on each request. The control plane decides *when to bring it back*, from predictions. There is no second lease table inside the engine ([ADR-0004](adr/0004-native-cpu-offload-tier.md)).
-2. **One lifecycle-event schema for every workload.** A tool return and a speech onset are two triggers of the same prefetch-and-headroom mechanism ([ADR-0002](adr/0002-one-lifecycle-event-schema.md)).
+2. **One lifecycle-event schema for every workload.** In the target design, a tool return and a speech onset are two triggers of the same prefetch-and-headroom mechanism ([ADR-0002](adr/0002-one-lifecycle-event-schema.md)). Today only the voice events drive anything, the gateway's turn states for realtime sessions (§4.3): prefetch is planned, and tool-wait events are not ingested yet (§3.2).
 3. **Realtime is never shed.** Admission for the realtime class means *make room*, then *degrade*; never *reject* ([ADR-0003](adr/0003-realtime-is-never-shed.md)).
 4. **KV never crosses the network.** Sessions stick to the node that holds their KV; failover re-prefills from the transcript ([ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md)).
 5. **Stock knobs first.** Leaseholder sets headers, budgets and admission, and does not reimplement scheduling. Engine code exists only behind vLLM's own plugin points, apart from the "make room" scheduler fix, which is proposed upstream as a vLLM PR rather than carried as a fork ([ADR-0001](adr/0001-control-plane-in-front-of-stock-vllm.md)).
@@ -55,12 +55,12 @@ Gray: second RTX 5060 Ti, booked windows; same image; dedicate-vs-pool experimen
 mustard: Prometheus · Grafana · datasets · run archive      peacock: Linux builds · simulator runs
 ```
 
-In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus and Grafana on mustard, and Gray's experiments are planned; the rest, Gray's frozen box included, is deployed ([RUNBOOK.md](../ops/RUNBOOK.md)).
+In the diagram, `lh-node`, agentic-api in front of the control plane, Prometheus and Grafana on mustard, and Gray's experiments are planned; the rest, Gray's frozen box included, is deployed ([RUNBOOK.md](../ops/RUNBOOK.md)). Another user's work has held Gray since 2026-10-23, so Phastform is the only GPU node in use, and Gray's experiments wait for a free window.
 
 | Host | Role |
 |---|---|
 | **Phastform** | The GPU node every experiment runs on, holding the frozen box (§5) and paused when idle. vLLM is pinned to NUMA node 1, the audio servers to node 0 |
-| **Gray** | Second GPU node in booked windows, with the identical image: the equal-hardware dedicate-vs-pool experiment and the node-loss drill. Nothing on the critical path depends on it |
+| **Gray** | Second GPU node in booked windows, with the identical image: the equal-hardware dedicate-vs-pool experiment and the node-loss drill. Nothing on the critical path depends on it. Held by another user's work since 2026-10-23 |
 | **cyan** | Control host: the control plane, agentic-api, LiveKit and its worker, the measurement callers and AIPerf, each on its own cores ([RUNBOOK.md](../ops/RUNBOOK.md)) |
 | **mustard** | Observability and datasets: Prometheus, Grafana, trace datasets, the run archive |
 | **peacock** | Linux release builds (`lh-gateway`, `lh-sim`, agentic-api) and simulator runs |
@@ -126,7 +126,7 @@ There is one row per upstream request: prompt, cached (device and host), expecte
 
 ### 4.1 Crates
 
-The control plane is a Rust workspace. The policy is a library without I/O or a clock, so another router can embed it. The state column says what exists after W3.
+The control plane is a Rust workspace. The policy is a library without I/O or a clock, so another router can embed it. The state column says what exists on 2026-10-23 (W4).
 
 | Crate | Responsibility | State |
 |---|---|---|
@@ -192,7 +192,7 @@ OpenAI `prompt_cache_options` is deferred.
 
 The CPU tier is vLLM's native `OffloadingConnector` with `offload_prompt_only: false`, so generated tokens are written through as well. Leaseholder's plugins in [`python/leaseholder_vllm`](../python/leaseholder_vllm) are optional, and both exist in v0:
 - **`LeaseConnector`** adds per-request hit receipts (GPU tokens and CPU tokens) and mirrors `X-Session-ID` into the lease hint.
-- **`LeasePolicy`** makes CPU-tier eviction lease-aware. It ships only where the simulator shows that CPU-tier eviction binds at the chosen RAM ratio. It is soft: it refuses a store only where LRU would refuse it too.
+- **`LeasePolicy`** makes CPU-tier eviction lease-aware. It was to ship only where the simulator showed that CPU-tier eviction binds at the chosen RAM ratio; E1's gate G-sim took the negative branch in W2, so it stays off ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)). It is soft: it refuses a store only where LRU would refuse it too.
 
 A live check on the frozen box confirmed the contract end to end: the hint reaches both plugins, a prompt written through to the CPU tier is restored from it after a GPU cache reset, and `X-Session-ID` appears in GPU-tier KV events but not in CPU-tier ones ([BENCHMARKS.md](BENCHMARKS.md#engine-plugins)).
 
@@ -228,14 +228,14 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
 - **Upstream.** agentic-api's single upstream, `llm_api_base`, points at the control plane.
 - **Clients.** Claude Code connects through Anthropic Messages, Codex through Responses (whose default `prompt_cache_key` is its session id).
 - **Direct paths.** Voice and AIPerf traffic speak Chat Completions straight to the control plane, which keeps the realtime path to one hop.
-- **Upstream contributions** that help: a header allowlist on the executor path (#461), a typed lifecycle-event sink (#364), cache-usage metrics (#315), and performance-validation data (#367).
+- **Upstream contributions** that help: a header allowlist on the executor path (#461), a typed lifecycle-event sink (#364), cache-usage metrics (#315), and performance-validation data (#367, whose benchmark sweep is PR #478, opened on 2026-10-23).
 
 ## 7. Realtime voice pipeline
 
 - **Components.** All stock: LiveKit server 1.13 and LiveKit Agents 1.8.8 in the voice-plane namespace on cyan (`lh-voice-worker`, [`python/leaseholder_voice`](../python/leaseholder_voice)), with Silero VAD and LiveKit's audio end-of-turn model (`turn-detector-v1-mini`, run locally) on CPU. The OpenAI STT and TTS plugins reach the frozen box through Unix-socket forwards; the LLM plugin reaches the control plane's socket.
-- **Turn handling.** LiveKit's defaults: endpointing between 0.5 and 3 s, and preemptive generation on, which starts the LLM request on the final transcript before the end of turn is confirmed and discards it if the user continues. E2 runs preemptive generation on and off and reports the discarded tokens. Experiments end each turn a fixed delay after the end of speech (`LH_TURN_DETECTION=vad`, the `vad-turns` variant), because the end-of-turn model waits its 3 s maximum on some synthesized turns ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)).
+- **Turn handling.** LiveKit's defaults: endpointing between 0.5 and 3 s, and preemptive generation on, which starts the LLM request on the final transcript before the end of turn is confirmed and discards it if the user continues. E2 runs preemptive generation on and off; reporting the discarded tokens is planned, since `lh-bench e2` counts only the prompt tokens preempt-resubmit drops. Experiments end each turn a fixed delay after the end of speech (`LH_TURN_DETECTION=vad`, the `vad-turns` variant), because the end-of-turn model waits its 3 s maximum on some synthesized turns ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)).
 - **Headers.** The LLM plugin sends `X-LH-Class: realtime` and the room-scoped session id (`voice-<room SID>`) through its `extra_headers` option. The worker creates one LLM instance per session.
-- **Interruption handling.** The stock LiveKit setting pauses the reply audio after 0.5 s of barge-in speech and interrupts the reply only on the barge-in's final transcript, so the LLM stream stays open through the barge-in. With `resume_false_interruption=False` the reply is interrupted after 0.5 s of barge-in speech, at the cost of cutting it on a cough ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)). The setting is fixed across E2 arms, and the wasted tokens are reported.
+- **Interruption handling.** The stock LiveKit setting pauses the reply audio after 0.5 s of barge-in speech and interrupts the reply only on the barge-in's final transcript, so the LLM stream stays open through the barge-in. With `resume_false_interruption=False` the reply is interrupted after 0.5 s of barge-in speech, at the cost of cutting it on a cough ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)). The setting is fixed across E2 arms; reporting the wasted tokens is planned.
 - **Worker settings.**
   - `AgentServer(host="127.0.0.1")`, because the default binds all interfaces.
   - An explicit small `num_idle_processes`, because production mode defaults to the CPU count.

@@ -10,6 +10,6 @@ The wire types every Leaseholder component shares: what crosses a process bounda
 | `ledger` | One recompute-ledger row per upstream request, with its accounting checks |
 | `class`, `session` | The SLO class and the session id the others carry |
 
-**JSON Schemas.** `schema/` holds the schemas generated from these types, the reference for the Python components; `make schema` regenerates them, and a test fails when they fall behind the code. Today the engine plugins' contract test reads the lease hint's.
+**JSON Schemas.** `schema/` holds the schemas generated from these types, the reference for the Python components; `make schema` regenerates them, and a test fails when they fall behind the code. Today the engine plugins' contract test reads the lease hint's, and the voice worker's `tests/test_events.py` the lifecycle event's.
 
 **Tests.** `tests/wire.rs` pins the wire format with the examples in `testdata/events.jsonl`; `tests/schema.rs` keeps the schemas current.

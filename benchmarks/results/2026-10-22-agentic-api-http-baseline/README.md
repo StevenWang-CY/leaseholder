@@ -1,6 +1,6 @@
 # agentic-api HTTP baseline (W1, 2026-10-22): input for vllm-project/agentic-api#367
 
-agentic-api's own `response_provider` benchmark, run against the frozen box. Arms: agentic-api over WebSocket, HTTP/SSE and JSON, and direct vLLM over HTTP/SSE and JSON. All five arms start at one barrier and run at once, so each row of a table saw the same engine load.
+agentic-api's own `response_provider` benchmark, run against the frozen box. Arms: agentic-api over WebSocket, HTTP/SSE and JSON, and direct vLLM over HTTP/SSE and JSON. All five arms start at one barrier and run at once, so each row of a table saw the same engine load. The #367 benchmark sweep is open as [vllm-project/agentic-api#478](https://github.com/vllm-project/agentic-api/pull/478) (opened 2026-10-23).
 
 | | |
 |---|---|

@@ -1,6 +1,6 @@
 # E2 discriminating scenario, the engine as the vLLM PRs propose it, behind the gateway without an admission policy:
-# make-room's KV preemption alone (PR A), with the budget cap (PR B), and with a 48-token first-tokens window. No
-# reserve, which neither PR has. Measured after s2, on the same build as the rounds.
+# make-room's KV preemption alone (vLLM #63350), with the budget cap (#63351, stacked on it), and with a 48-token
+# first-tokens window. No reserve, which neither PR has. Measured after s2, on the same build as the rounds.
 #   benchmarks/e2/campaign.sh benchmarks/e2/upstream.campaign
 
 # engine make-room --additional-config.make_room.budget_cap false --additional-config.make_room.reserve_tokens 0
