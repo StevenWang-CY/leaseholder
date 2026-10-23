@@ -2,10 +2,10 @@
 report``).
 
 :func:`summarize_point` reads one run directory of ``lh-bench e2 run`` (:mod:`.e2`): the callers'
-summary, the per-request records of the AIPerf replay and the ``/metrics`` snapshots taken when the
-calls started and ended. Every metric covers that window. A metric that the gateway or the engine
-does not export is null, never zero, and a counter that went down (its process restarted during the
-calls) is an error.
+summary, the per-request records of the AIPerf replay, the ``/metrics`` snapshots taken when the
+calls started and ended, and the voice worker's journal of the calls. Every metric covers that
+window. A metric that the gateway or the engine does not export is null, never zero, and a counter
+that went down (its process restarted during the calls) is an error.
 
 :func:`write_report` places the points on E2's frontier: background goodput on x, voice-to-voice
 p95 on y, one frontier per arm. A point is on its arm's frontier when no other point of the arm
@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,21 @@ DISCARDED = "lh_gateway_admission_discarded_tokens_total"
 USAGE = "lh_gateway_usage_tokens_total"
 """Tokens from response usage, by class and kind, counted as each response ends."""
 
+TURNS_LOGGER = "leaseholder_voice.turns"
+SESSIONS_LOGGER = "leaseholder_voice.events"
+"""The voice worker's loggers (leaseholder_voice.events): a line per turn, and one per session as it
+ends ("session ended")."""
+WATERFALL = (
+    "transcript_ms",
+    "end_of_turn_ms",
+    "llm_ttft_ms",
+    "llm_first_sentence_ms",
+    "turn_to_first_sentence_ms",
+    "tts_first_audio_ms",
+    "e2e_ms",
+)
+"""The stage times of the worker's turn lines, in the order of a turn (its ``STAGES``)."""
+
 
 def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) -> dict[str, Any]:
     """The E2 metrics of the window ``start``..``end`` (epoch seconds) from a run directory. Raises
@@ -47,14 +63,89 @@ def summarize_point(run_dir: Path, start: float, end: float, *, agents: bool) ->
     gateway = [(metrics / f"gateway-{when}.prom").read_text() for when in ("start", "end")]
     engine = [(metrics / f"engine-{when}.prom").read_text() for when in ("start", "end")]
     records = run_dir / "aiperf" / "profile_export.jsonl"
+    requests = gateway_requests(run_dir, start, end)
     voice = ("turns", "errors", "v2v_ms", "barge_in_to_silence_ms", "barge_ins")
     return {
         "window_s": round(end - start, 1),
         "voice": {key: bots[key] for key in voice},
+        "worker": worker(run_dir / "voice-worker.log"),
         "background": background(records, start, end) if agents else None,
-        "gateway": gateway_counts(*gateway, end - start),
+        "gateway": gateway_counts(*gateway, end - start, requests),
         "engine": engine_counts(*engine),
     }
+
+
+def worker(journal: Path) -> dict[str, Any] | None:
+    """The voice worker's own account of the calls, from its journal (voice-worker.log): each stage
+    of the waterfall over the turns, and the lifecycle events its sessions sent, dropped and failed
+    to deliver. None without a turn or session line in it; the events are None when no session sent
+    any (``LH_EVENTS=off``, or an LLM that bypasses the gateway)."""
+    if not journal.exists():
+        return None
+    turns, sessions = worker_lines(journal.read_text(errors="replace"))
+    if not turns and not sessions:
+        return None
+    counted = [s for s in sessions if "events_sent" in s]
+    events = {
+        kind: sum(s[f"events_{kind}"] for s in counted) for kind in ("sent", "dropped", "failed")
+    }
+    return {
+        "sessions": len(sessions),
+        "turns": len(turns),
+        "waterfall": {
+            stage: summarize(t[stage] for t in turns if stage in t) for stage in WATERFALL
+        },
+        "events": events if counted else None,
+    }
+
+
+def worker_lines(journal: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The voice worker's turn lines and session-end lines among its journal's JSON lines."""
+    turns, sessions = [], []
+    for line in journal.splitlines():
+        try:
+            record = orjson.loads(line)
+        except orjson.JSONDecodeError:
+            continue  # not one of the worker's JSON log lines
+        if not isinstance(record, dict):
+            continue
+        if record.get("name") == TURNS_LOGGER:
+            turns.append(record)
+        elif record.get("name") == SESSIONS_LOGGER and record.get("message") == "session ended":
+            sessions.append(record)
+    return turns, sessions
+
+
+def gateway_request_lines(journal: str) -> list[str]:
+    """The gateway's "request" lines among its journal's lines: one JSON object per request that
+    ended, with its class, status, outcome and times (``log_format = "json"``, as on cyan)."""
+    return [line for line in journal.splitlines() if _request(line) is not None]
+
+
+def gateway_requests(run_dir: Path, start: float, end: float) -> list[dict[str, Any]] | None:
+    """The requests the gateway logged as ending within ``start``..``end``, from the run's
+    gateway.jsonl; None without one, or with one that holds no request (the calls make some)."""
+    path = run_dir / "gateway.jsonl"
+    if not path.exists():
+        return None
+    logged = [r for r in map(_request, path.read_text(errors="replace").splitlines()) if r]
+    if not logged:
+        return None
+    return [record for ended, record in logged if start <= ended <= end]
+
+
+def _request(line: str) -> tuple[float, dict[str, Any]] | None:
+    """A request line of the gateway's, with when the request ended; None for any other line."""
+    try:
+        record = orjson.loads(line)
+    except orjson.JSONDecodeError:
+        return None
+    if not isinstance(record, dict) or record.get("message") != "request":
+        return None
+    try:
+        return datetime.fromisoformat(record["timestamp"]).timestamp(), record
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def background(records: Path, start: float, end: float) -> dict[str, Any]:
@@ -94,11 +185,14 @@ def background(records: Path, start: float, end: float) -> dict[str, Any]:
     }
 
 
-def gateway_counts(before: str, after: str, seconds: float) -> dict[str, Any]:
-    """The gateway's realtime first byte, what its admission point shed, refused and resubmitted, and
+def gateway_counts(
+    before: str, after: str, seconds: float, requests: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """The gateway's first byte by class, what its admission point shed, refused and resubmitted, and
     its own count of the background tokens served over the window of ``seconds``; every counter that
     moved is listed under ``counters``. The admission counts are null for a gateway without an
-    admission point, the background rate for one without usage counters."""
+    admission point, the background rate for one without usage counters. ``requests`` are the
+    window's lines of the gateway's request log, when the run kept it."""
     names = {name for name, _, _ in metric_samples(after) if name.startswith("lh_gateway_")}
     counters = {
         name: deltas(before, after, name, "gateway") or {}
@@ -115,7 +209,8 @@ def gateway_counts(before: str, after: str, seconds: float) -> dict[str, Any]:
     prompt = total(USAGE, {"class": "background", "kind": "prompt"})
     completion = total(USAGE, {"class": "background", "kind": "completion"})
     return {
-        "realtime_first_byte_ms": histogram_ms(before, after, FIRST_BYTE, {"class": "realtime"}),
+        "realtime_first_byte_ms": first_byte_ms(before, after, "realtime", requests),
+        "background_first_byte_ms": first_byte_ms(before, after, "background", requests),
         "shed": total(OUTCOMES, {"outcome": "shed"}) if admission else None,
         "refused": total(REFUSED, {}),
         "resubmitted": total(RESUBMITS, {}),
@@ -168,6 +263,32 @@ def deltas(before: str, after: str, name: str, source: str) -> dict[Labels, floa
         if grown[labels] < 0:
             raise ValueError(f"{name} went down during the calls: the {source} restarted")
     return grown
+
+
+def first_byte_ms(
+    before: str, after: str, slo_class: str, requests: list[dict[str, Any]] | None
+) -> dict[str, Any]:
+    """A class's time to first byte at the gateway over the window. From its request log when the run
+    has one (``source`` "log"), which is exact; otherwise interpolated inside its histogram's buckets
+    ("histogram"), whose bounds are 0.1, 0.25, 0.5 and 1 s in the range that matters for voice."""
+    if requests is None:
+        cell = histogram_ms(before, after, FIRST_BYTE, {"class": slo_class})
+        return cell | {"source": "histogram"}
+    return logged_first_byte(requests, slo_class)
+
+
+def logged_first_byte(requests: Iterable[Mapping[str, Any]], slo_class: str) -> dict[str, Any]:
+    """Count, mean and p50/p95/p99 of a class's first byte in ms, from the gateway's request lines:
+    the requests it sent upstream (with an outcome) that had a first byte, as its histogram counts."""
+    first_bytes = [
+        r["first_byte_ms"]
+        for r in requests
+        if r.get("class") == slo_class and "outcome" in r and "first_byte_ms" in r
+    ]
+    cell = summarize(first_bytes)
+    return {key: cell[key] for key in ("n", "mean", "p50", "p95", "p99") if key in cell} | {
+        "source": "log"
+    }
 
 
 def histogram_ms(
@@ -227,15 +348,25 @@ COLUMNS = (
     "agent_ttft_p50_ms",
     "agent_ttft_p99_ms",
     "realtime_first_byte_p95_ms",
+    "realtime_first_byte_source",
     "engine_preemptions",
     "shed",
     "refused",
     "resubmitted",
     "gateway_background_tokens_per_s",
 )
-"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. Refused
-adds up the gateway's admission point and the engine's queue limits; the gateway's own count of the
-background tokens it served checks AIPerf's goodput."""
+"""frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. The
+realtime first byte is the gateway's, from its request log ("log", exact) or its histogram
+("histogram", interpolated). Refused adds up the gateway's admission point and the engine's queue
+limits; the gateway's own count of the background tokens it served checks AIPerf's goodput."""
+WORKER_COLUMNS = (
+    *(f"{stage.removesuffix('_ms')}_{q}_ms" for stage in WATERFALL for q in ("p50", "p95")),
+    "events_sent",
+    "events_dropped",
+    "events_failed",
+)
+"""Columns that only some points have, shown when one of them has them: the voice worker's stage
+times and lifecycle events."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -248,17 +379,27 @@ def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Pa
         if run.get("status") != "complete":
             incomplete.append(run_dir)
             continue
-        rows.append(_row(run, orjson.loads((run_dir / "summary.json").read_bytes())))
+        rows.append(_row(run_dir, run, orjson.loads((run_dir / "summary.json").read_bytes())))
     mark_frontier(rows)
     rows.sort(key=lambda r: (_arm_order(r["arm"]), r["background_tokens_per_s"], r["point"]))
     return rows, incomplete
 
 
-def _row(run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
+def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
     arm, voice = run["arm"], summary["voice"]
     background = summary["background"] or {}
     gateway, engine = summary["gateway"], summary["engine"]
-    return {
+    window = run.get("window")
+    first_byte = gateway["realtime_first_byte_ms"]
+    # A request log fetched into the run directory after its summary was written counts as well.
+    if (
+        window
+        and (requests := gateway_requests(run_dir, window["start"], window["end"])) is not None
+    ):
+        first_byte = logged_first_byte(requests, "realtime")
+    worker = summary.get("worker") or {}
+    waterfall, events = worker.get("waterfall") or {}, worker.get("events") or {}
+    row = {
         "arm": str(arm["arm"]),
         "point": run["name"],
         "label": arm["label"],
@@ -278,13 +419,22 @@ def _row(run: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
         "barge_in_to_silence_p95_ms": voice["barge_in_to_silence_ms"].get("p95"),
         "agent_ttft_p50_ms": background.get("ttft_ms", {}).get("p50"),
         "agent_ttft_p99_ms": background.get("ttft_ms", {}).get("p99"),
-        "realtime_first_byte_p95_ms": gateway["realtime_first_byte_ms"].get("p95"),
+        "realtime_first_byte_p95_ms": first_byte.get("p95"),
+        # summaries from before the request log was kept took it from the histogram
+        "realtime_first_byte_source": first_byte.get("source", "histogram"),
         "engine_preemptions": engine["preemptions"],
         "shed": gateway["shed"],
         "refused": _added(gateway["refused"], *(engine["refused"] or {}).values()),
         "resubmitted": gateway["resubmitted"],
         "gateway_background_tokens_per_s": gateway["background_tokens_per_s"],
     }
+    row |= {
+        f"{stage.removesuffix('_ms')}_{q}_ms": waterfall.get(stage, {}).get(q)
+        for stage in WATERFALL
+        for q in ("p50", "p95")
+    }
+    row |= {f"events_{kind}": events.get(kind) for kind in ("sent", "dropped", "failed")}
+    return row
 
 
 def _added(*counts: int | None) -> int | None:
@@ -318,7 +468,8 @@ def write_report(rows: Sequence[Mapping[str, Any]], out_dir: Path) -> list[Path]
     out_dir.mkdir(parents=True, exist_ok=True)
     written = [out_dir / "frontier.csv", out_dir / "frontier.md"]
     with written[0].open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=COLUMNS)
+        columns = [*COLUMNS, *(c for group in _measured(rows) for c in group)]
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     written[1].write_text(markdown(rows))
@@ -327,40 +478,77 @@ def write_report(rows: Sequence[Mapping[str, Any]], out_dir: Path) -> list[Path]
     return written
 
 
+def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
+    """The optional column groups that some point has."""
+    groups = (WORKER_COLUMNS,)
+    return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
+
+
 def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
-    """The frontier as a table per arm, ordered by background goodput."""
-    lines = [
-        "# E2 frontier",
-        "",
+    """The frontier as a table per arm, ordered by background goodput, then the voice worker's stage
+    times when the points have them."""
+    intro = (
         "Background goodput (prompt and completion tokens per second of the agent requests that "
         "completed during the calls) against voice-to-voice latency in ms. • marks the points on "
-        "their arm's frontier. Refused counts the gateway's admission point and the engine's queue "
-        "limits; — is a count the point's gateway or engine does not keep.",
-    ]
+        "their arm's frontier. The realtime first byte is the gateway's, from its request log; ~ "
+        "marks one interpolated inside its histogram's buckets, for a point without the log. Refused "
+        "counts the gateway's admission point and the engine's queue limits; — is a count the "
+        "point's gateway or engine does not keep."
+    )
+    lines = ["# E2 frontier", "", intro]
     header = (
         "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "
-        "| Failed turns | Agent TTFT p50 / p99 | Preemptions | Shed / refused / resubmitted |"
+        "| Failed turns | Agent TTFT p50 / p99 | Realtime first byte p95 | Preemptions "
+        "| Shed / refused / resubmitted |"
     )
+    align = "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
     arms = sorted({r["arm"] for r in rows}, key=_arm_order)
     for arm in arms:
-        lines += [
-            "",
-            f"## Arm {arm}",
-            "",
-            header,
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
-        ]
+        lines += ["", f"## Arm {arm}", "", header, align]
         for r in (r for r in rows if r["arm"] == arm):
             counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
             ttft = f"{_cell(r['agent_ttft_p50_ms'])} / {_cell(r['agent_ttft_p99_ms'])}"
-            lines.append(
+            first_byte = _cell(r["realtime_first_byte_p95_ms"])
+            if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
+                first_byte = f"~{first_byte}"
+            line = (
                 f"| {r['point']}: {r['label']} | {'•' if r['frontier'] else ''} | {r['sessions']} "
                 f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
                 f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
-                f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} "
+                f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
                 f"| {_cell(r['engine_preemptions'])} | {counts} |"
             )
+            lines.append(line)
+    if WORKER_COLUMNS in _measured(rows):
+        lines += _stages(rows)
     return "\n".join(lines) + "\n"
+
+
+def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The voice worker's stage times of each point, p50 / p95."""
+    lines = [
+        "",
+        "## Voice turn stages",
+        "",
+        "The voice worker's own timing of each turn, p50 / p95 in ms: from the end of the caller's "
+        "speech (VAD) to the final transcript and to the end-of-turn decision; from the LLM request "
+        "to its first token and to the first sentence handed to TTS; from the end-of-turn decision "
+        "to that sentence; from that sentence to its first audio; and from the end of speech to the "
+        "reply's first audio frame on the track. Events are those the worker sent the gateway, "
+        "dropped from its queue and failed to deliver.",
+        "",
+        "| Point | Transcript | End of turn | LLM first token | LLM first sentence "
+        "| Turn to first sentence | TTS first audio | End to end | Events sent / dropped / failed |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for r in rows:
+        stages = [
+            " / ".join(_cell(r[f"{stage.removesuffix('_ms')}_{q}_ms"]) for q in ("p50", "p95"))
+            for stage in WATERFALL
+        ]
+        events = " / ".join(_cell(r[f"events_{kind}"]) for kind in ("sent", "dropped", "failed"))
+        lines.append(f"| {r['point']} | {' | '.join(stages)} | {events} |")
+    return lines
 
 
 def _cell(value: Any, digits: int = 0) -> str:

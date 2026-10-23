@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +13,16 @@ import pytest
 
 from leaseholder_bench.cli import main
 from leaseholder_bench.frontier import (
+    COLUMNS,
+    SESSIONS_LOGGER,
+    TURNS_LOGGER,
+    WATERFALL,
+    WORKER_COLUMNS,
     background,
     engine_counts,
+    first_byte_ms,
     gateway_counts,
+    gateway_requests,
     load_points,
     mark_frontier,
     summarize_point,
@@ -21,6 +30,8 @@ from leaseholder_bench.frontier import (
 )
 
 T0 = 1_800_000_000.0  # the calls run from T0 to T0 + 100 s
+VOICE = Path(__file__).resolve().parents[3] / "python" / "leaseholder_voice"
+VOICE_EVENTS = VOICE / "src" / "leaseholder_voice" / "events.py"
 
 
 def record(end: float, *, phase: str = "profiling", ttft: float = 100.0, **extra: Any) -> str:
@@ -98,14 +109,16 @@ lh_gateway_admission_discarded_tokens_total{class="background"} 2500
 
 def test_the_gateway_counts_cover_the_window() -> None:
     cell = gateway_counts(GATEWAY_BEFORE, GATEWAY_AFTER, 100.0)
-    # Realtime only: 8 of 10 within 100 ms, 2 more within 500 ms.
+    # Realtime only: 8 of 10 within 100 ms, 2 more within 500 ms, interpolated inside the buckets.
     assert cell["realtime_first_byte_ms"] == {
         "n": 10,
         "mean": 90.0,
         "p50": 62.5,
         "p95": 400.0,
         "p99": 480.0,
+        "source": "histogram",
     }
+    assert cell["background_first_byte_ms"]["n"] == 40
     assert (cell["shed"], cell["refused"], cell["resubmitted"]) == (3, 6, 5)
     assert cell["discarded_tokens"] == 2500
     assert cell["background_tokens_per_s"] == 1020.0  # prompt and completion, background only
@@ -139,7 +152,56 @@ def test_a_gateway_without_an_admission_point_counts_none_of_its_outcomes() -> N
     )
     assert cell["background_tokens_per_s"] == 1020.0
     empty = gateway_counts("", "", 100.0)
-    assert empty["realtime_first_byte_ms"] == {"n": 0} and empty["background_tokens_per_s"] is None
+    assert empty["realtime_first_byte_ms"] == {"n": 0, "source": "histogram"}
+    assert empty["background_tokens_per_s"] is None
+
+
+def logged(at: float, slo_class: str | None, first_byte_ms: float | None, **fields: Any) -> str:
+    """One of the gateway's JSON request lines, for a request that ended at ``at``."""
+    stamp = datetime.fromtimestamp(at, UTC).isoformat(timespec="microseconds")
+    line = {
+        "timestamp": stamp.replace("+00:00", "Z"),
+        "level": "INFO",
+        "message": "request",
+        "class": slo_class,
+        "status": 200,
+        "outcome": "completed",
+        "first_byte_ms": first_byte_ms,
+    }
+    return json.dumps({k: v for k, v in (line | fields).items() if v is not None})
+
+
+# The calls' realtime requests had their first byte at 100, 200, ... 1000 ms.
+REQUESTS = "\n".join(
+    [
+        logged(T0 - 1, "realtime", 9999.0),  # before the calls
+        *(logged(T0 + n, "realtime", 100.0 * n) for n in range(1, 11)),
+        logged(T0 + 50, "realtime", None, outcome="cancelled"),  # left before its first byte
+        logged(T0 + 60, "realtime", 5.0, outcome=None),  # never went upstream
+        logged(T0 + 70, "background", 2500.0),
+        '{"timestamp": "2027-01-15T08:00:00.000000Z", "message": "lifecycle event"}',
+        "a line that is not JSON",
+    ]
+)
+
+
+def test_the_first_bytes_come_exactly_from_the_request_log(tmp_path: Path) -> None:
+    (tmp_path / "gateway.jsonl").write_text(REQUESTS + "\n")
+    requests = gateway_requests(tmp_path, T0, T0 + 100)
+    assert requests is not None and len(requests) == 13
+    # The histogram of the same window says p95 400 ms, interpolated inside its 0.1-0.5 s bucket.
+    assert first_byte_ms(GATEWAY_BEFORE, GATEWAY_AFTER, "realtime", requests) == {
+        "n": 10,
+        "mean": 550.0,
+        "p50": 550.0,
+        "p95": 955.0,
+        "p99": 991.0,
+        "source": "log",
+    }
+    assert first_byte_ms("", "", "background", requests)["p50"] == 2500.0
+    assert gateway_requests(tmp_path / "missing", T0, T0 + 100) is None
+    (tmp_path / "gateway.jsonl").write_text("lh-gateway serving\n")  # a gateway that logs text
+    assert gateway_requests(tmp_path, T0, T0 + 100) is None
 
 
 ENGINE = """\
@@ -186,6 +248,7 @@ def point(
         "engine": {"variant": "frozen", "flags": ["--max-num-seqs", "12"]},
     }
     run = {"kind": "e2-point", "name": name, "status": status, "arm": settings}
+    run["window"] = {"start": T0, "end": T0 + 100}
     (run_dir / "run.json").write_text(json.dumps(run))
     bg = None
     if tokens_per_s is not None:
@@ -264,15 +327,71 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
     assert str(out / "frontier.md") in captured.out
     with (out / "frontier.csv").open() as f:
         rows = list(csv.DictReader(f))
+    assert list(rows[0]) == list(COLUMNS)  # no point has the optional columns
     assert [r["point"] for r in rows] == ["a2-s8", "a10-mps"]  # arm 2 before arm 10
     assert rows[0]["v2v_p95_ms"] == "2000" and rows[0]["frontier"] == "True"
     assert rows[0]["refused"] == "3"  # 2 by the gateway's admission point, 1 by the engine
     assert rows[0]["gateway_background_tokens_per_s"] == "3000"
+    # A summary from before the request log took the first byte from the histogram.
+    assert (rows[0]["realtime_first_byte_p95_ms"], rows[0]["realtime_first_byte_source"]) == (
+        "120.0",
+        "histogram",
+    )
     table = (out / "frontier.md").read_text()
     assert "## Arm 2" in table and "## Arm 10" in table
     assert "| a2-s8: a2-s8 label | • | 16 | 3,000 | 3.00 | 1,600 | 2,000 | 2,500 |" in table
-    assert "| 0 of 50 | 140 / 8,000 | 4 | — / 3 / — |" in table
+    assert "| 0 of 50 | 140 / 8,000 | ~120 | 4 | — / 3 / — |" in table
+    assert "Voice turn stages" not in table and "SM clock" not in table
     assert main(["e2", "report", str(dirs[2]), "--out", str(out)]) == 1
+
+
+def test_the_report_takes_a_request_log_fetched_after_the_run(tmp_path: Path) -> None:
+    run_dir = point(tmp_path, "a2-s8", "2", 3000, 2000)
+    (run_dir / "gateway.jsonl").write_text(REQUESTS + "\n")  # backfilled from the journal
+    [row], _ = load_points([run_dir])
+    assert (row["realtime_first_byte_p95_ms"], row["realtime_first_byte_source"]) == (955.0, "log")
+    assert "| 140 / 8,000 | 955 | 4 |" in write_report([row], tmp_path / "report")[1].read_text()
+
+
+def test_the_report_shows_the_stages_only_for_points_that_have_them(tmp_path: Path) -> None:
+    dirs = [point(tmp_path, "a2-s8", "2", 3000, 2000), point(tmp_path, "a2-s16", "2", 5000, 2600)]
+    summary = json.loads((dirs[1] / "summary.json").read_text())
+    stages = {s: {"n": 50, "p50": 100.0 * n, "p95": 150.0 * n} for n, s in enumerate(WATERFALL, 1)}
+    events = {"sent": 300, "dropped": 0, "failed": 1}
+    summary["worker"] = {"sessions": 2, "turns": 50, "waterfall": stages, "events": events}
+    (dirs[1] / "summary.json").write_text(json.dumps(summary))
+    rows, _ = load_points(dirs)
+    out = tmp_path / "report"
+    write_report(rows, out)
+    with (out / "frontier.csv").open() as f:
+        written = {r["point"]: r for r in csv.DictReader(f)}
+    assert list(written["a2-s8"]) == [*COLUMNS, *WORKER_COLUMNS]
+    assert written["a2-s8"]["e2e_p95_ms"] == ""
+    sixteen = written["a2-s16"]
+    assert (sixteen["transcript_p50_ms"], sixteen["e2e_p95_ms"], sixteen["events_failed"]) == (
+        "100.0",
+        "1050.0",
+        "1",
+    )
+    table = (out / "frontier.md").read_text()
+    assert "| a2-s16 | 100 / 150 | 200 / 300 | 300 / 450 |" in table
+    assert "| 700 / 1,050 | 300 / 0 / 1 |" in table
+    assert "| a2-s8 | — / — |" in table
+
+
+def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:
+    source = VOICE_EVENTS.read_text()
+    [stages] = [
+        ast.literal_eval(node.value)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "STAGES" for t in node.targets)
+    ]
+    assert stages == WATERFALL
+    assert f'logging.getLogger("{TURNS_LOGGER}")' in source
+    # The sessions' end lines come from the module's own logger.
+    assert SESSIONS_LOGGER == "leaseholder_voice.events" and "logging.getLogger(__name__)" in source
+    assert '"session ended"' in source
 
 
 def test_the_figure_needs_matplotlib(tmp_path: Path) -> None:

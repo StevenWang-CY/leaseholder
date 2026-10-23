@@ -259,7 +259,7 @@ A point runs in this order:
 3. **A cold start.** The engine's prefix cache, and vLLM's CPU tier, are emptied.
 4. **The replay.** With agent sessions, AIPerf starts on cores 16–23 and the calls wait for its profiling phase plus the warm-up.
 5. **The window.** The gateway's and the engine's `/metrics` are saved, `lh-voice bots` runs in the voice-plane namespace on cores 24–31, and they are saved again. The calls are the window every metric covers; AIPerf must outlast them.
-6. **The end.** AIPerf gets SIGINT, cancels its requests and writes its exports, and `summary.json` is written.
+6. **The end.** AIPerf gets SIGINT, cancels its requests and writes its exports. The gateway's request lines for the window go to `gateway.jsonl`, and the voice worker's journal from the start of the calls to `voice-worker.log`, once every call's session has logged its end (at most 30 s). Then `summary.json` is written.
 
 **The arm file.** Unknown keys and wrong types are errors. The point is named after the file.
 
@@ -295,6 +295,8 @@ A point runs in this order:
 | `aiperf.log`, `aiperf/` | AIPerf's output and artifacts: `profile_export.jsonl` holds one record per request |
 | `bots.log`, `bots/` | The callers' output and run directory (`turns.jsonl`, `summary.json`) |
 | `metrics/` | `gateway-start.prom`, `gateway-end.prom`, `engine-start.prom`, `engine-end.prom` |
+| `gateway.jsonl` | The gateway's request lines for the window (`journalctl --user -u lh-gateway --since --until`, the JSON lines whose message is `request`): class, status, outcome, `first_byte_ms`, `total_ms`, `admission_wait_ms` and tokens of each request. Absent when the gateway logs text |
+| `voice-worker.log` | The voice worker's journal from the start of the calls: a line per turn with its stage times, and a line per session at its end with its lifecycle-event counts ([`leaseholder-voice`](../leaseholder_voice/README.md#lifecycle-events-and-turn-lines)) |
 | `summary.json` | The point's E2 metrics |
 
 A component that fails fails the point: `run.json` keeps `failed` and the error, and a tool's error gives its exit status and the last lines of its log. AIPerf and the callers run in process groups of their own and are stopped through them, with SIGINT and then SIGKILL for whatever is left, also when the point fails or `lh-bench e2 run` gets SIGINT or SIGTERM. Closing the SSH session that started it does not stop a point. A complete point is never overwritten; an incomplete one is moved aside to `DIR.incomplete-<UTC time>`, and a directory that holds anything else is refused. One `e2 run` or `e2 reset` runs at a time; the lock file, `~/leaseholder/runs/.lh-bench-e2.lock`, holds its pid.
@@ -305,13 +307,16 @@ A component that fails fails the point: `run.json` keeps `failed` and the error,
 |---|---|
 | `window_s` | Length of the calls |
 | `voice` | From the callers: turns, errors, `v2v_ms` and `barge_in_to_silence_ms` (n, p50, p95, p99) and barge-ins |
+| `worker` | Null without the worker's lines. From `voice-worker.log`: `sessions` that logged their end, `turns`, the `waterfall` (each stage of the turn lines: `transcript_ms`, `end_of_turn_ms`, `llm_ttft_ms`, `llm_first_sentence_ms`, `turn_to_first_sentence_ms`, `tts_first_audio_ms`, `e2e_ms`, with n, mean, p10, p50, p90, p95, p99) and the lifecycle `events` its sessions sent, dropped and failed to deliver (null when it sent none: `events = false`, or the LLM bypassed the gateway) |
 | `background` | Null for voice alone. From AIPerf's records of the agent requests that ended during the calls: requests, errors (failed and cancelled requests count as lost), requests/s, prompt, completion and total tokens/s from the server's usage counts, and `ttft_ms` |
-| `gateway` | `realtime_first_byte_ms` from its histogram; what its admission point shed, refused and resubmitted, and the prompt tokens of the attempts it dropped; `background_tokens_per_s`, its own count from response usage; and every counter that moved |
+| `gateway` | `realtime_first_byte_ms` and `background_first_byte_ms` (n, mean, p50, p95, p99): exact, from `gateway.jsonl` (`"source": "log"`), or interpolated inside the first-byte histogram's buckets, whose bounds are 0.1, 0.25, 0.5 and 1 s in the range that matters for voice (`"source": "histogram"`, without the log); what its admission point shed, refused and resubmitted, and the prompt tokens of the attempts it dropped; `background_tokens_per_s`, its own count from response usage; and every counter that moved |
 | `engine` | vLLM's preemptions, prompt tokens by source (local compute, GPU-pool and CPU-tier hits) and queue-limit rejections |
 
 The background goodput comes from AIPerf's records rather than from the gateway's request outcomes, whose `completed` counts a response relayed in full whatever its status: it cannot tell a request the engine refused from one it served. The gateway's token rate stays beside it as a check.
 
 **The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
+- **The realtime first byte** is exact from the run directory's `gateway.jsonl`, even one fetched after the run (from the journal, for the window in `run.json`), and otherwise the summary's; `realtime_first_byte_source` says which, and `frontier.md` marks an interpolated value with `~`.
+- **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts.
 
 ## Mock server
 
@@ -384,5 +389,8 @@ an in-process server: live replies, compaction cuts, side chains, subagent joins
 and failures. `tests/test_e2.py` runs whole E2 points against a fake gateway and engine on
 loopback, a recording `systemctl` and stand-ins for AIPerf and the callers that run as real
 processes (`tests/fakes/`): the sequence, the units each arm restarts, the engine check, failures
-at each step with every process stopped, the point directory's rules and the committed arm files.
-`tests/test_frontier.py` covers the summary over the window and the Pareto marking.
+at each step with every process stopped, the point directory's rules, the committed arm files, and
+the logs a point keeps: the gateway's request lines and the worker's journal, waiting for its
+sessions to end only when they will. `tests/test_frontier.py` covers the summary over the window,
+the exact first bytes from a request log, the Pareto marking, the report's columns that only some
+points have, and the names of the lines the voice worker writes.

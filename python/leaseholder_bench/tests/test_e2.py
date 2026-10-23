@@ -14,6 +14,7 @@ import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -347,12 +348,14 @@ class FakeHost(Host):
 
 class FakeSystemd(Systemd):
     """Records systemctl calls; the worker runs with fixed endpointing and registers at once. A unit
-    in ``failing`` does not start, and its log says why."""
+    in ``failing`` does not start, and its log says why. ``journals`` gives a unit's journal from
+    ``since`` to ``until``; any other unit's holds only the worker's registration."""
 
     def __init__(self, env: dict[str, str] | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.running: set[str] = set()
         self.failing: set[str] = set()
+        self.journals: dict[str, Callable[[float, float | None], str]] = {}
         self.env = env or {"LH_TURN_DETECTION": "vad", "LH_LLM_UDS": "/run/user/1/lh/gateway.sock"}
 
     def __call__(self, *args: str) -> str:
@@ -370,9 +373,11 @@ class FakeSystemd(Systemd):
     def active(self, unit: str) -> bool:
         return unit in self.running
 
-    def journal(self, unit: str, since: float) -> str:
+    def journal(self, unit: str, since: float, until: float | None = None) -> str:
         if unit in self.failing:
             return f"{unit}: starting\n{unit}: config: unknown field `upstream_priority`\n"
+        if unit in self.journals:
+            return self.journals[unit](since, until)
         return "registered worker"
 
 
@@ -457,9 +462,12 @@ def test_voice_alone_runs_the_calls_against_the_box_as_it_is(cyan: Cyan) -> None
     assert summary["name"] == "a1-voice" and summary["background"] is None
     assert summary["voice"]["v2v_ms"]["p95"] == 1800.0
     assert summary["engine"]["preemptions"] == 1  # one scrape apart
+    # This gateway logs no JSON request lines, so the first byte comes from its histogram.
+    assert not (out / "gateway.jsonl").exists()
     assert summary["gateway"]["realtime_first_byte_ms"] == {
-        "n": 10, "mean": 90.0, "p50": 62.5, "p95": 400.0, "p99": 480.0,
+        "n": 10, "mean": 90.0, "p50": 62.5, "p95": 400.0, "p99": 480.0, "source": "histogram",
     }  # fmt: skip
+    assert summary["worker"] is None  # nor does this worker log turn lines
     assert json.loads((out / "summary.json").read_text()) == summary
 
 
@@ -525,6 +533,121 @@ def test_the_same_arm_again_restarts_nothing(cyan: Cyan) -> None:
         ("restart", "lh-voice-worker"),
     ]
     assert not any(cyan.host.units.glob("*.service.d/variant-*.conf"))
+
+
+def logged_request(
+    at: float, slo_class: str | None, first_byte_ms: float | None, **fields: Any
+) -> str:
+    """One of the gateway's JSON request lines (log_format = "json"), for a request that ended at
+    ``at``; like the gateway, it leaves out the fields it has no value for."""
+    stamp = (
+        datetime.fromtimestamp(at, UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
+    line = {
+        "timestamp": stamp,
+        "level": "INFO",
+        "message": "request",
+        "class": slo_class,
+        "route": "chat_completions",
+        "status": 200,
+        "outcome": "completed",
+        "first_byte_ms": first_byte_ms,
+        "total_ms": 2000.0,
+        "target": "lh_gateway::request",
+    }
+    return json.dumps({k: v for k, v in (line | fields).items() if v is not None})
+
+
+def worker_line(name: str, message: str, **fields: Any) -> str:
+    """One of the voice worker's JSON log lines, as LiveKit's formatter writes them."""
+    line = {"message": message, "level": "INFO", "name": name, **fields, "pid": 7}
+    return json.dumps(line | {"timestamp": "2026-10-23T05:00:00+00:00"})
+
+
+TURNS, SESSIONS = "leaseholder_voice.turns", "leaseholder_voice.events"
+
+
+def test_a_point_keeps_the_gateways_requests_and_the_workers_lines(cyan: Cyan) -> None:
+    def gateway(since: float, until: float | None) -> str:
+        assert until is not None and since < until  # the window of the calls
+        first_bytes = (120.0, 180.0, 240.0)
+        return "\n".join(
+            [
+                logged_request(since - 0.5, "realtime", 999.0),  # in journalctl's second, earlier
+                *(
+                    logged_request(since + n / 100, "realtime", b)
+                    for n, b in enumerate(first_bytes, 1)
+                ),
+                logged_request(since + 0.05, "background", 3000.0),
+                logged_request(since + 0.06, None, None, route="events", status=202, outcome=None),
+                '{"timestamp":"2026-10-23T05:00:00.000000Z","message":"lifecycle event"}',
+                "lh-gateway serving",
+            ]
+        )
+
+    reads: list[float | None] = []
+    counts = {"turns": 1, "events_sent": 10, "events_dropped": 1, "events_failed": 0}
+    ended = [worker_line(SESSIONS, "session ended", session_id=f"s{n}", **counts) for n in (0, 1)]
+
+    def worker(since: float, until: float | None) -> str:
+        reads.append(until)
+        return "\n".join(
+            [
+                "registered worker",
+                worker_line(TURNS, "turn", session_id="s0", turn=0, e2e_ms=1000.0),
+                worker_line(
+                    TURNS, "turn", session_id="s1", turn=0, llm_ttft_ms=50.0, e2e_ms=1200.0
+                ),
+                *(ended if len(reads) >= 3 else []),  # the sessions end a little after the calls
+            ]
+        )
+
+    cyan.systemd.journals = {"lh-gateway": gateway, "lh-voice-worker": worker}
+    summary = run(cyan, "a1-voice", VOICE_ALONE)
+    out = cyan.host.root / "runs" / "a1-voice"
+    kept = [json.loads(line) for line in (out / "gateway.jsonl").read_text().splitlines()]
+    assert len(kept) == 6 and {line["message"] for line in kept} == {"request"}
+    # Exact, from the three realtime requests that ended during the calls.
+    assert summary["gateway"]["realtime_first_byte_ms"] == {
+        "n": 3, "mean": 180.0, "p50": 180.0, "p95": 234.0, "p99": 238.8, "source": "log",
+    }  # fmt: skip
+    assert summary["gateway"]["background_first_byte_ms"]["p50"] == 3000.0
+    assert len(reads) == 3, "it waited for both calls' sessions to end"
+    assert "session ended" in (out / "voice-worker.log").read_text()
+    worker_summary = summary["worker"]
+    assert (worker_summary["sessions"], worker_summary["turns"]) == (2, 2)
+    assert worker_summary["events"] == {"sent": 20, "dropped": 2, "failed": 0}
+    assert worker_summary["waterfall"]["e2e_ms"]["p50"] == 1100.0
+    assert worker_summary["waterfall"]["llm_ttft_ms"]["n"] == 1
+    assert worker_summary["waterfall"]["end_of_turn_ms"] == {"n": 0}
+
+
+def test_the_worker_journal_waits_only_for_sessions_that_end(
+    cyan: Cyan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(e2, "SESSIONS_END_S", 0.2)
+    reads: list[float | None] = []
+
+    def journal(*lines: str) -> Callable[[float, float | None], str]:
+        def read(since: float, until: float | None) -> str:
+            reads.append(until)
+            return "\n".join(["registered worker", *lines])
+
+        return read
+
+    # A worker that logs no turn lines (a build from before them): nothing to wait for.
+    cyan.systemd.journals = {"lh-voice-worker": journal()}
+    assert run(cyan, "a1-voice", VOICE_ALONE)["worker"] is None
+    assert len(reads) == 1
+    # Two calls and one session that ends: the wait is bounded, and the summary says what came.
+    turn = worker_line(TURNS, "turn", session_id="s", turn=0, e2e_ms=900.0)
+    cyan.systemd.journals = {
+        "lh-voice-worker": journal(turn, worker_line(SESSIONS, "session ended", session_id="s"))
+    }
+    reads.clear()
+    summary = run(cyan, "a1-voice", VOICE_ALONE, out="again")
+    assert len(reads) >= 3
+    assert (summary["worker"]["sessions"], summary["worker"]["events"]) == (1, None)
 
 
 def test_smg_runs_only_for_the_points_that_route_through_it(cyan: Cyan) -> None:
