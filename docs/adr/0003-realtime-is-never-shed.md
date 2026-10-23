@@ -27,3 +27,4 @@ Background traffic absorbs the overload. It keeps a minimum share and ages, so i
 - Capacity for realtime must be planned: a bounded number of concurrent calls per GPU, set from the voice SLO calibration.
 - Background goodput becomes the measure of how well the GPU is used. The E2 frontier plots it against voice V2V p95.
 - Rejections exist only for `interactive` (a deadline can be missed) and for `background` (deferral beyond its age bound). Both are reported as their own metrics.
+- The decision binds Leaseholder's own admission policy. E2's baseline policies emulate what others ship (W2): llm-d's flow control, for one, can make a realtime request wait or refuse it when realtime and interactive requests fill its ceiling, and those outcomes are measured, not prevented.

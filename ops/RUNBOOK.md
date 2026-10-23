@@ -5,7 +5,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 | Host | Units | Ports (all loopback) |
 |---|---|---|
 | Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (bound by `lh-node` from W3; the engine connects to it), KV-event replay 5558 |
-| cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker` | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only |
+| cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker`; `lh-smg` for E2 arm 8b only | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only; SMG 18090, its metrics 18091 |
 
 **Cores on cyan** (48 threads):
 
@@ -27,6 +27,8 @@ export LH_SSH="ssh -F $HOME/.ssh/penn_config"   # your SSH command for the hosts
 deploy/deploy.sh phastform.cis.upenn.edu       # sync the repo to ~/leaseholder/src and install the units
 deploy/deploy.sh cyan.cis.upenn.edu
 ```
+
+`deploy.sh` writes the deployed commit to `~/leaseholder/src/DEPLOYED` on the host. Do not deploy to cyan while an E2 campaign runs: the points read their arm files and the harness from that tree.
 
 **First time on a host:**
 1. Enable lingering: `loginctl enable-linger $USER`.
@@ -60,7 +62,7 @@ A unit counts as started only once its server answers its health endpoint (`wait
 
 ## The gateway
 
-`lh-gateway` serves the OpenAI routes and `/v1/events` on 127.0.0.1:18080, with an API key, and on `/run/user/$UID/lh/gateway.sock`, the voice plane's way in, without one. Its own `/health`, `/ready` and `/metrics` need no key. Its configuration reference and metrics list are in the [`lh-gateway` README](../crates/lh-gateway/README.md).
+`lh-gateway` serves the OpenAI routes and `/v1/events` on 127.0.0.1:18080, with an API key, and on `/run/user/$UID/lh/gateway.sock`, the voice plane's way in, without one. Its own `/health`, `/ready` and `/metrics` need no key. Its configuration reference and metrics list are in the [`lh-gateway` README](../crates/lh-gateway/README.md), including the E2 settings: `upstream_priority` (where each class's priority goes upstream: `X-Vllm-Priority`, the body's `priority`, or `X-SMG-Priority`) and the `[admission]` policies. Configuration changes take a restart.
 
 ```sh
 curl -s 127.0.0.1:18080/health                    # the process is up
@@ -86,6 +88,7 @@ journalctl --user -u lh-voice-worker -f          # JSON logs; "registered worker
 **Worker variants** are drop-ins linked into `~/.config/systemd/user/lh-voice-worker.service.d/`, followed by `systemctl --user daemon-reload` and a restart:
 - `deploy/cyan/variants/vad-turns/lh-voice-worker.conf` sets fixed endpointing (`LH_TURN_DETECTION=vad`). Every experiment runs with it, because LiveKit's end-of-turn model waits its 3 s maximum on some synthesized turns ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 - An `Environment=LH_LLM_UDS=%t/lh/phastform-engine.sock` drop-in sends the LLM straight to the engine, bypassing the gateway.
+- `deploy/cyan/variants/no-preemptive-generation/lh-voice-worker.conf` turns LiveKit's preemptive generation off (`LH_PREEMPTIVE_GENERATION=false`), for E2's factor.
 
 **Measurement callers.** Render the corpus once with the TTS server. The callers run inside the namespace:
 
@@ -98,12 +101,23 @@ taskset -c 24-31 ~/leaseholder/src/deploy/bin/in-voicenet ~/leaseholder/venvs/vo
 
 ## Engine variants
 
-A variant is a systemd drop-in in `~/.config/systemd/user/lh-engine.service.d/` that overrides `ExecStart` with extra flags. Flags on the command line take precedence over `deploy/phastform/engine.yaml`.
-- **Apply:** link the drop-in, then `systemctl --user daemon-reload && systemctl --user restart lh-engine`.
-- **Remove:** delete the link and repeat.
-- **Example:** `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check this way and always restores the frozen configuration.
+The frozen box is `deploy/phastform/engine.yaml` and the units in `deploy/phastform/systemd/`. `deploy/phastform/variant.sh use NAME|frozen [FLAG...]` makes the box run exactly one variant plus engine flags, restarting only what changes; `variant.sh use frozen` restores the frozen box. The variants, the flags the E2 arms use and how each was checked are in [`deploy/phastform/variants/README.md`](../deploy/phastform/variants/README.md):
+- **Flags** go on the engine's command line through `LH_ENGINE_FLAGS`, set by a generated drop-in (`variant-flags.conf`); vLLM takes the command line over `engine.yaml`.
+- **`pr54530`**: vLLM #54530 ported to 0.32.0, generated at each start by `build.py` and loaded with `--scheduler-cls`.
+- **`sglang`**: SGLang 0.5.22 on the engine's port. Build its environment once with `bash ~/leaseholder/src/deploy/phastform/variants/sglang/install.sh`. Its unit counts as started only after one sampled request, because the first one compiles FlashInfer's kernels for minutes.
+- **`mps`**: the three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
 
-A variant that spans several units lives in `deploy/phastform/variants/<name>/` and is switched as a whole: `deploy/phastform/variant.sh on mps` links its drop-ins and restarts the box, and `variant.sh off mps` restores the frozen configuration. `mps` runs all three servers as clients of one CUDA MPS daemon (`lh-mps.service`); the frozen box uses time-slicing ([BENCHMARKS.md](../docs/BENCHMARKS.md#voice-on-the-shared-gpu)).
+`systemctl --user cat lh-engine` shows what the box runs. `variant.sh on|off NAME` adds or removes a single variant, for work outside E2. `python/leaseholder_vllm/tests/live/run.sh` runs the engine plugins check with its own drop-in and always restores the frozen configuration.
+
+## E2 points
+
+An E2 point is one arm file (`benchmarks/e2/arms/`); `lh-bench e2 run ARM --out DIR` measures it on cyan, and `benchmarks/e2/campaign.sh` runs a campaign file from a workstation, switching the engine before each point ([`benchmarks/e2/README.md`](../benchmarks/e2/README.md)). What a point changes on cyan, and how to undo it:
+- **The gateway.** An arm with a `[gateway]` table runs the gateway from `~/.config/leaseholder/gateway-e2.toml` (`gateway.toml` with the table merged in) through the `e2-gateway` drop-in.
+- **The worker.** `preemptive_generation = false` links the `no-preemptive-generation` worker drop-in.
+- **SMG.** An arm with `router = "smg"` starts `lh-smg`, and every other arm stops it.
+- **Undo.** `~/leaseholder/venvs/bench/bin/lh-bench e2 reset` puts the gateway back on `gateway.toml`, preemptive generation on and SMG stopped. A campaign runs it at its end.
+
+One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.lh-bench-e2.lock` on cyan, and SIGINT to it stops AIPerf and the callers and marks the point failed.
 
 ## Checks before heavy work on a shared host
 
@@ -128,6 +142,11 @@ A variant that spans several units lives in `deploy/phastform/variants/<name>/` 
 | `lh-gateway` exits at start: "another process is accepting on this socket" | A second gateway serves `gateway.sock` | Stop the other process; a socket file left by a crash is replaced automatically |
 | Some voice turns wait about 3 s before the agent answers | LiveKit's end-of-turn model is waiting its maximum endpointing delay | Link the `vad-turns` worker variant |
 | A caller run fails with "the agent never listened" | The worker is not registered ("registered worker" missing from its log), or LiveKit was restarted under it | `journalctl --user -u lh-voice-worker -n 50`; `systemctl --user restart lh-voice-worker` |
+| `lh-bench e2 run` fails at its engine check | The GPU node runs another variant or other flags than the arm names | `variant.sh use` with what `lh-bench e2 engine ARM` prints; a campaign does this itself |
+| `lh-bench e2 run`: "another lh-bench e2 run or reset holds" the lock | A point is still running, or one was interrupted | The pid is in `~/leaseholder/runs/.lh-bench-e2.lock`; stop it with SIGINT, or wait |
+| The gateway does not start for a point, and `run.json` quotes its log | The arm's `[gateway]` table sets a key this gateway build does not know | Deploy a gateway build that has it, or fix the arm; `lh-bench e2 reset` restores `gateway.toml` |
+| The gateway answers 429 `queue_full` or 503 `queue_timeout` | An `[admission]` policy's queue is full or its wait ran out | Expected under the E2 policies, and counted in `lh_gateway_admission_refused_total` |
+| The engine's `/server_info` answers 500 | vLLM collects its environment with `uv pip list` and cannot find uv | The unit's `PATH` must include `~/.local/bin` and `VIRTUAL_ENV` must name the engine venv (as `lh-engine.service` does) |
 
 ## Pausing
 

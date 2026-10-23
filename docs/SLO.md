@@ -22,7 +22,7 @@ The voice targets are calibrated against voice alone on the frozen box (W1, 2026
 | Resume TTFT | Interactive, by source tier (GPU, CPU, recompute) | Warm p95 ≤ 250 ms at ≤ 16k tokens |
 | Harvested background goodput | Background agent tokens/s while the voice SLO holds | Reported; the x-axis of the E2 frontier |
 | Cache-contract honor rate | Hits inside a `cache_control` TTL (renewed on each use) among requests that should hit, outside the listed exceptions (node failure, model or config change, prefix mismatch) | Reported, with every miss counted; providers promise billing eligibility, not residency |
-| Control-plane overhead | Latency `lh-gateway` adds per request: from the end of the request body to the upstream write (`lh_gateway_overhead_seconds`). The client's upload is excluded, because a direct call waits for it too. Also the latency added per streamed chunk | p99 ≤ 2 ms per request (W1 in place on cyan, with the deployed keep-alives: p99 0.44 ms for voice alone, 0.58 ms beside the agent replay, [BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
+| Control-plane overhead | Latency `lh-gateway` adds per request: from the end of the request body to the upstream write (`lh_gateway_overhead_seconds`), including an admission policy's decision but not the wait it imposes. The client's upload is excluded, because a direct call waits for it too. Also the latency added per streamed chunk | p99 ≤ 2 ms per request (W1 in place on cyan, with the deployed keep-alives: p99 0.44 ms for voice alone, 0.58 ms beside the agent replay, [BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)) |
 
 Synthetic requests (prefetch warm-ups, marked `X-LH-Synthetic`) are excluded from every indicator.
 
