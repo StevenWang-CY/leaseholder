@@ -123,7 +123,7 @@ Checked in the v0.32.0 source:
 - **Steps are budgeted by measured time.** Each decode CUDA-graph size is timed at startup and the curve is cached (`model_runner.py:561-631`, `decode_perf_cache.py`). The speculative-verification scheduler picks the step size with the most expected accepted tokens per millisecond (`mtp_varlen.hpp:228-258`).
 - **Relation.** Not a baseline: it serves one model on many GPUs and has no tiers. Leaseholder takes three mechanisms and makes them class-aware:
   - the critical-window throttle budgets background prefill in predicted time;
-  - the make-room patch preempts the lower-priority request that holds the most blocks;
+  - the make-room patch preempts the longest lower-priority request, the one holding the most KV;
   - a KV reserve for the realtime class is the class-aware form of the 90% watermark.
 
   DeepInfer frees a preempted request's blocks only after their copy completes. vLLM 0.32's stock preemption path already does this, and the patch reuses that path.

@@ -83,6 +83,7 @@ def scheduler(
     max_num_batched_tokens: int = 512,
     long_prefill_token_threshold: int = 0,
     max_model_len: int = 24 * BLOCK,
+    watermark: float = 0.0,
 ):
     """A scheduler over a KV pool of ``num_blocks`` blocks of 16 tokens (one of them vLLM's null block)."""
     model_config = ModelConfig(
@@ -95,7 +96,7 @@ def scheduler(
         long_prefill_token_threshold=long_prefill_token_threshold,
         enable_chunked_prefill=True,
         is_encoder_decoder=False,
-        watermark=0.0,
+        watermark=watermark,
         policy=policy,
     )
     cache_config = CacheConfig(block_size=BLOCK, cache_dtype="auto", enable_prefix_caching=False)
@@ -246,9 +247,8 @@ def test_the_per_step_cap(module, model, cap, victims):
     assert ("voice" in scheduled(out)) == bool(victims)
 
 
-def test_victim_choice_most_blocks_then_latest_arrival(module, model):
-    """Among runners of the same priority, the one giving back the most blocks goes first; between equals, the latest
-    arrival."""
+def test_victim_choice_longest_then_latest_arrival(module, model):
+    """Among runners of the same priority, the longest goes first; between equals, the latest arrival."""
     sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2})
     run(
         sched,
@@ -282,6 +282,53 @@ def test_an_inflight_prefill_gives_back_what_it_still_reserves(module, model):
 
     sched.add_request(request("voice", 7 * BLOCK, priority=0, arrival=3))
     assert step(sched).preempted_req_ids == {"prefill"}
+
+
+def test_a_victim_is_not_resumed_in_the_step_that_preempted_it(module, model):
+    """The room counts the 8 blocks an in-flight prefill still needs: the priority-0 request of 4 blocks, with 10 free,
+    preempts the decode of 3. The prefill takes 4 blocks in the running loop and the request 4, so 5 stay free, enough
+    to resume the decode in the waiting loop; it waits for the next step."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        33,
+        {"max_preemptions_per_step": 2},
+        long_prefill_token_threshold=64,
+    )
+    run(
+        sched,
+        request("rt", blocks(15), priority=0, arrival=0),
+        request("bg", blocks(3), priority=2, arrival=1),
+    )
+    prefill = request("prefill", 12 * BLOCK, priority=0, arrival=2)
+    sched.add_request(prefill)
+    step(sched)
+    assert prefill.is_prefill_chunk and free_blocks(sched) == 10
+
+    sched.add_request(request("voice", blocks(4), priority=0, arrival=3))
+    out = step(sched)
+    assert out.preempted_req_ids == {"bg"}
+    assert scheduled(out) == {"rt", "prefill", "voice"}
+    assert free_blocks(sched) == 5
+
+
+def test_the_room_includes_the_watermark(module, model):
+    """With a watermark of 2 blocks, the priority-0 request of 7 blocks needs 9 free: with 2 free, preempting the
+    runner of 6 is not enough, so the runner of 2 goes too, and the request runs."""
+    sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2}, watermark=0.07)
+    assert sched.kv_cache_manager.watermark_blocks == 2
+    run(
+        sched,
+        request("rt", blocks(22), priority=0, arrival=0),
+        request("bg", blocks(6), priority=2, arrival=1),
+        request("bg2", blocks(2), priority=2, arrival=2),
+    )
+    assert free_blocks(sched) == 2
+
+    sched.add_request(request("voice", 100, priority=0, arrival=3))
+    out = step(sched)
+    assert out.preempted_req_ids == {"bg", "bg2"}
+    assert "voice" in scheduled(out)
 
 
 def test_no_preemption_for_an_equal_priority(module, model):

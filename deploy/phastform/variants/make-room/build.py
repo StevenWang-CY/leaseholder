@@ -12,11 +12,12 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
 
 1. ``max_preemptions_per_step``: before the running requests are scheduled in a step, the waiting request of the
    highest priority that lacks free KV blocks for its whole remaining sequence preempts running requests of a
-   strictly lower priority, the lowest priority first and, within it, the one giving back the most blocks, through
-   the stock ``_preempt_request``. As few as needed, at most this many, and none if that many would not make it fit.
-   Preempting before the running loop means no victim is un-scheduled (vLLM #59907). Blocks whose free is deferred
-   (async scheduling with a KV-consumer connector, as on the frozen box) count as free: they, like the victims', are
-   free by the next step, when the request is admitted.
+   strictly lower priority, the lowest priority first and, within it, the longest (the most KV, unless shared),
+   through the stock ``_preempt_request``. As few as needed, at most this many, and none if that many would not make
+   it fit. Preempting before the running loop means no victim is un-scheduled (vLLM #59907), and a victim is not
+   resumed in the step that preempted it. Blocks whose free is deferred (async scheduling with a KV-consumer
+   connector, as on the frozen box) count as free: they, like the victims', are free by the next step, when the
+   request is admitted; blocks a connector's pending transfers will free are waited for, as the running loop waits.
 2. ``budget_cap``: a running prefill of a lower priority than that waiting request leaves the waiting request's first
    chunk in the step's token budget. Decodes are never cut.
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
@@ -68,9 +69,16 @@ SWITCHES = """        # Make room for waiting requests of a higher priority: pre
 MAKE_ROOM = """        # Make room for the waiting request of the highest priority before the
         # running requests are scheduled, so that no victim is un-scheduled.
         waiting_req = self._make_room_waiting_req()
+        make_room_victims: set[Request] = set()
         if waiting_req is not None and self.max_preemptions_per_step:
-            self._make_room(waiting_req, scheduled_timestamp)
+            make_room_victims = self._make_room(waiting_req, scheduled_timestamp)
 
+"""
+
+NOT_RESUMED = """                if request in make_room_victims:
+                    # Preempted in this step to make room: resuming it now would
+                    # take back the blocks its preemption has just freed.
+                    break
 """
 
 BUDGET_CAP = """            if (
@@ -120,48 +128,52 @@ HELPERS = '''
         """Free blocks `request` lacks to be admitted with its whole remaining
         sequence beside what in-flight prefills still need, as async KV loads
         are admitted; with a positive priority value, the reserve too."""
-        num_blocks = (
-            self._inflight_prefill_reserved_blocks()
-            + self.kv_cache_manager.watermark_blocks
-        )
+        num_blocks = self._inflight_prefill_reserved_blocks()
         if request not in self._inflight_prefills:
             num_blocks += self._request_remaining_blocks(request)
+        if self.running:
+            # As allocate_slots applies the watermark.
+            num_blocks += self.kv_cache_manager.watermark_blocks
         if request.priority > 0:
             num_blocks += self.reserve_blocks
         return num_blocks - self.kv_cache_manager.block_pool.get_num_free_blocks()
 
-    def _make_room(self, request: Request, timestamp: float) -> None:
+    def _make_room(self, request: Request, timestamp: float) -> set[Request]:
         """Preempt running requests of a lower priority than `request` until it
-        is no block short: the lowest priority first and, within it, the one
-        giving back the most blocks, so that as few as possible are preempted;
-        none if `max_preemptions_per_step` of them would not do. Deferred frees
-        count as free: like the victims', they land by the next step."""
+        is no block short, and return them: the lowest priority first and,
+        within it, the longest (the most KV, unless shared), so that as few as
+        possible are preempted; none if `max_preemptions_per_step` of them would
+        not do. Deferred frees count as free: like the victims', they land by
+        the next step."""
+        if self.connector is not None and self.connector.has_pending_block_frees():
+            # Pending transfers free blocks instead, as the running loop waits.
+            return set()
         candidates = [req for req in self.running if req.priority > request.priority]
         if not candidates:
-            return
+            return set()
         num_short = self._num_blocks_short(request) - self._num_freeable_blocks(
             *(blocks for _, blocks in self.deferred_frees)
         )
         if num_short <= 0:
-            return
-        num_released = {req: self._num_released_blocks(req) for req in candidates}
+            return set()
         candidates.sort(
-            key=lambda req: (req.priority, num_released[req], req.arrival_time),
+            key=lambda req: (req.priority, req.num_tokens, req.arrival_time),
             reverse=True,
         )
         victims: list[Request] = []
         for victim in candidates[: self.max_preemptions_per_step]:
             victims.append(victim)
-            num_short -= num_released[victim]
+            num_short -= self._num_released_blocks(victim)
             if num_short <= 0:
                 break
         if num_short > 0:
-            return
+            return set()
         for victim in victims:
             self.running.remove(victim)
             self._preempt_request(
                 victim, timestamp, drop_stale_output=self.requires_kv_delivery
             )
+        return set(victims)
 
     def _num_released_blocks(self, request: Request) -> int:
         """Blocks preempting `request` gives back: those it holds alone, and
@@ -172,12 +184,12 @@ HELPERS = '''
             num_blocks += self._request_remaining_blocks(request)
         return num_blocks
 
-    @staticmethod
-    def _num_freeable_blocks(*blocks: list[KVCacheBlock]) -> int:
-        """Blocks that go back to the free pool once released; a shared block
-        stays with its other holders."""
+    def _num_freeable_blocks(self, *blocks: list[KVCacheBlock]) -> int:
+        """Blocks that go back to the free pool once released: not shared with
+        another holder, not the null block and not of another pool."""
+        block_pool = self.kv_cache_manager.block_pool
         return sum(
-            block.ref_cnt == 1 and not block.is_null
+            block.ref_cnt == 1 and block.pool is block_pool and not block.is_null
             for group in blocks
             for block in group
         )
@@ -201,6 +213,11 @@ SCHEDULER_EDITS = [
         SWITCHES,
     ),
     before("        # First, schedule the RUNNING requests.\n", MAKE_ROOM),
+    after(
+        "                request = request_queue.peek_request()\n"
+        "                request_id = request.request_id\n",
+        NOT_RESUMED,
+    ),
     after(
         "            num_new_tokens = min(\n"
         "                num_new_tokens, token_budget, input_budget - draft_slots\n"
