@@ -1,0 +1,35 @@
+# E2 discriminating scenario, W4 repeat round 2 of 4 (round 0 is w2c and a9): the headline configurations and arm 9's ablations,
+# grouped by engine, the groups' order rotated from round to round.
+#   benchmarks/e2/campaign.sh benchmarks/e2/r2.campaign
+
+# engine frozen --max-num-batched-tokens 1024 --long-prefill-token-threshold 0
+arms/disc-a4-b1024-t0-s24.toml
+
+# engine sglang --enable-hierarchical-cache --hicache-ratio 4 --hicache-write-policy write_through
+arms/disc-a7b-sglang-hicache-s24.toml
+
+# engine make-room
+arms/disc-a9-s24.toml
+arms/disc-a9-budget0-s24.toml
+arms/disc-a9-budget500-s24.toml
+arms/disc-a9-no-throttle-s24.toml
+arms/disc-a9-no-headroom-s24.toml
+arms/disc-a9-no-degrade-s24.toml
+arms/disc-a9-trigger-request-s24.toml
+arms/disc-a9-no-events-s24.toml
+arms/disc-a9-engine-only-s24.toml
+
+# engine make-room --additional-config.make_room.max_preemptions_per_step 0
+arms/disc-a9-no-kv-makeroom-s24.toml
+
+# engine make-room --additional-config.make_room.budget_cap false
+arms/disc-a9-no-budget-cap-s24.toml
+
+# engine make-room --additional-config.make_room.reserve_tokens 0
+arms/disc-a9-no-reserve-s24.toml
+
+# engine frozen
+arms/disc-frozen-s24.toml
+arms/disc-a6-reserve2048-s24.toml
+arms/disc-a8c-resubmit-s24.toml
+arms/disc-a9-gateway-only-s24.toml

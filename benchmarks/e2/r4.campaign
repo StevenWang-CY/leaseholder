@@ -1,0 +1,17 @@
+# E2 discriminating scenario, W4 repeat round 4 of 4 (round 0 is w2c and a9): the headline configurations,
+# grouped by engine, the groups' order rotated from round to round.
+#   benchmarks/e2/campaign.sh benchmarks/e2/r4.campaign
+
+# engine make-room
+arms/disc-a9-s24.toml
+
+# engine frozen
+arms/disc-frozen-s24.toml
+arms/disc-a6-reserve2048-s24.toml
+arms/disc-a8c-resubmit-s24.toml
+
+# engine frozen --max-num-batched-tokens 1024 --long-prefill-token-threshold 0
+arms/disc-a4-b1024-t0-s24.toml
+
+# engine sglang --enable-hierarchical-cache --hicache-ratio 4 --hicache-write-policy write_through
+arms/disc-a7b-sglang-hicache-s24.toml
