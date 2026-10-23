@@ -318,7 +318,7 @@ pub fn fitted_token_scale(
     max_scale: u32,
 ) -> Option<u32> {
     // vLLM's null block holds no KV.
-    let usable = gpu.pool_tokens(geometry) / geometry.block_tokens - 1;
+    let usable = (gpu.pool_tokens(geometry) / geometry.block_tokens).saturating_sub(1);
     let fits = |k: u32| {
         let tokens = u64::from(k) * longest;
         tokens <= MODEL_CONTEXT
@@ -818,6 +818,10 @@ mod tests {
         // The box's 2,274 usable blocks hold 36,384 tokens: a request of 36,385 (36,384 of KV) fits.
         assert_eq!(fitted_token_scale(&RTX_5060_TI, &QWEN, 36_385, 32), Some(1));
         assert_eq!(fitted_token_scale(&RTX_5060_TI, &QWEN, 36_386, 32), None);
+        // A card with no room beside the box's footprint has no pool at all.
+        let small = the_box_with(|g| g.memory_gib = 8);
+        assert_eq!(small.pool_tokens(&QWEN), 0);
+        assert_eq!(fitted_token_scale(&small, &QWEN, 16, 32), None);
     }
 
     #[test]
