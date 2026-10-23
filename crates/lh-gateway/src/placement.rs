@@ -14,10 +14,13 @@
 //!   placement.
 //! - **Minted sessions.** A request that names no session is placed on its own and not remembered: no later
 //!   request can name the session the gateway minted for it.
+//! - **No waiting.** A request of a placed session reads the placements under a shared lock and counts itself on
+//!   its node with atomics, and its end takes no lock: requests do not wait on each other here. Placing a
+//!   session, the events and the expiry write the placements.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -130,7 +133,8 @@ impl Reason {
 pub(crate) struct Placement {
     policy: Policy,
     probe_interval: Duration,
-    table: Mutex<Table>,
+    /// The placements: a request of a placed session reads them, placing a session writes them.
+    table: RwLock<Table>,
     metrics: Arc<Metrics>,
 }
 
@@ -140,7 +144,7 @@ impl Placement {
         let placement = Arc::new(Self {
             policy: config.policy,
             probe_interval: config.probe_interval,
-            table: Mutex::new(Table::new(nodes.iter().map(|node| &*node.metrics))),
+            table: RwLock::new(Table::new(nodes.iter().map(|node| &*node.metrics))),
             metrics,
         });
         tokio::spawn(expire(Arc::downgrade(&placement), config.idle));
@@ -159,40 +163,42 @@ impl Placement {
     /// node the policy chooses; `None` when no ready node takes it. A request that does not name its session
     /// (`named` false: the gateway minted it) is placed, but the session is not remembered.
     pub fn request(
-        self: &Arc<Self>,
+        &self,
         nodes: &[Node],
         session: &SessionId,
         class: SloClass,
         named: bool,
     ) -> Option<InFlight> {
-        let mut table = self.lock();
-        let node = match table.find(session, |node| nodes[node].ready()) {
-            Found::On(node) => node,
+        let ready = |node: usize| nodes[node].ready();
+        {
+            let table = self.read();
+            if let Found::On(placed) = table.find(session, ready) {
+                return Some(table.start(placed.node, Some(placed)));
+            }
+        }
+        let mut table = self.write();
+        let (node, placed) = match table.find(session, ready) {
+            // Placed by another of its requests meanwhile.
+            Found::On(placed) => (placed.node, Some(placed)),
             found => {
                 let node = self.choose(nodes, &table, class)?;
                 self.metrics.placed(self.policy, found.reason());
-                if named {
-                    table.place(session, class, node, false, Instant::now());
-                }
-                node
+                let placed = named
+                    .then(|| table.place(session, class, node, false, Instant::now()))
+                    .flatten();
+                (node, placed)
             }
         };
-        table.start(session, node);
-        drop(table);
-        Some(InFlight {
-            placement: Arc::clone(self),
-            node,
-            session: named.then(|| session.clone()),
-        })
+        Some(table.start(node, placed))
     }
 
     /// `POST /v1/sessions`: the node of `session`, placed now as `class` asks if it has none; `None` when no ready
     /// node takes it. A session placed this way counts as a request in flight on its node until its first
     /// request, so that calls which start together are not all placed on the same node.
     pub fn session(&self, nodes: &[Node], session: &SessionId, class: SloClass) -> Option<usize> {
-        let mut table = self.lock();
+        let mut table = self.write();
         match table.find(session, |node| nodes[node].ready()) {
-            Found::On(node) => Some(node),
+            Found::On(placed) => Some(placed.node),
             found => {
                 let node = self.choose(nodes, &table, class)?;
                 self.metrics.placed(self.policy, found.reason());
@@ -206,7 +212,7 @@ impl Placement {
     /// The events of a session without a node reach none, and `session_closed` ends a session's placement.
     pub fn events(&self, nodes: &[Node], events: &[LifecycleEvent]) {
         let nodes_of: Vec<Option<usize>> = {
-            let mut table = self.lock();
+            let mut table = self.write();
             events
                 .iter()
                 .map(|event| {
@@ -240,11 +246,12 @@ impl Placement {
         let snapshot: Vec<policy::Node> = nodes
             .iter()
             .zip(&table.nodes)
-            .map(|(node, held)| {
+            .zip(table.in_flight.iter())
+            .map(|((node, held), in_flight)| {
                 let mut snapshot = policy::Node {
                     ready: node.ready(),
                     serves: node.serves,
-                    in_flight: held.in_flight,
+                    in_flight: in_flight.load(Ordering::Relaxed),
                     realtime_sessions: held.sessions[SloClass::Realtime as usize],
                     ..policy::Node::default()
                 };
@@ -260,18 +267,24 @@ impl Placement {
         self.policy.place(class, &snapshot)
     }
 
-    fn lock(&self) -> MutexGuard<'_, Table> {
-        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    fn read(&self) -> RwLockReadGuard<'_, Table> {
+        self.table.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Table> {
+        self.table.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// A request's place on its node, from its placement to its end; dropping it ends the request there.
+/// A request's place on its node, from its placement to its end; dropping it ends the request there, without the
+/// table's lock.
 #[derive(Debug)]
 pub(crate) struct InFlight {
-    placement: Arc<Placement>,
+    /// The table's count of each node's requests in flight.
+    in_flight: Arc<[AtomicU32]>,
     node: usize,
     /// The request's session, when the table remembers it.
-    session: Option<SessionId>,
+    session: Option<Arc<Session>>,
 }
 
 impl InFlight {
@@ -283,9 +296,22 @@ impl InFlight {
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        let mut table = self.placement.lock();
-        table.end(self.session.as_ref(), self.node, Instant::now());
+        end(
+            &self.in_flight,
+            self.session.as_deref(),
+            self.node,
+            Instant::now(),
+        );
     }
+}
+
+/// Ends a request on `node`, of `session` when the table remembers it, at `now`. A session placed again meanwhile
+/// keeps its new placement, which the request did not count on.
+fn end(in_flight: &[AtomicU32], session: Option<&Session>, node: usize, now: Instant) {
+    if let Some(placed) = session {
+        placed.ended(now);
+    }
+    in_flight[node].fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Ends the placements of the sessions idle for `idle`, until the placement is gone. Every session idles out
@@ -298,7 +324,7 @@ async fn expire(placement: Weak<Placement>, idle: Duration) {
             return;
         };
         let now = Instant::now();
-        let soonest = placement.lock().expire(now, idle);
+        let soonest = placement.write().expire(now, idle);
         next = soonest.unwrap_or(now + idle);
     }
 }
@@ -394,40 +420,65 @@ pub(crate) async fn post(State(app): State<App>, request: Request) -> Response {
 /// The sessions placed on the nodes, and what each node holds.
 #[derive(Debug)]
 struct Table {
-    sessions: HashMap<SessionId, Session>,
-    /// What each node holds, in the order of the nodes.
+    sessions: HashMap<SessionId, Arc<Session>>,
+    /// Each node's requests in flight, and the sessions placed on it by `POST /v1/sessions` that have sent none
+    /// yet, in the order of the nodes. Requests count themselves here under the table's shared lock, and end
+    /// without it.
+    in_flight: Arc<[AtomicU32]>,
+    /// The sessions placed on each node, in the order of the nodes.
     nodes: Vec<Held>,
 }
 
-/// What a node holds.
+/// The sessions placed on a node.
 #[derive(Debug)]
 struct Held {
-    /// Its requests in flight, and the sessions placed on it by `POST /v1/sessions` that have sent none yet.
-    in_flight: u32,
-    /// The sessions placed on it by class, strictest first, and their gauges.
+    /// By class, strictest first, and their gauges.
     sessions: [u32; 3],
     gauges: [Gauge; 3],
 }
 
-/// A session's placement.
+/// A session's placement. Its requests hold it until they end, so a request of a session placed again meanwhile
+/// ends on the placement it started on.
 #[derive(Debug)]
 struct Session {
     node: usize,
     /// The class it was placed with.
     class: SloClass,
+    /// When it was placed.
+    placed: Instant,
     /// Its requests in flight.
-    requests: u32,
+    requests: AtomicU32,
     /// Placed by `POST /v1/sessions` and no request since: it counts as one in flight on its node.
-    pending: bool,
-    /// When its last request ended, or when it was placed: the start of its idle time.
-    since: Instant,
+    pending: AtomicBool,
+    /// When its last request ended, in nanoseconds after it was placed (0 before any did).
+    idle_from: AtomicU64,
+}
+
+impl Session {
+    /// One of its requests ended at `now`.
+    fn ended(&self, now: Instant) {
+        let after = u64::try_from(now.saturating_duration_since(self.placed).as_nanos());
+        self.idle_from
+            .fetch_max(after.unwrap_or(u64::MAX), Ordering::Release);
+        self.requests.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Whether it has a request in flight.
+    fn busy(&self) -> bool {
+        self.requests.load(Ordering::Acquire) > 0
+    }
+
+    /// When its idle time began: when its last request ended, or when it was placed.
+    fn since(&self) -> Instant {
+        self.placed + Duration::from_nanos(self.idle_from.load(Ordering::Acquire))
+    }
 }
 
 /// What became of a session's placement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum Found {
     /// It holds: the node is ready.
-    On(usize),
+    On(Arc<Session>),
     /// There is none: a new session, or one that idled out.
     None,
     /// Its node failed readiness.
@@ -435,7 +486,7 @@ enum Found {
 }
 
 impl Found {
-    fn reason(self) -> Reason {
+    fn reason(&self) -> Reason {
         match self {
             Self::Lost => Reason::NodeDown,
             Self::On(_) | Self::None => Reason::New,
@@ -447,27 +498,28 @@ impl Table {
     /// An empty table for the nodes whose metric handles are `nodes`, in order.
     fn new<'a>(nodes: impl IntoIterator<Item = &'a Metrics>) -> Self {
         let held = |metrics: &Metrics| Held {
-            in_flight: 0,
             sessions: [0; 3],
             gauges: SloClass::ALL.map(|class| metrics.sessions(class)),
         };
+        let nodes: Vec<Held> = nodes.into_iter().map(held).collect();
         Self {
             sessions: HashMap::new(),
-            nodes: nodes.into_iter().map(held).collect(),
+            in_flight: nodes.iter().map(|_| AtomicU32::new(0)).collect(),
+            nodes,
         }
     }
 
     /// The placement of `session`, if it holds on a node that is `ready`.
     fn find(&self, session: &SessionId, ready: impl Fn(usize) -> bool) -> Found {
         match self.sessions.get(session) {
-            Some(placed) if ready(placed.node) => Found::On(placed.node),
+            Some(placed) if ready(placed.node) => Found::On(Arc::clone(placed)),
             Some(_) => Found::Lost,
             None => Found::None,
         }
     }
 
     /// Places `session` on `node`, replacing any placement it had: by a request, or by `POST /v1/sessions`
-    /// (`pending`). A full table does not remember a new session.
+    /// (`pending`). A full table does not remember a new session: `None`.
     fn place(
         &mut self,
         session: &SessionId,
@@ -475,53 +527,48 @@ impl Table {
         node: usize,
         pending: bool,
         now: Instant,
-    ) {
+    ) -> Option<Arc<Session>> {
         if let Some(old) = self.sessions.remove(session) {
             self.release(&old);
         } else if self.sessions.len() >= SESSIONS {
-            return;
+            return None;
         }
-        let placed = Session {
+        let placed = Arc::new(Session {
             node,
             class,
-            requests: 0,
-            pending,
-            since: now,
-        };
-        let held = &mut self.nodes[node];
-        held.in_flight += u32::from(pending);
-        held.count(class, 1);
-        self.sessions.insert(session.clone(), placed);
+            placed: now,
+            requests: AtomicU32::new(0),
+            pending: AtomicBool::new(pending),
+            idle_from: AtomicU64::new(0),
+        });
+        if pending {
+            self.in_flight[node].fetch_add(1, Ordering::Relaxed);
+        }
+        self.nodes[node].count(class, 1);
+        self.sessions.insert(session.clone(), Arc::clone(&placed));
+        Some(placed)
     }
 
-    /// A request of `session` starts on `node`. The first request of a session placed by `POST /v1/sessions` takes
-    /// over the place it held.
-    fn start(&mut self, session: &SessionId, node: usize) {
-        let held = &mut self.nodes[node];
-        match self.sessions.get_mut(session).filter(|s| s.node == node) {
-            Some(placed) => {
-                placed.requests += 1;
-                if !std::mem::take(&mut placed.pending) {
-                    held.in_flight += 1;
-                }
-            }
-            None => held.in_flight += 1,
+    /// A request starts on `node`, of `session` when the table remembers it: its place there until it ends. The
+    /// table's shared lock is enough.
+    fn start(&self, node: usize, session: Option<Arc<Session>>) -> InFlight {
+        self.count(session.as_deref(), node);
+        InFlight {
+            in_flight: Arc::clone(&self.in_flight),
+            node,
+            session,
         }
     }
 
-    /// A request of `session` (`None` when not remembered) ends on `node`. A session placed again meanwhile keeps
-    /// its new placement.
-    fn end(&mut self, session: Option<&SessionId>, node: usize, now: Instant) {
-        let held = &mut self.nodes[node];
-        held.in_flight = held.in_flight.saturating_sub(1);
-        let placed = session
-            .and_then(|session| self.sessions.get_mut(session))
-            .filter(|s| s.node == node);
-        if let Some(placed) = placed {
-            placed.requests = placed.requests.saturating_sub(1);
-            if placed.requests == 0 {
-                placed.since = now;
-            }
+    /// Counts a request that starts on `node`, of `session` when the table remembers it. The first request of a
+    /// session placed by `POST /v1/sessions` takes over the place the session held.
+    fn count(&self, session: Option<&Session>, node: usize) {
+        let took_over = session.is_some_and(|placed| {
+            placed.requests.fetch_add(1, Ordering::AcqRel);
+            placed.pending.swap(false, Ordering::AcqRel)
+        });
+        if !took_over {
+            self.in_flight[node].fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -535,7 +582,7 @@ impl Table {
     /// Ends the placements of the sessions that went `idle` without a request, and returns when the next one will
     /// idle out.
     fn expire(&mut self, now: Instant, idle: Duration) -> Option<Instant> {
-        let idled = |placed: &Session| placed.requests == 0 && now >= placed.since + idle;
+        let idled = |placed: &Session| !placed.busy() && now >= placed.since() + idle;
         let ended: Vec<SessionId> = self
             .sessions
             .iter()
@@ -547,18 +594,17 @@ impl Table {
         }
         self.sessions
             .values()
-            .filter(|placed| placed.requests == 0)
-            .map(|placed| placed.since + idle)
+            .filter(|placed| !placed.busy())
+            .map(|placed| placed.since() + idle)
             .min()
     }
 
     /// Frees what a placement that ended held on its node.
     fn release(&mut self, placed: &Session) {
-        let held = &mut self.nodes[placed.node];
-        if placed.pending {
-            held.in_flight = held.in_flight.saturating_sub(1);
+        if placed.pending.swap(false, Ordering::AcqRel) {
+            self.in_flight[placed.node].fetch_sub(1, Ordering::Relaxed);
         }
-        held.count(placed.class, -1);
+        self.nodes[placed.node].count(placed.class, -1);
     }
 }
 
@@ -590,48 +636,55 @@ mod tests {
     /// What the nodes hold: requests in flight, and sessions of each class.
     fn held(table: &Table) -> Vec<(u32, [u32; 3])> {
         table
-            .nodes
+            .in_flight
             .iter()
-            .map(|held| (held.in_flight, held.sessions))
+            .zip(&table.nodes)
+            .map(|(in_flight, held)| (in_flight.load(Ordering::Relaxed), held.sessions))
             .collect()
+    }
+
+    /// The node `session` holds on, all nodes ready.
+    fn node_of(table: &Table, session: &SessionId) -> Option<usize> {
+        match table.find(session, |_| true) {
+            Found::On(placed) => Some(placed.node),
+            Found::None | Found::Lost => None,
+        }
     }
 
     #[test]
     fn a_session_keeps_its_node_while_the_node_is_ready() {
         let (mut t, t0) = (table(), Instant::now());
         let s = session("agent-1");
-        assert_eq!(t.find(&s, |_| true), Found::None);
-        t.place(&s, Background, 1, false, t0);
-        t.start(&s, 1);
-        t.start(&s, 1);
+        assert!(matches!(t.find(&s, |_| true), Found::None));
+        let placed = t.place(&s, Background, 1, false, t0).unwrap();
+        t.count(Some(&placed), 1);
+        t.count(Some(&placed), 1);
         assert_eq!(held(&t), [(0, [0; 3]), (2, [0, 0, 1])]);
-        assert_eq!(t.find(&s, |_| true), Found::On(1));
-        t.end(Some(&s), 1, t0);
-        t.end(Some(&s), 1, t0);
+        assert_eq!(node_of(&t, &s), Some(1));
+        end(&t.in_flight, Some(&placed), 1, t0);
+        end(&t.in_flight, Some(&placed), 1, t0);
         assert_eq!(held(&t), [(0, [0; 3]), (0, [0, 0, 1])]);
         // Its node fails readiness: the placement is lost, and a new one replaces it on the other node.
-        assert_eq!(t.find(&s, |node| node == 0), Found::Lost);
-        assert_eq!(Found::Lost.reason(), Reason::NodeDown);
+        let lost = t.find(&s, |node| node == 0);
+        assert!(matches!(lost, Found::Lost));
+        assert_eq!(lost.reason(), Reason::NodeDown);
         t.place(&s, Background, 0, false, t0);
         assert_eq!(held(&t), [(0, [0, 0, 1]), (0, [0; 3])]);
-        assert_eq!(t.find(&s, |_| true), Found::On(0));
+        assert_eq!(node_of(&t, &s), Some(0));
     }
 
     #[test]
     fn a_request_on_the_node_a_session_left_does_not_touch_its_new_placement() {
         let (mut t, t0) = (table(), Instant::now());
         let s = session("agent-1");
-        t.place(&s, Background, 0, false, t0);
-        t.start(&s, 0);
+        let on_zero = t.place(&s, Background, 0, false, t0).unwrap();
+        t.count(Some(&on_zero), 0);
         // Node 0 failed while the request ran; the session's next request went to node 1.
-        t.place(&s, Background, 1, false, t0);
-        t.start(&s, 1);
-        t.end(Some(&s), 0, t0 + Duration::from_secs(1));
+        let on_one = t.place(&s, Background, 1, false, t0).unwrap();
+        t.count(Some(&on_one), 1);
+        end(&t.in_flight, Some(&on_zero), 0, t0 + Duration::from_secs(1));
         assert_eq!(held(&t), [(0, [0; 3]), (1, [0, 0, 1])]);
-        assert_eq!(
-            t.sessions[&s].requests, 1,
-            "the request on node 1 still runs"
-        );
+        assert!(t.sessions[&s].busy(), "the request on node 1 still runs");
     }
 
     #[test]
@@ -640,18 +693,18 @@ mod tests {
         let idle = Duration::from_secs(300);
         let at = |s: u64| t0 + Duration::from_secs(s);
         let (busy, quiet) = (session("busy"), session("quiet"));
-        t.place(&busy, Background, 0, false, t0);
-        t.start(&busy, 0);
-        t.place(&quiet, Interactive, 1, false, t0);
-        t.start(&quiet, 1);
-        t.end(Some(&quiet), 1, at(10));
+        let running = t.place(&busy, Background, 0, false, t0).unwrap();
+        t.count(Some(&running), 0);
+        let done = t.place(&quiet, Interactive, 1, false, t0).unwrap();
+        t.count(Some(&done), 1);
+        end(&t.in_flight, Some(&done), 1, at(10));
         assert_eq!(t.expire(at(100), idle), Some(at(310)));
         // A request in flight keeps its session however long it runs.
         assert_eq!(t.expire(at(310), idle), None);
-        assert_eq!(t.find(&quiet, |_| true), Found::None);
-        assert_eq!(t.find(&busy, |_| true), Found::On(0));
+        assert_eq!(node_of(&t, &quiet), None);
+        assert_eq!(node_of(&t, &busy), Some(0));
         assert_eq!(held(&t), [(1, [0, 0, 1]), (0, [0; 3])]);
-        t.end(Some(&busy), 0, at(400));
+        end(&t.in_flight, Some(&running), 0, at(400));
         assert_eq!(t.expire(at(699), idle), Some(at(700)));
         assert_eq!(t.expire(at(700), idle), None);
         assert!(t.sessions.is_empty());
@@ -661,15 +714,15 @@ mod tests {
     fn a_session_placed_ahead_of_its_requests_holds_a_place_until_its_first_one() {
         let (mut t, t0) = (table(), Instant::now());
         let call = session("voice-RM_a1");
-        t.place(&call, Realtime, 0, true, t0);
+        let placed = t.place(&call, Realtime, 0, true, t0).unwrap();
         assert_eq!(held(&t), [(1, [1, 0, 0]), (0, [0; 3])]);
         // Its first request takes the place over, and its end frees it.
-        t.start(&call, 0);
+        t.count(Some(&placed), 0);
         assert_eq!(held(&t)[0], (1, [1, 0, 0]));
-        t.end(Some(&call), 0, t0);
-        t.start(&call, 0);
+        end(&t.in_flight, Some(&placed), 0, t0);
+        t.count(Some(&placed), 0);
         assert_eq!(held(&t)[0], (1, [1, 0, 0]));
-        t.end(Some(&call), 0, t0);
+        end(&t.in_flight, Some(&placed), 0, t0);
         assert_eq!(held(&t)[0], (0, [1, 0, 0]));
         // A call that never sends a request gives its place up as it idles out, or closes.
         let (silent, closed) = (session("voice-RM_b2"), session("voice-RM_c3"));
@@ -689,17 +742,66 @@ mod tests {
             t.place(&session(&format!("s-{n}")), Background, n % 2, false, t0);
         }
         let late = session("late");
-        t.place(&late, Background, 0, false, t0);
-        assert_eq!(t.find(&late, |_| true), Found::None);
+        assert!(t.place(&late, Background, 0, false, t0).is_none());
+        assert_eq!(node_of(&t, &late), None);
         // Its requests still count on their node.
-        t.start(&late, 0);
+        t.count(None, 0);
         assert_eq!(held(&t)[0], (1, [0, 0, SESSIONS as u32 / 2]));
-        t.end(None, 0, t0);
+        end(&t.in_flight, None, 0, t0);
         assert_eq!(held(&t)[0].0, 0);
         // A session it remembers is placed again in its place.
         let first = session("s-0");
         t.place(&first, Interactive, 1, false, t0);
-        assert_eq!(t.find(&first, |_| true), Found::On(1));
+        assert_eq!(node_of(&t, &first), Some(1));
         assert_eq!(t.sessions.len(), SESSIONS);
+    }
+
+    #[test]
+    fn requests_from_many_threads_leave_no_count_behind() {
+        let table = Arc::new(RwLock::new(table()));
+        let t0 = Instant::now();
+        let sessions: Vec<SessionId> = (0..8)
+            .map(|n| session(&format!("agent-{n}")))
+            .chain((0..8).map(|n| session(&format!("call-{n}"))))
+            .collect();
+        // Four threads send the sessions' requests as the gateway does: a placed session's under the shared lock,
+        // the others placed under the exclusive one.
+        let workers: Vec<_> = (0..4)
+            .map(|worker| {
+                let (table, sessions) = (Arc::clone(&table), sessions.clone());
+                std::thread::spawn(move || {
+                    for n in 0..5_000 {
+                        let s = &sessions[(worker + n) % sessions.len()];
+                        let placed = {
+                            let t = table.read().unwrap();
+                            match t.find(s, |_| true) {
+                                Found::On(placed) => Some(t.start(placed.node, Some(placed))),
+                                Found::None | Found::Lost => None,
+                            }
+                        };
+                        let request = placed.unwrap_or_else(|| {
+                            let mut t = table.write().unwrap();
+                            let placed = t.place(s, Background, n % 2, false, t0);
+                            t.start(n % 2, placed)
+                        });
+                        drop(request);
+                    }
+                })
+            })
+            .collect();
+        // Meanwhile the calls are placed again and again ahead of their requests, which take their places over,
+        // and placements idle for a millisecond end.
+        for n in 0..2_000 {
+            let mut t = table.write().unwrap();
+            t.place(&sessions[8 + n % 8], Realtime, n % 2, true, Instant::now());
+            t.expire(Instant::now(), Duration::from_millis(1));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let mut t = table.write().unwrap();
+        t.expire(Instant::now() + Duration::from_secs(1), Duration::ZERO);
+        assert!(t.sessions.is_empty());
+        assert_eq!(held(&t), [(0, [0; 3]), (0, [0; 3])]);
     }
 }
