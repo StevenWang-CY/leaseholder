@@ -11,9 +11,9 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 |---|---|
 | `leaseholder_voice.worker` | The voice agent (`lh-voice-worker start`): Silero VAD, LiveKit's local end-of-turn model, STT/LLM/TTS over the voice plane's sockets, LiveKit's default turn handling |
 | `leaseholder_voice.events` | `Lifecycle`: a session's LiveKit signals as lifecycle events, and a log line per turn with its stage times; `EventSender`: their delivery to `/v1/events` |
-| `leaseholder_voice.bots` | Measurement callers (`lh-voice bots`): voice-to-voice latency, barge-in to silence |
+| `leaseholder_voice.bots` | Measurement callers (`lh-voice bots`): voice-to-voice latency, barge-in to silence, and with `--save-audio` each call's audio |
 | `leaseholder_voice.callers` | The caller corpus (`lh-voice render-callers`): scripted lines in six stock Kokoro voices, 16 kHz WAVs |
-| `leaseholder_voice.audio` | A real-time microphone track and the agent's speech spans, on one clock |
+| `leaseholder_voice.audio` | A real-time microphone track, the agent's speech spans and a recording of both, on one clock |
 | `leaseholder_voice.protocol` | The agent name `leaseholder-voice`, the `X-Session-ID` and `X-LH-Class` names, `room_session_id(room_sid)`, `realtime_headers(session_id)` |
 | `leaseholder_voice.plugins` | `make_stt`, `make_llm`, `make_tts`, `openai_client` |
 
@@ -90,6 +90,12 @@ set -a; . ~/.config/leaseholder/livekit.env; set +a
   --callers 2 --turns 25 --barge-in 0.25 --out ~/leaseholder/runs/<run>/bots
 ```
 
+**Saving the calls' audio.** With `--save-audio` each caller also keeps the frames it already handles, what it sends and the agent's audio as received, each with the time it handled it, and once every call has ended it writes two files into the run directory:
+- `call-<i>.wav`: stereo 16-bit at 24 kHz, the agent's rate. On the left is what the caller sent, upsampled from 16 kHz; on the right the agent's audio as received. Both are laid out on the caller's monotonic clock from the first frame of either: frames go one after another, as their sender made them, each as early as the frames after it allow, so the jitter of their arrival leaves no gap and a real pause stays a pause.
+- `call-<i>.json`: when the WAV starts, on the monotonic and the wall clock (`start`), its `rate`, `channels` and length (`seconds`), and each of the caller's turns as `turns.jsonl` has it, with `at`: when its events happened, in seconds into the WAV. They are the line's `start` and `speech_end`, the `reply` (the agent's first audio), for a barge-in the interruption's onset (`barge_in`) and `barge_in_speech_end`, the agent's `silence` and its `barge_in_reply`, and the turn's `end`, when the agent's audio stopped for good. A turn that failed keeps the times it got to.
+
+Recording does not change what is measured: each frame is appended where a caller already handles it (a copy of 480 bytes for each of the agent's), and the files are written once the calls have ended. A 6-minute call keeps about 32 MiB (90 KiB a second of call), and writing it takes about 115 MiB more for a moment, one call at a time. [`benchmarks/e2/demo.py`](../../benchmarks/e2/README.md#the-demo-video) renders the demo video from two saved calls.
+
 The measured numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#voice-on-the-shared-gpu).
 
 ## Using the plugin factory
@@ -115,7 +121,7 @@ Unit tests need no network. CI runs them with `make test-python`:
 uv run --extra test pytest -m "not integration"      # in python/leaseholder_voice
 ```
 
-`tests/test_events.py` drives a stand-in session's hooks with LiveKit's own event types and checks each event against lh-proto's schema, the turn lines and that a failing hook never reaches LiveKit; it delivers to a fake control plane on a Unix socket: order, batching, the ids, a timeout, a refusal and recovery, the full-queue drop, a missing socket, and the end of a session.
+`tests/test_events.py` drives a stand-in session's hooks with LiveKit's own event types and checks each event against lh-proto's schema, the turn lines and that a failing hook never reaches LiveKit; it delivers to a fake control plane on a Unix socket: order, batching, the ids, a timeout, a refusal and recovery, the full-queue drop, a missing socket, and the end of a session. `tests/test_callers_and_bots.py` covers the corpus, the summary and the saved calls: the layout of a recorded track, the caller's track upsampled stretch by stretch exactly as a whole, and two turns, one with a barge-in, through a fake microphone and agent track, whose WAV shows each line's end and each reply's onset where `call-<i>.json` puts them and V2V as the callers measured it.
 
 The integration test (the W0 barge-in and header findings) runs on cyan. It needs Linux with unprivileged user namespaces,
 `unshare`, `nsenter`, `setpriv`, `ip` and `ss`, and `livekit-server` 1.13.10:

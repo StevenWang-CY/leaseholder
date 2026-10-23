@@ -1,4 +1,5 @@
-"""Caller-side audio for voice measurements: a real-time microphone and the agent's speech spans.
+"""Caller-side audio for voice measurements: a real-time microphone, the agent's speech spans, and a
+recording of both.
 
 Every time is ``time.monotonic()`` in the calling process, so a latency measured from a caller's
 microphone to the agent's audio carries no clock offset.
@@ -7,6 +8,7 @@ microphone to the agent's audio carries no clock offset.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import wave
 from collections.abc import Callable
@@ -44,16 +46,84 @@ class Clip:
         return cls(name, samples, int(speech[0]), int(speech[-1]) + 1)
 
 
+def resample(pcm: np.ndarray, up: int, down: int) -> np.ndarray:
+    """Polyphase resampling of int16 PCM between 16 and 24 kHz through 48 kHz: upsample by ``up``,
+    low-pass at 8 kHz, keep every ``down``-th sample (2, 3 takes 24 kHz to 16 kHz; 3, 2 back)."""
+    taps = 96
+    n = np.arange(taps) - (taps - 1) / 2
+    cutoff = 1 / 6  # 8 kHz at the 48 kHz intermediate rate, as a fraction
+    fir = 2 * cutoff * np.sinc(2 * cutoff * n) * np.kaiser(taps, 8.0)
+    fir *= up / fir.sum()  # unit gain after zero insertion
+    stuffed = np.zeros(len(pcm) * up)
+    stuffed[::up] = pcm
+    out = np.convolve(stuffed, fir, mode="same")[::down]
+    return np.clip(np.round(out), -32768, 32767).astype(np.int16)
+
+
+def upsample_track(pcm: np.ndarray) -> np.ndarray:
+    """A 16 kHz track at 24 kHz, as ``resample(pcm, 3, 2)`` gives it, one stretch of sound at a time:
+    digital silence stays silence, so a caller's track of a whole call takes the memory of its
+    longest line rather than of the call."""
+    out = np.zeros(math.ceil(len(pcm) * 3 / 2), dtype=np.int16)
+    sound = np.flatnonzero(pcm)
+    if not len(sound):
+        return out
+    margin = 64  # samples of silence on each side, more than the filter's reach (16)
+    breaks = np.flatnonzero(np.diff(sound) > 2 * margin)
+    for first, last in zip(sound[np.r_[0, breaks + 1]], sound[np.r_[breaks, -1]], strict=True):
+        start = max(0, first - margin) // 2 * 2  # even, to keep the output's sample phase
+        stretch = resample(pcm[start : last + margin], 3, 2)
+        out[start * 3 // 2 : start * 3 // 2 + len(stretch)] = stretch
+    return out
+
+
+class Recorder:
+    """One track's frames as the caller handles them, for ``lh-voice bots --save-audio``: each one's
+    samples and when the caller handled it, on the clock of every measurement. Recording only keeps
+    them; :meth:`signal` lays them out after the call."""
+
+    def __init__(self, rate: int) -> None:
+        self.rate = rate
+        self.frames: list[tuple[float, np.ndarray]] = []
+
+    def add(self, at: float, samples: np.ndarray) -> None:
+        self.frames.append((at, samples))
+
+    def signal(self, start: float, length: int) -> np.ndarray:
+        """The track as ``length`` samples from ``start`` on the caller's clock. Its frames go one
+        after another, as their sender made them, each as early as the frames after it allow: a
+        frame reaches the caller late, never early, so the one that came soonest after its turn
+        dates the frames before it. A pause of a frame or more stays a pause."""
+        out = np.zeros(length, dtype=np.int16)
+        if not self.frames:
+            return out
+        sizes = np.array([len(samples) for _, samples in self.frames])
+        slots = np.concatenate(([0], np.cumsum(sizes)[:-1]))
+        late = (np.array([at for at, _ in self.frames]) - start) * self.rate - slots
+        least = np.minimum.accumulate(late[::-1])[::-1]
+        shift = least[0]
+        for (_, samples), slot, floor in zip(self.frames, slots, least, strict=True):
+            if floor - shift >= len(samples):
+                shift = floor
+            at = max(0, round(slot + shift))
+            out[at : at + len(samples)] = samples[: max(0, length - at)]
+        return out
+
+
 class Microphone:
     """A continuous 16 kHz track paced in real time: silence, or the clip being played.
 
-    ``on_onset``, when given, is called as each clip's speech onset goes out.
+    ``on_onset``, when given, is called as each clip's speech onset goes out; ``recorder``, when
+    given, keeps every frame with the time it went out.
     """
 
-    def __init__(self, on_onset: Callable[[Clip], None] | None = None) -> None:
+    def __init__(
+        self, on_onset: Callable[[Clip], None] | None = None, recorder: Recorder | None = None
+    ) -> None:
         # a short queue keeps a frame's capture time within 50 ms of when it is sent
         self.source = rtc.AudioSource(SAMPLE_RATE, 1, queue_size_ms=50)
         self._on_onset = on_onset
+        self._recorder = recorder
         self.max_lateness_s = 0.0
         """The pacing loop's worst lateness: a measure of whether the caller kept up."""
         self._clips: asyncio.Queue[tuple[Clip, asyncio.Future[dict[str, float]]]] = asyncio.Queue()
@@ -81,8 +151,10 @@ class Microphone:
                 samples = np.pad(samples, (0, FRAME - len(samples)))
             frame = rtc.AudioFrame(samples.tobytes(), SAMPLE_RATE, 1, FRAME)
             await self.source.capture_frame(frame)
+            now = time.monotonic()
+            if self._recorder is not None:
+                self._recorder.add(now, samples)
             if clip is not None and done is not None:
-                now = time.monotonic()
                 if index == 0:
                     times["start"] = now
                 if index == clip.onset_frame:
@@ -108,19 +180,24 @@ class Microphone:
 
 
 class AgentAudio:
-    """Spans of the agent's audio above the speech threshold."""
+    """Spans of the agent's audio above the speech threshold; ``recorder``, when given, keeps every
+    frame with the time it was received."""
 
     GAP = 0.1
     """Quieter stretches shorter than this do not end a span."""
 
-    def __init__(self) -> None:
+    def __init__(self, recorder: Recorder | None = None) -> None:
         self.spans: list[list[float]] = []
+        self._recorder = recorder
 
     async def consume(self, track: rtc.Track) -> None:
         stream = rtc.AudioStream(track, sample_rate=AGENT_RATE, num_channels=1, frame_size_ms=10)
         try:
             async for event in stream:
-                pcm = np.frombuffer(event.frame.data, dtype=np.int16).astype(np.float64)
+                received = np.frombuffer(event.frame.data, dtype=np.int16)
+                if self._recorder is not None:
+                    self._recorder.add(time.monotonic(), received.copy())
+                pcm = received.astype(np.float64)
                 if np.sqrt(np.mean((pcm / 32768.0) ** 2)) < AGENT_SPEECH_RMS:
                     continue
                 now = time.monotonic()

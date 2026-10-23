@@ -13,25 +13,43 @@ plays a line from the corpus and waits for the reply:
 The caller then waits until the agent has been quiet for a second, pauses for a think time and
 takes the next turn. Every time comes from one clock in one process, so no clock offset enters
 the numbers. Each run directory gets ``run.json``, ``turns.jsonl`` and ``summary.json``.
+
+With ``--save-audio`` each caller also keeps the frames it already handles, what it sent and the
+agent's audio as received, and once every call has ended writes them as ``call-<i>.wav`` with the
+times of each turn's events in ``call-<i>.json``, for the demo video (benchmarks/e2/demo.py).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import platform
 import random
 import statistics
 import time
 import uuid
+import wave
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+import numpy as np
 from livekit import api, rtc
 
-from .audio import AGENT_STATE, AgentAudio, Clip, Microphone, agents, until
+from .audio import (
+    AGENT_RATE,
+    AGENT_STATE,
+    SAMPLE_RATE,
+    AgentAudio,
+    Clip,
+    Microphone,
+    Recorder,
+    agents,
+    until,
+    upsample_track,
+)
 from .protocol import AGENT_NAME
 
 QUIET_S = 1.0
@@ -55,6 +73,8 @@ class BotsConfig:
     """Seconds between the end of a reply and the next turn."""
     reply_timeout: float = 30.0
     seed: int = 0
+    save_audio: bool = False
+    """Write each call's audio and its turns' times after the calls: call-<i>.wav, call-<i>.json."""
 
 
 class Corpus:
@@ -94,15 +114,23 @@ class Caller:
         self.room_name = f"lh-bot-{run_id}-{index}"
         self.rng = random.Random(config.seed * 1000 + index)
         self.room = rtc.Room()
-        self.agent_audio = AgentAudio()
-        self.microphone = Microphone()
+        self.sent = Recorder(SAMPLE_RATE) if config.save_audio else None
+        self.received = Recorder(AGENT_RATE) if config.save_audio else None
+        self.agent_audio = AgentAudio(self.received)
+        self.microphone = Microphone(recorder=self.sent)
         self.max_lateness_s = 0.0
+        self.moments: dict[int, dict[str, float]] = {}
+        """When each turn's events happened (its line's start and speech end, the reply, ...), as far
+        as the turn got; call-<i>.json gives them."""
 
     async def turn(self, number: int) -> dict[str, Any]:
         config, audio = self.config, self.agent_audio
         clip = self.rng.choice(self.corpus.turns)
+        at = self.moments[number] = {}
         played = await self.microphone.play(clip)
+        at |= {"start": played["start"], "speech_end": played["speech_end"]}
         reply = await audio.first_onset_after(played["speech_end"], config.reply_timeout)
+        at["reply"] = reply
         row: dict[str, Any] = {
             "caller": self.index,
             "turn": number,
@@ -118,14 +146,17 @@ class Caller:
             interruption = self.rng.choice(self.corpus.barge_ins)
             barged = await self.microphone.play(interruption)
             onset = barged["onset"]
+            at |= {"barge_in": onset, "barge_in_speech_end": barged["speech_end"]}
             row.update(barge_in=True, barge_in_clip=interruption.name)
             row["interrupted_speech"] = audio.speaking_at(onset)
             if row["interrupted_speech"]:
                 stopped = await audio.end_of_span_at(onset, config.reply_timeout)
+                at["silence"] = stopped
                 row["barge_in_to_silence_ms"] = round(max(0.0, stopped - onset) * 1000, 1)
             second = await audio.first_onset_after(barged["speech_end"], config.reply_timeout)
+            at["barge_in_reply"] = second
             row["v2v_after_barge_in_ms"] = round((second - barged["speech_end"]) * 1000, 1)
-        await audio.silent_after(time.monotonic(), QUIET_S, config.reply_timeout * 2)
+        at["end"] = await audio.silent_after(time.monotonic(), QUIET_S, config.reply_timeout * 2)
         return row
 
     async def call(self, rows: list[dict[str, Any]], log: TextIO) -> None:
@@ -169,6 +200,49 @@ class Caller:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.microphone.source.aclose()
             await self.room.disconnect()
+
+    def save(self, out_dir: Path, rows: Iterable[dict[str, Any]]) -> None:
+        """Write the call as the caller had it (``--save-audio``), from the frames it kept.
+
+        ``call-<i>.wav`` is stereo 16-bit at the agent's rate: on the left what the caller sent,
+        upsampled from 16 kHz, on the right the agent's audio as received, both on the caller's
+        clock from the first frame of either. ``call-<i>.json`` gives when the WAV starts, on that
+        clock and on the wall clock, and each of the caller's turns as turns.jsonl has it, with
+        when its events happened in seconds into the WAV (``at``): its line's start and end of
+        speech, the reply, an interruption's onset and end of speech, the agent's silence after it
+        and its reply to it, and the end of the turn.
+        """
+        sent, received = self.sent, self.received
+        if sent is None or received is None:
+            raise ValueError("the caller kept no audio: save_audio is off")
+        tracks = [track for track in (sent, received) if track.frames]
+        start = min(track.frames[0][0] for track in tracks)
+        end = max(track.frames[-1][0] + len(track.frames[-1][1]) / track.rate for track in tracks)
+        length = math.ceil((end - start) * AGENT_RATE)
+        caller = upsample_track(sent.signal(start, math.ceil((end - start) * SAMPLE_RATE)))
+        stereo = np.zeros((length, 2), dtype=np.int16)
+        stereo[: len(caller), 0] = caller[:length]
+        stereo[:, 1] = received.signal(start, length)
+        with wave.open(str(out_dir / f"call-{self.index}.wav"), "wb") as wav:
+            wav.setnchannels(2)
+            wav.setsampwidth(2)
+            wav.setframerate(AGENT_RATE)
+            wav.writeframes(stereo.tobytes())
+        turns = [
+            {key: value for key, value in row.items() if key != "caller"}
+            | {"at": {event: round(t - start, 4) for event, t in self.moments[row["turn"]].items()}}
+            for row in rows
+        ]
+        call = {
+            "caller": self.index,
+            "room": self.room_name,
+            "rate": AGENT_RATE,
+            "channels": ["caller", "agent"],
+            "start": {"monotonic": start, "wall": start + time.time() - time.monotonic()},
+            "seconds": round(length / AGENT_RATE, 3),
+            "turns": turns,
+        }
+        (out_dir / f"call-{self.index}.json").write_text(json.dumps(call, indent=1) + "\n")
 
 
 def percentiles(values: Iterable[float]) -> dict[str, float | int]:
@@ -216,4 +290,7 @@ async def run_bots(config: BotsConfig, out_dir: Path) -> dict[str, Any]:
     }
     (out_dir / "run.json").write_text(json.dumps(run, indent=1) + "\n")
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
+    if config.save_audio:  # once every call has ended, so that writing them delays no measurement
+        for caller in callers:
+            caller.save(out_dir, [row for row in rows if row["caller"] == caller.index])
     return summary

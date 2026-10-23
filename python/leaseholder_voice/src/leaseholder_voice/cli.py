@@ -34,6 +34,7 @@ def _bots(args: argparse.Namespace) -> int:
         turns=args.turns,
         barge_in=args.barge_in,
         seed=args.seed,
+        save_audio=args.save_audio,
     )
     summary = asyncio.run(run_bots(config, args.out))
     # Release the LiveKit handles while the native library is still loaded; left to interpreter
@@ -88,6 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="seed of the lines, interruptions and pauses (default %(default)s)",
+    )
+    bots.add_argument(
+        "--save-audio",
+        action="store_true",
+        help="also write each call's audio and its turns' times, once the calls have ended "
+        "(call-<i>.wav, call-<i>.json)",
     )
     bots.add_argument("--out", type=Path, required=True, help="run directory")
     bots.set_defaults(func=_bots)
