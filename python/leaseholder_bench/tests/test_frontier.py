@@ -376,8 +376,10 @@ def test_each_workload_has_its_section_its_voice_slo_and_its_figure(tmp_path: Pa
         figures = ["frontier.svg", "frontier-4-callers.svg", "frontier-weka-x32-long.svg"]
         assert [p.name for p in written if p.suffix == ".svg"] == figures
         texts = {name: (out / name).read_text() for name in figures}
-        assert "E2 frontier, weka-x32, 2 callers" in texts["frontier.svg"]
-        assert "arm 1" not in texts["frontier-weka-x32-long.svg"]  # only its workload's points
+        assert "E2 frontier: weka-x32, 2 callers" in texts["frontier.svg"]
+        assert "Voice SLO, 2,010 ms: voice alone + 250 ms" in texts["frontier-weka-x32-long.svg"]
+        assert "a1-voice" not in texts["frontier-weka-x32-long.svg"]  # only its workload's points
+        assert "No point of voice alone with 4 callers" in texts["frontier-4-callers.svg"]
 
 
 def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None:
@@ -775,10 +777,33 @@ def test_the_figure_needs_matplotlib(tmp_path: Path) -> None:
     assert (tmp_path / "report" / "frontier.svg") in written
     figure = (tmp_path / "report" / "frontier.svg").read_text()
     assert "<svg" in figure and "whiskers" not in figure
+    assert "stock vLLM" not in figure  # one family: the arms' names, no legend
     repeated = point(tmp_path / "r1", "a2-s16", "2", 4000, 3000)
     rows, _ = load_points([*dirs, repeated])
     write_report(rows, tmp_path / "report")
     assert "whiskers span repeated runs" in (tmp_path / "report" / "frontier.svg").read_text()
+
+
+def test_the_figure_draws_families_and_leaves_a_collapse_off_its_scale(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    dirs = [
+        point(tmp_path, "a1-voice", "1", None, 1760),
+        point(tmp_path, "a2-s8", "2", 3000, 2000),
+        point(tmp_path, "a3-s8", "3", 3000, 2100),
+        point(tmp_path, "a2-s16", "2", 5000, 2600),
+        point(tmp_path, "a8a-s16", "8a", 5000, 2500),
+        point(tmp_path, "a7b-s16", "7b", 5000, 9000),  # past the far outliers' fence, 4,225 ms
+    ]
+    rows, _ = load_points(dirs)
+    write_report(rows, tmp_path / "report")
+    figure = (tmp_path / "report" / "frontier.svg").read_text()
+    # One color per family, named in the legend; the arms by their names.
+    legend = ("stock vLLM (arms 1\N{EN DASH}5)", "engines (arm 7)", "routers (arm 8)")
+    assert all(f"<!-- {family} -->" in figure for family in legend)
+    assert all(f"<!-- {arm} -->" in figure for arm in ("1", "2", "3", "8a"))
+    assert "Off the scale: a7b-s16, 9,000 ms at 5,000 tokens/s." in figure
+    assert "<!-- 7b -->" not in figure  # its only point is off the scale
+    assert "Voice SLO, 2,010 ms" in figure
 
 
 def test_a_point_summary_reads_its_run_directory(tmp_path: Path) -> None:

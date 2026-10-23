@@ -692,9 +692,11 @@ def write_report(
         writer.writeheader()
         writer.writerows(rows)
     written[1].write_text(markdown(rows))
+    groups = configurations(rows)
     for members in _by_workload(rows):
+        slo = voice_slo(groups, members[0]["callers"])
         figure = out_dir / figure_name(members[0]["data"], members[0]["callers"])
-        if plot(members, figure):
+        if plot(members, figure, None if slo is None else slo[0]):
             written.append(figure)
     if cells and plot_waterfall(cells, out_dir / "waterfall.svg"):
         written.append(out_dir / "waterfall.svg")
@@ -918,11 +920,27 @@ def _cell(value: Any, digits: int = 0) -> str:
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
-# Light chart surface, ink and the categorical order of the docs' figures.
+# Light chart surface, ink and the categorical palette, in its order.
 _SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
-_MARKERS = ("o", "s", "^", "D")
 _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9", "#c3c2b7"
 _SECONDARY = "#52514e"
+
+FAMILIES = (
+    ("stock vLLM", 1, 5, _SECONDARY),
+    ("operator answers", 6, 6, "#1baf7a"),
+    ("engines", 7, 7, "#eda100"),
+    ("routers", 8, 8, "#e87ba4"),
+    ("Leaseholder", 9, 9, "#2a78d6"),
+    ("MPS", 10, 10, "#008300"),
+)
+"""E2's arms by family (docs/EXPERIMENTS.md): its name, its first and last arm, and the color the
+frontier figures draw it in. Any two families can meet on a scatter, and no six of the palette's
+hues stay apart pair by pair, so stock vLLM, the baseline the others are read against, takes the
+secondary ink, and five hues that do (with the markers and the arms' names beside them) take the
+rest: blue, the first, for Leaseholder, then the others in E2's order."""
+_MARKERS = (("o", 8.0), ("s", 7.1), ("^", 10.0), ("D", 7.1), ("v", 10.0), ("P", 9.5))
+"""The markers of the arms of a family, counted by number (stock vLLM's 1 to 5), then by letter,
+each in the size (points) that gives it the circle's area: 8 px inside its 2 px ring."""
 
 
 def _save_svg(fig: Any, path: Path, **options: Any) -> None:
@@ -934,49 +952,68 @@ def _save_svg(fig: Any, path: Path, **options: Any) -> None:
         fig.savefig(path, format="svg", facecolor=_SURFACE, metadata={"Date": None}, **options)
 
 
-def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
-    """A workload's frontier figure: each arm's frontier as a line, its dominated points as open
-    markers. A point measured in several campaigns sits at its runs' medians, with whiskers over
-    their range on both axes: one marker per configuration keeps each frontier a line through what
-    frontier.md marks, and the whiskers still show a run that collapsed. Arms past the eighth take
-    the colors again with another marker. False without matplotlib."""
+def _style(arm: str) -> tuple[str, str, tuple[str, float]]:
+    """An arm's family as the legend names it, its color and the arm's marker (FAMILIES, _MARKERS).
+    An arm with a factor (4-no-preemptive) takes its arm's marker, and its name tells them apart."""
+    found = re.match(r"(\d+)([a-z]?)", arm)
+    number, letter = (int(found[1]), found[2]) if found else (0, "")
+    for name, first, last, color in FAMILIES:
+        if first <= number <= last:
+            arms = f"arm {first}" if first == last else f"arms {first}\N{EN DASH}{last}"
+            index = number - first + (ord(letter) - ord("a") if letter else 0)
+            return f"{name} ({arms})", color, _MARKERS[index % len(_MARKERS)]
+    return "other arms", _MUTED, _MARKERS[0]
+
+
+def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None) -> bool:
+    """A workload's frontier figure: each arm's frontier as a line in its family's color and with
+    the arm's marker, its dominated configurations as open markers, and the arm's name by the last
+    point of its frontier. A configuration measured in several campaigns sits at its runs' medians,
+    with whiskers over their range on both axes: one marker per configuration keeps each frontier a
+    line through what frontier.md marks, and the whiskers still show a run that collapsed. A dashed
+    line marks the voice SLO, ``slo`` ms. False without matplotlib."""
     try:
         import matplotlib
     except ImportError:
         return False
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
     from matplotlib.ticker import StrMethodFormatter
 
-    groups = configurations(rows)
-    arms = sorted({g["arm"] for g in groups if g["v2v_p95_ms"] is not None}, key=_arm_order)
-    fig, ax = plt.subplots(figsize=(7.5, 4.5), facecolor=_SURFACE)
+    groups = [g for g in configurations(rows) if g["v2v_p95_ms"] is not None]
+    arms = sorted({g["arm"] for g in groups}, key=_arm_order)
+    fence = _fence([g["v2v_p95_ms"] for g in groups])
+    fig, ax = plt.subplots(figsize=(7.5, 5.5), facecolor=_SURFACE, layout="constrained")
     ax.set_facecolor(_SURFACE)
-    for i, arm in enumerate(arms):
-        color, marker = _SERIES[i % len(_SERIES)], _MARKERS[i // len(_SERIES) % len(_MARKERS)]
-        points = [g for g in groups if g["arm"] == arm and g["v2v_p95_ms"] is not None]
+    ends = []
+    for arm in arms:
+        _, color, (marker, size) = _style(arm)
+        points = [g for g in groups if g["arm"] == arm]
         front = sorted(
-            (r for r in points if r["frontier"]), key=lambda r: r["background_tokens_per_s"]
+            (g for g in points if g["frontier"]), key=lambda g: g["background_tokens_per_s"]
         )
-        others = [r for r in points if not r["frontier"]]
+        others = [g for g in points if not g["frontier"]]
         ax.plot(
-            [r["background_tokens_per_s"] for r in front],
-            [r["v2v_p95_ms"] for r in front],
+            [g["background_tokens_per_s"] for g in front],
+            [g["v2v_p95_ms"] for g in front],
             color=color,
             linewidth=1.5,
             marker=marker,
-            markersize=6,
+            markersize=size,
             markeredgecolor=_SURFACE,
-            label=f"arm {arm}",
+            markeredgewidth=2.0,
+            zorder=3,
         )
         ax.scatter(
-            [r["background_tokens_per_s"] for r in others],
-            [r["v2v_p95_ms"] for r in others],
-            s=36,
+            [g["background_tokens_per_s"] for g in others],
+            [g["v2v_p95_ms"] for g in others],
+            s=(size - 2.75) ** 2,  # with its edge, as large as a frontier marker inside its ring
             marker=marker,
-            facecolors="none",
+            facecolors=_SURFACE,
             edgecolors=color,
-            linewidths=1.5,
+            linewidths=1.25,
+            zorder=2,
         )
         for g in (g for g in points if len(g["runs"]) > 1):
             x, y = g["background_tokens_per_s"], g["v2v_p95_ms"]
@@ -993,12 +1030,53 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
                 alpha=0.6,
                 zorder=1,
             )
-    title = f"E2 frontier, {rows[0]['workload']}: open markers are dominated points"
+        if drawn := [g for g in front if fence is None or g["v2v_p95_ms"] <= fence]:
+            ends.append((drawn[-1]["background_tokens_per_s"], drawn[-1]["v2v_p95_ms"], arm))
+    notes = ["A line joins each arm's frontier; open markers are dominated configurations"]
     if any(len(g["runs"]) > 1 for g in groups):
-        title += ", whiskers span repeated runs"
+        notes[0] += ", whiskers span repeated runs"
+    if fence is not None:  # the scale of the rest and of the SLO, with matplotlib's margins
+        shown = [g["v2v_p95_ms"] for g in groups if g["v2v_p95_ms"] <= fence]
+        shown += [] if slo is None else [slo]
+        low, high = min(shown), max(shown)
+        ax.set_ylim(low - 0.05 * (high - low), high + 0.05 * (high - low))
+        notes += [
+            f"Off the scale: {g['point']}, {g['v2v_p95_ms']:,.0f} ms at "
+            f"{g['background_tokens_per_s']:,.0f} tokens/s"
+            for g in groups
+            if g["v2v_p95_ms"] > fence
+        ]
+    if slo is None:
+        notes.append(f"No point of voice alone with {rows[0]['callers']} callers sets a voice SLO")
+    taken = []  # what the arms' names keep clear of
+    if slo is not None:
+        line = ax.axhline(slo, color=_INK, linewidth=0.75, linestyle=(0, (4, 3)), zorder=1.5)
+        note = f"Voice SLO, {slo:,.0f} ms: voice alone + {SLO_MARGIN_MS:.0f} ms"
+        taken += [
+            line,
+            ax.annotate(
+                note,
+                (0, slo),
+                xycoords=ax.get_yaxis_transform(),
+                xytext=(4, 3),
+                textcoords="offset points",
+                fontsize=8,
+                color=_INK,
+            ),
+        ]
+    title = f"E2 frontier: {rows[0]['workload']}"
+    ax.set_title(title, color=_INK, loc="left", pad=12 + 11 * len(notes))
+    ax.annotate(
+        ".\n".join(notes) + ".",
+        (0, 1),
+        xycoords="axes fraction",
+        xytext=(0, 6),
+        textcoords="offset points",
+        fontsize=8.5,
+        color=_SECONDARY,
+    )
     ax.set_xlabel("Background goodput (tokens/s)", color=_INK)
     ax.set_ylabel("Voice V2V p95 (ms)", color=_INK)
-    ax.set_title(title, color=_INK, loc="left")
     ax.grid(color=_GRID, linewidth=0.75)
     ax.set_axisbelow(True)
     ax.tick_params(colors=_MUTED)
@@ -1008,14 +1086,104 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
         ax.spines[side].set_visible(False)
     for side in ("bottom", "left"):
         ax.spines[side].set_color(_AXIS)
-    if len(arms) > 1:
-        legend = ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    families = list(dict.fromkeys(_style(arm)[:2] for arm in arms))
+    if len(families) > 1:  # one family needs no legend: the arms' names say whose they are
+        handles = [Line2D([], [], color=color, linewidth=2.5) for _, color in families]
+        labels = [family for family, _ in families]
+        legend = fig.legend(handles, labels, loc="outside lower left", ncols=3, frameon=False)
         for text in legend.get_texts():
             text.set_color(_INK)
-    fig.tight_layout()
-    _save_svg(fig, path)
+    fig.draw_without_rendering()  # lays the axes out, so that the names can be placed in them
+    marks = [(g["background_tokens_per_s"], g["v2v_p95_ms"]) for g in groups]
+    _name_ends(ax, ends, marks, taken)
+    _save_svg(fig, path, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
     return True
+
+
+def _fence(values: Sequence[float]) -> float | None:
+    """The V2V p95 past which a frontier figure leaves a configuration off its scale, so that one
+    collapse does not flatten the rest: Tukey's fence for far outliers, three interquartile ranges
+    above the upper quartile, of four or more configurations. None when none is past it."""
+    if len(values) < 4:
+        return None
+    q1, _, q3 = statistics.quantiles(values, n=4, method="inclusive")
+    fence = q3 + 3 * (q3 - q1)
+    return fence if max(values) > fence else None
+
+
+_PLACES = (
+    *((7.5, angle) for angle in (0, 35, -35, 90, -90, 145, -145, 180)),
+    *((radius, angle) for radius in (20.0, 34.0) for angle in range(0, 360, 30)),
+)
+"""Where an arm's name may go around the last point of its frontier, in the order tried: beside it,
+then farther out on a leader line. Each is a distance in points and an angle in degrees."""
+
+
+def _name_ends(
+    ax: Any,
+    ends: Sequence[tuple[float, float, str]],
+    marks: Sequence[tuple[float, float]],
+    taken: Sequence[Any],
+) -> None:
+    """Write each arm's name by the last point of its frontier (``ends``: x, y and the name), at
+    the first of _PLACES where it stays in the axes, clear of every marker (``marks``), of the texts
+    ``taken`` and of the names placed before it; where none is, beside the point anyway. Arms whose
+    ends share a marker's place share a name ("6, 8b"), and the most crowded go first."""
+    import math
+
+    from matplotlib.text import Text
+    from matplotlib.transforms import Bbox
+
+    renderer = ax.figure.canvas.get_renderer()
+    frame = ax.get_window_extent(renderer)
+    half = 6.0 * ax.figure.dpi / 72  # the largest marker with its ring, in pixels
+    boxes = [t.get_window_extent(renderer).padded(2) for t in taken]
+    centers = [ax.transData.transform(mark) for mark in marks]
+    for cx, cy in centers:
+        boxes.append(Bbox.from_extents(cx - half, cy - half, cx + half, cy + half))
+    shared: list[tuple[float, float, list[str], Any]] = []
+    for x, y, name in ends:
+        at = ax.transData.transform((x, y))
+        same = next((s for s in shared if math.dist(s[3], at) <= half), None)
+        if same is None:
+            shared.append((x, y, [name], at))
+        else:
+            same[2].append(name)
+
+    def crowd(end: tuple[float, float, list[str], Any]) -> int:
+        """Less for an end with more markers around it."""
+        return -sum(math.dist(center, end[3]) <= 6 * half for center in centers)
+
+    def name_at(x: float, y: float, name: str, distance: float, angle: float) -> tuple[Any, Any]:
+        dx, dy = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+        leader = {"arrowstyle": "-", "color": _MUTED, "linewidth": 0.6, "shrinkB": 5}
+        label = ax.annotate(
+            name,
+            (x, y),
+            xytext=(distance * dx, distance * dy),
+            textcoords="offset points",
+            ha="left" if dx > 0.3 else "right" if dx < -0.3 else "center",
+            va="bottom" if dy > 0.3 else "top" if dy < -0.3 else "center",
+            fontsize=8,
+            color=_INK,
+            arrowprops=None if distance == _PLACES[0][0] else leader,
+        )
+        label.set_in_layout(False)
+        label.update_positions(renderer)
+        return label, Text.get_window_extent(label, renderer).padded(1.5)
+
+    for x, y, names, _ in sorted(shared, key=crowd):
+        name = ", ".join(names)
+        for place in _PLACES:
+            label, box = name_at(x, y, name, *place)
+            inside = frame.x0 <= box.x0 and box.x1 <= frame.x1 and frame.y0 <= box.y0
+            if inside and box.y1 <= frame.y1 and not any(box.overlaps(b) for b in boxes):
+                break
+            label.remove()
+        else:  # nowhere clear: beside the point anyway
+            label, box = name_at(x, y, name, *_PLACES[0])
+        boxes.append(box)
 
 
 def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:
