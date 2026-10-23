@@ -84,6 +84,7 @@ def scheduler(
     long_prefill_token_threshold: int = 0,
     max_model_len: int = 24 * BLOCK,
     watermark: float = 0.0,
+    prefix_caching: bool = False,
 ):
     """A scheduler over a KV pool of ``num_blocks`` blocks of 16 tokens (one of them vLLM's null block)."""
     model_config = ModelConfig(
@@ -99,7 +100,9 @@ def scheduler(
         watermark=watermark,
         policy=policy,
     )
-    cache_config = CacheConfig(block_size=BLOCK, cache_dtype="auto", enable_prefix_caching=False)
+    cache_config = CacheConfig(
+        block_size=BLOCK, cache_dtype="auto", enable_prefix_caching=prefix_caching
+    )
     cache_config.num_gpu_blocks = num_blocks
     vllm_config = VllmConfig(
         model_config=model_config,
@@ -122,12 +125,18 @@ def scheduler(
 
 
 def request(
-    req_id: str, num_tokens: int, priority: int, arrival: float, max_tokens: int = 64
+    req_id: str,
+    num_tokens: int,
+    priority: int,
+    arrival: float,
+    max_tokens: int = 64,
+    token: int = TOKEN,
 ) -> Request:
-    """A request of ``num_tokens`` prompt tokens; prefix caching is off, so requests share no block."""
+    """A request of ``num_tokens`` prompt tokens, all ``token``: with prefix caching on, requests of different tokens
+    share no block."""
     return Request(
         request_id=req_id,
-        prompt_token_ids=[TOKEN] * num_tokens,
+        prompt_token_ids=[token] * num_tokens,
         sampling_params=SamplingParams(max_tokens=max_tokens, ignore_eos=True),
         pooling_params=None,
         arrival_time=arrival,
@@ -393,6 +402,55 @@ def test_with_deferred_frees_the_request_runs_one_step_later(module, model):
     process()
     out = schedule()
     assert not out.preempted_req_ids and {"voice", "bg2"} <= scheduled(out)
+
+
+def test_a_victim_with_cached_blocks_waits_for_the_prefill_it_made_room_for(module, model):
+    """With prefix caching, a victim's freed blocks stay cached, and resuming it takes them all back. Once the deferred
+    frees land, the voice turn is admitted with its first chunk of three; the victim must then wait for the turn's
+    other chunks, which in-flight prefills reserve, or the turn would find no free block for its next chunk."""
+    sched = scheduler(
+        module.AsyncScheduler,
+        model,
+        33,
+        {"max_preemptions_per_step": 2},
+        long_prefill_token_threshold=2 * BLOCK,
+        prefix_caching=True,
+    )
+    sched.defer_block_free = True  # as vLLM's tests force it: the gate also needs a P/D connector
+    in_flight = []
+
+    def schedule():
+        scheduler_output = sched.schedule()
+        in_flight.append((scheduler_output, output(sched, scheduler_output)))
+        return scheduler_output
+
+    def process():
+        sched.update_from_output(*in_flight.pop(0))
+
+    rt = request("rt", blocks(14), priority=0, arrival=0, token=1)
+    bg = request("bg", blocks(16), priority=2, arrival=1, token=2)
+    sched.add_request(rt)
+    sched.add_request(bg)
+    schedule()
+    for _ in range(30):  # one step stays in flight, as in the engine
+        if all(r.status == RequestStatus.RUNNING and not r.is_prefill_chunk for r in (rt, bg)):
+            break
+        schedule()
+        process()
+    assert free_blocks(sched) == 2
+
+    voice = request("voice", 6 * BLOCK, priority=0, arrival=2, token=3)
+    sched.add_request(voice)
+    out = schedule()
+    assert out.preempted_req_ids == {"bg"} and "voice" not in scheduled(out)
+    computed = []
+    for _ in range(5):
+        process()
+        out = schedule()
+        assert "bg" not in scheduled(out) or not voice.is_prefill_chunk
+        computed.append(voice.num_computed_tokens)
+    # Three chunks of 32 tokens in consecutive steps, then the turn decodes, and only then may the victim resume.
+    assert computed[:3] == [32, 64, 96], computed
 
 
 # The budget cap
