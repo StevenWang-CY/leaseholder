@@ -244,7 +244,7 @@ AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to t
 | 16 (3.2) | 139 / 895 ms | +6.8% / +7.7% | +1.7% / +9.4% |
 | 24 (4.4, outside the calibration) | 208 / 1,645 ms | −2.3% / −17.0% | +2.3% / +10.9% |
 
-Even perfect knowledge buys under 7% of the median resume, which is already a GPU hit or a short restore; it helps the tail only at low pressure. This is G-sim's negative branch ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)): the CPU-tier policy plugin stays off. The full regime map, with TraceLab's pauses, the history-level arms and the 2× and 8× tiers, is in the [simulator's README](../crates/lh-sim/README.md#the-e1-regime-map).
+Even perfect knowledge buys under 7% of the median resume, which is already a GPU hit or a short restore; it helps the tail only at low pressure. This is G-sim's negative branch ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)): the CPU-tier policy plugin stays off. The full regime map, with TraceLab's pauses, the history-level arms and the 2× and 8× tiers, is in the [simulator's README](../crates/lh-sim/README.md#the-e1-regime-map). So is the placement of an L4 and an H100 on the same map, from costs modeled on their published peaks ([Other hardware, modeled](../crates/lh-sim/README.md#other-hardware-modeled)); none of its numbers is measured.
 
 ## Load generation
 
