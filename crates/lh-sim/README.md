@@ -241,7 +241,7 @@ The peaks come from NVIDIA: the [RTX 5060 family page](https://www.nvidia.com/en
 - **The 32× replay**, the same on every GPU.
 - **Each GPU's own scaling** (`--fit`): the least power-of-two scaling whose longest request fits both the pool and Qwen3-4B's 262,144-token context, as the 32× corpus fits the box's. The box replays 32×, the L4 16× and the H100 4×; on the H100 the model's context binds before its pool does.
 
-The original-scale corpus (`cc-traces-weka-062126`) fits no GPU: its median request is 142k tokens and its longest 996,578. Of its requests, 88% exceed the box's pool, 64% the L4's and 12% the H100's, and 30% exceed Qwen3-4B's context.
+The original-scale corpus (`cc-traces-weka-062126`) fits no GPU (`--fit` says so): its median prompt is 142k tokens, and its longest request has 996,579 tokens of prompt and output. Of its requests, 88% exceed the box's pool, 64% the L4's and 12% the H100's, and 30% exceed Qwen3-4B's context.
 
 **The realtime tier** is two voice calls, as in E2's discriminating scenario, at 1,024 tokens of KV each: a voice turn's prompt and reply came to about 680 tokens in the W2 runs on the box. The replay measures two shares of its window:
 - **Working set:** the time the agents' live working set leaves less than 2,048 tokens of the pool free. A voice turn's KV then displaces cached agent KV, which vLLM evicts for it; the agents pay for that when they resume.
