@@ -2,6 +2,7 @@
 
 Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](../../docs/ARCHITECTURE.md#7-realtime-voice-pipeline)). The package holds:
 - the production voice agent;
+- the lifecycle events it posts to the control plane, and its per-turn stage times;
 - the measurement callers that read voice-to-voice latency from waveforms;
 - the headers the agent sends to the control plane;
 - a factory for the stock OpenAI STT, LLM and TTS plugins, pointed at OpenAI-compatible servers over TCP or a Unix socket.
@@ -9,6 +10,7 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 | Module | Contents |
 |---|---|
 | `leaseholder_voice.worker` | The voice agent (`lh-voice-worker start`): Silero VAD, LiveKit's local end-of-turn model, STT/LLM/TTS over the voice plane's sockets, LiveKit's default turn handling |
+| `leaseholder_voice.events` | `Lifecycle`: a session's LiveKit signals as lifecycle events, and a log line per turn with its stage times; `EventSender`: their delivery to `/v1/events` |
 | `leaseholder_voice.bots` | Measurement callers (`lh-voice bots`): voice-to-voice latency, barge-in to silence |
 | `leaseholder_voice.callers` | The caller corpus (`lh-voice render-callers`): scripted lines in six stock Kokoro voices, 16 kHz WAVs |
 | `leaseholder_voice.audio` | A real-time microphone track and the agent's speech spans, on one clock |
@@ -28,10 +30,44 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 | `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30) |
 | `LH_TURN_DETECTION` | `model` (default) or `vad` |
 | `LH_PREEMPTIVE_GENERATION` | `true` (default) or `false` |
+| `LH_EVENTS` | `on` (default): lifecycle events to the control plane through `LH_LLM_UDS`; `off` |
 
 Experiments change two settings. LiveKit's end-of-turn model waits up to the endpointing maximum (3 s) when it judges a line unfinished: on the synthesized callers that happened on about one turn in six, and put a 3 s mode in voice-to-voice latency unrelated to serving. Experiments therefore run with `LH_TURN_DETECTION=vad`. That variant is `deploy/cyan/variants/vad-turns`: a turn ends a fixed delay after the end of speech (VAD plus LiveKit's 0.5 s minimum), the same for every arm. LiveKit's preemptive generation, on by default, starts the reply from the final transcript before the end of the turn is confirmed; `LH_PREEMPTIVE_GENERATION=false` (the variant `deploy/cyan/variants/no-preemptive-generation`, which `lh-bench e2 run` links for an arm that asks for it) turns it off, one of E2's factors.
 
 Everything else is LiveKit's default except two settings for this deployment, whose only callers are the measurement bots in the namespace: interruptions are detected by VAD (what production mode picks anyway; adaptive detection needs LiveKit Inference), and there is no AEC warm-up, which would discard a barge-in on the first reply of each call although the callers have no echo path.
+
+## Lifecycle events and turn lines
+
+Each session tells the control plane when it will next need the GPU ([PROTOCOL.md](../../docs/PROTOCOL.md#lifecycle-events)), with events of the session `voice-<room SID>` from source `voice-worker`. Each comes from one LiveKit hook:
+
+| Event | LiveKit 1.8.8 hook | When it fires |
+|---|---|---|
+| `user_speech_started` | `user_state_changed` to `speaking` | At Silero VAD's start of speech, once it has heard 0.05 s: 0.10–0.16 s after the onset on cyan |
+| `user_turn_ended` | `conversation_item_added` with the caller's message | Once the end of the turn is decided and its reply scheduled, as the agent turns `thinking`. The reply's LLM request starts then, or at the final transcript under preemptive generation |
+| `playback_started` | the audio output's `playback_started` | As the reply's first audio frame goes to the published track |
+| `playback_ended` | the audio output's `playback_finished`, not interrupted | Once the reply has played out; `played_ms` is all of it |
+| `interrupted` | the audio output's `playback_finished`, interrupted | When a barge-in interrupts the reply: on its final transcript with LiveKit's default handling, which pauses the audio after 0.5 s of speech first, or after those 0.5 s with `resume_false_interruption=False`. `played_ms` is what the caller heard |
+| `session_closed` | `close` | When the session closes, after the caller has left |
+
+`metrics_collected` would give the end of the turn as well, but 1.8.8 deprecates it, and warns on every subscription, in favour of each message's `metrics`, which also hold the stage times below. A reply interrupted before any of its audio was made has no playback to report; the control plane sees its stream close.
+
+**Delivery.** The events go to `POST /v1/events` over `LH_LLM_UDS`, the control plane's socket, where the voice tenant needs no key. A hook only queues its event, and one background task per session posts what is queued as a JSON array, with a 1 s timeout: events queued while a POST is under way go out together in the next. Nothing reaches the session from there. A full queue (64 events) drops its oldest event, and a POST that fails, times out or is not answered 202 loses its batch; a lost batch is not retried, because a late timing signal would mislead. The first failure of an outage is logged as a warning, and recovery as information. `event_id` is the session and a sequence number (`voice-RM_a1B2c3-7`), `at_ms` the wall clock when the hook ran. When the job shuts down it sends what is left, waiting at most 2 s.
+
+**The switch.** `LH_EVENTS=off` stops the events (the turn lines stay), so that E2 can measure Leaseholder with and without them: `deploy/cyan/variants/no-events`, which `lh-bench e2 run` links for an arm with `[voice] events = false`. They stop as well when `LH_LLM_UDS` is an engine's tunnel (`*-engine.sock`, the bypass), which takes none.
+
+**Turn lines.** Each reply logs one JSON line, logger `leaseholder_voice.turns`, message `turn`, with `session_id`, `turn` (from 0 in each session), `interrupted` and, in ms, the stages LiveKit measured (a stage it did not measure is left out):
+
+| Field | From | To |
+|---|---|---|
+| `transcript_ms` | the end of speech (VAD) | the final transcript |
+| `end_of_turn_ms` | the end of speech | the end-of-turn decision |
+| `llm_ttft_ms` | the LLM request | its first token |
+| `llm_first_sentence_ms` | the LLM request | the first sentence handed to TTS |
+| `turn_to_first_sentence_ms` | the end-of-turn decision | that sentence: `e2e_ms` less the playback latency, `tts_first_audio_ms` and `end_of_turn_ms`, because TTS starts only once the reply is scheduled |
+| `tts_first_audio_ms` | that sentence | its first audio |
+| `e2e_ms` | the end of speech | the reply's first audio frame on the track: the agent's side of voice-to-voice |
+
+When a session ends, one line (logger `leaseholder_voice.events`, message `session ended`) gives its `turns` and, with events on, `events_sent`, `events_dropped` (pushed out of the queue, or unsent at the end) and `events_failed` (sent but not accepted). `lh-bench e2 run` reads both kinds of line from the worker's journal.
 
 ## Measurement callers
 
@@ -78,6 +114,8 @@ Unit tests need no network. CI runs them with `make test-python`:
 ```bash
 uv run --extra test pytest -m "not integration"      # in python/leaseholder_voice
 ```
+
+`tests/test_events.py` drives a stand-in session's hooks with LiveKit's own event types and checks each event against lh-proto's schema, the turn lines and that a failing hook never reaches LiveKit; it delivers to a fake control plane on a Unix socket: order, batching, the ids, a timeout, a refusal and recovery, the full-queue drop, a missing socket, and the end of a session.
 
 The integration test (the W0 barge-in and header findings) runs on cyan. It needs Linux with unprivileged user namespaces,
 `unshare`, `nsenter`, `setpriv`, `ip` and `ss`, and `livekit-server` 1.13.10:

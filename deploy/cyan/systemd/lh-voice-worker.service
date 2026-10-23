@@ -10,7 +10,8 @@ Type=exec
 # LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET, written by bootstrap.sh.
 EnvironmentFile=%h/.config/leaseholder/livekit.env
 # The namespace reaches the GPU node only through these sockets. LH_LLM_UDS is the control plane's socket;
-# point it at %t/lh/phastform-engine.sock to bypass the control plane.
+# point it at %t/lh/phastform-engine.sock to bypass the control plane. The lifecycle events go to it as well
+# (LH_EVENTS, on by default; the no-events variant turns them off), and stop on the bypass.
 Environment=LH_LLM_UDS=%t/lh/gateway.sock
 Environment=LH_STT_UDS=%t/lh/phastform-stt.sock
 Environment=LH_TTS_UDS=%t/lh/phastform-tts.sock

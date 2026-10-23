@@ -20,6 +20,12 @@ in the tail. ``LH_PREEMPTIVE_GENERATION=false`` turns off LiveKit's preemptive g
 starts the reply from the final transcript before the end of the turn is confirmed: one of E2's
 factors.
 
+Each session posts its lifecycle events (speech onset, end of turn, playback, barge-in) to the
+control plane over the LLM's socket, and logs a line per turn with its stage times
+(:mod:`.events`). ``LH_EVENTS=off`` stops the events, so that E2 can measure Leaseholder with and
+without them; they stop as well when the LLM bypasses the control plane, whose socket alone takes
+them.
+
 The worker runs inside the voice-plane network namespace, where the only route to the servers is
 a Unix socket each. The environment, set by ``lh-voice-worker.service``, configures it:
 
@@ -32,6 +38,7 @@ a Unix socket each. The environment, set by ``lh-voice-worker.service``, configu
 | ``LH_LLM_TIMEOUT`` | Seconds before an LLM request fails (default 30: a cold prefill exceeds 10) |
 | ``LH_TURN_DETECTION`` | ``model`` (default: the end-of-turn model) or ``vad`` (fixed endpointing, for experiments) |
 | ``LH_PREEMPTIVE_GENERATION`` | ``true`` (default, LiveKit's) or ``false`` |
+| ``LH_EVENTS`` | ``on`` (default: lifecycle events to the control plane) or ``off`` |
 """
 
 from __future__ import annotations
@@ -53,11 +60,14 @@ from livekit.agents import (
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import silero
 
-from . import plugins
+from . import events, plugins
 from .protocol import AGENT_NAME, room_session_id
 
 BASE_URL = "http://lh.invalid/v1"
 """Requests go over the Unix sockets; the host name never resolves."""
+
+ENGINE_TUNNEL = "-engine.sock"
+"""How the tunnel names its forward to an engine (``phastform-engine.sock``), the bypass's LLM path."""
 
 INSTRUCTIONS = (
     "You are Ava, the phone assistant of a small neighborhood restaurant. You take reservations, "
@@ -97,10 +107,21 @@ def turn_handling() -> dict[str, Any]:
     }
 
 
+def events_socket() -> str | None:
+    """The socket lifecycle events go to: the LLM's, unless ``LH_EVENTS=off`` or the LLM bypasses
+    the control plane through the engine's tunnel, which has no ``/v1/events``."""
+    setting = os.environ.get("LH_EVENTS", "on")
+    if setting not in ("on", "off"):
+        raise ValueError(f"LH_EVENTS must be on or off, got {setting!r}")
+    uds = os.environ["LH_LLM_UDS"]
+    return None if setting == "off" or uds.endswith(ENGINE_TUNNEL) else uds
+
+
 @server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext) -> None:
     session_id = room_session_id(ctx.job.room.sid)
     llm_timeout = float(os.environ.get("LH_LLM_TIMEOUT", "30"))
+    events_uds = events_socket()
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         stt=plugins.make_stt(BASE_URL, uds=os.environ["LH_STT_UDS"]),
@@ -120,6 +141,8 @@ async def entrypoint(ctx: JobContext) -> None:
         room_options=room_options,
         record=False,
     )
+    # Nothing it reports can happen earlier: the caller's audio flows only once start() returns.
+    events.observe(ctx, session, session_id, uds=events_uds)
 
 
 def main() -> None:
