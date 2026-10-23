@@ -402,7 +402,12 @@ def _e2(args: argparse.Namespace) -> int:
             if not rows:
                 print("lh-bench e2: no complete point to report", file=sys.stderr)
                 return 1
-            for path in write_report(rows, args.out):
+            try:
+                written = write_report(rows, args.out, args.waterfall)
+            except ValueError as exc:  # a --waterfall point without turn lines
+                print(f"lh-bench e2: {exc}", file=sys.stderr)
+                return 1
+            for path in written:
                 print(path)
     except E2Error as exc:
         print(f"lh-bench e2: {exc}", file=sys.stderr)
@@ -433,10 +438,19 @@ def _add_e2(commands: Commands) -> None:
     report = actions.add_parser(
         "report",
         help="build the frontier from run directories",
-        description="Write frontier.csv, frontier.md and, with matplotlib, frontier.svg.",
+        description="Write frontier.csv, frontier.md and, with matplotlib, frontier.svg and the "
+        "stage waterfall of the points with turn lines, waterfall.svg.",
     )
     report.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
     report.add_argument("--out", type=Path, required=True, help="report directory")
+    report.add_argument(
+        "--waterfall",
+        action="append",
+        default=[],
+        metavar="POINT",
+        help="draw only this point's configuration in waterfall.svg (repeatable, in this order; "
+        "default every one with turn lines)",
+    )
     engine = actions.add_parser(
         "engine",
         help="print the engine an arm file needs, as deploy/phastform/variant.sh use takes it",

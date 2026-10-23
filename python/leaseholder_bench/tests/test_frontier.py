@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import importlib.util
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from leaseholder_bench.frontier import (
     COLUMNS,
     GPU_COLUMNS,
     SESSIONS_LOGGER,
+    STACKED,
     TURNS_LOGGER,
     WATERFALL,
     WORKER_COLUMNS,
@@ -28,6 +30,7 @@ from leaseholder_bench.frontier import (
     gateway_requests,
     load_points,
     mark_frontier,
+    stage_waterfall,
     summarize_point,
     write_report,
 )
@@ -467,6 +470,90 @@ def test_a_median_between_two_runs_keeps_its_half(tmp_path: Path) -> None:
     table = write_report(rows, tmp_path / "report")[1].read_text()
     assert f"| {spread('0.5', '0', '1')} |" in table
     assert f"| • | 16 | {spread('4,000', '4,000', '4,000')} |" in table
+
+
+def turn_lines(run_dir: Path, stages: dict[str, float], turns: int, v2v: list[dict]) -> None:
+    """A run directory's turn lines: the worker's stage means over ``turns`` turns, and the callers'
+    turns.jsonl."""
+    waterfall = {stage: {"n": turns, "mean": mean} for stage, mean in stages.items()}
+    rewrite(run_dir, lambda s: s.update(worker={"turns": turns, "waterfall": waterfall}))
+    (run_dir / "bots").mkdir()
+    (run_dir / "bots" / "turns.jsonl").write_text("".join(json.dumps(t) + "\n" for t in v2v))
+
+
+def answered(*v2v_ms: float) -> list[dict[str, Any]]:
+    return [
+        {"caller": 0, "turn": n, "v2v_ms": ms, "barge_in": False} for n, ms in enumerate(v2v_ms)
+    ]
+
+
+def test_the_stage_waterfall_stacks_each_configurations_stages_to_its_mean_v2v(
+    tmp_path: Path, capsys
+) -> None:
+    frozen = [point(tmp_path / c, "disc-frozen", "4", 3700, 10800) for c in ("w2c", "r1")]
+    barged = {"caller": 1, "turn": 0, "v2v_ms": 5000.0, "barge_in": True}
+    turn_lines(
+        frozen[0],
+        {"transcript_ms": 790, "end_of_turn_ms": 800, "llm_ttft_ms": 2500}
+        | {"turn_to_first_sentence_ms": 3000, "tts_first_audio_ms": 300},
+        4,
+        [*answered(4000, 4400), barged | {"v2v_after_barge_in_ms": 4600}, {"error": "timeout"}],
+    )
+    turn_lines(
+        frozen[1],
+        {"transcript_ms": 810, "end_of_turn_ms": 820, "llm_ttft_ms": 2100}
+        | {"turn_to_first_sentence_ms": 2600, "tts_first_audio_ms": 280},
+        4,
+        answered(3800, 4200, 4100, 4300),
+    )
+    cap2 = point(tmp_path / "w2c", "disc-cap2", "6", 3500, 8500)
+    turn_lines(
+        cap2,
+        {"transcript_ms": 820, "end_of_turn_ms": 830, "llm_ttft_ms": 1500}
+        | {"turn_to_first_sentence_ms": 2000, "tts_first_audio_ms": 250},
+        2,
+        answered(3300, 3500),
+    )
+    run = json.loads((cap2 / "run.json").read_text())
+    run["arm"]["voice"]["preemptive_generation"] = False
+    (cap2 / "run.json").write_text(json.dumps(run))
+    voice = point(tmp_path / "w2", "a1-voice", "1", None, 1760)  # no turn lines
+    rows, _ = load_points([*frozen, cap2, voice])
+    [disc, capped] = stage_waterfall(rows)
+    # Each stage's mean over both runs' turns; the V2V samples pooled as the callers pool them.
+    assert {k: disc[k] for k in ("runs", "replies", *(s for s, _ in STACKED))} == {
+        "runs": 2,
+        "replies": 8,
+        "end_of_turn_ms": 810,
+        "turn_to_first_sentence_ms": 2800,
+        "tts_first_audio_ms": 290,
+    }
+    assert (disc["v2v_mean_ms"], disc["v2v_p50_ms"], disc["v2v_p95_ms"]) == (4300, 4250, 4860)
+    assert disc["transport_ms"] == 400  # the rest of the mean V2V
+    # Under preemptive generation the LLM request starts at the final transcript.
+    assert (disc["llm_request_ms"], disc["llm_ttft_ms"]) == (800, 2300)
+    assert (capped["llm_request_ms"], capped["transport_ms"]) == (830, 320)
+    out = tmp_path / "report"
+    write_report(rows, out)
+    table = (out / "frontier.md").read_text()
+    assert (
+        "| disc-frozen: disc-frozen label | 2 | 8 | 810 | 2,800 | 290 | 400 | 4,300 | 4,250 | 4,860 "
+        "| 2,300 |"
+    ) in table
+    assert "| disc-cap2: disc-cap2 label | 1 | 2 | 830 | 2,000 | 250 | 320 | 3,400 |" in table
+    assert "a1-voice: a1-voice label | 1 |" not in table
+    with pytest.raises(ValueError, match="no turn lines of a1-voice"):
+        write_report(rows, out, ["disc-cap2", "a1-voice"])
+    args = ["e2", "report", *map(str, [*frozen, cap2, voice]), "--out", str(out)]
+    assert main([*args, "--waterfall", "a1-voice"]) == 1
+    assert "lh-bench e2: the report has no turn lines of a1-voice" in capsys.readouterr().err
+    if importlib.util.find_spec("matplotlib"):
+        assert main([*args, "--waterfall", "disc-cap2"]) == 0
+        figure = (out / "waterfall.svg").read_text()
+        assert "disc-cap2" in figure and "disc-frozen" not in figure
+        write_report(rows, out)
+        figure = (out / "waterfall.svg").read_text()
+        assert "disc-frozen (2 runs)" in figure and "a1-voice" not in figure
 
 
 def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:

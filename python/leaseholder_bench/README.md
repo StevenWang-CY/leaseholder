@@ -250,6 +250,8 @@ When evicted blocks were idle for less time than blocks typically wait between r
 lh-bench e2 run ~/leaseholder/src/benchmarks/e2/arms/a1-voice.toml --out ~/leaseholder/runs/e2/w2/a1-voice
 lh-bench e2 engine a2-stock-s16.toml     # the engine an arm needs, as variant.sh use takes it
 lh-bench e2 report ~/leaseholder/runs/e2/w2/{a1-voice,a2-stock-s16} --out ~/leaseholder/runs/e2/first
+lh-bench e2 report ~/leaseholder/runs/e2/{w2c,a9,r1,r2}/disc-* --out ~/leaseholder/runs/e2/disc \
+  --waterfall disc-frozen-s24 --waterfall disc-a9-s24   # repeats across rounds; two configurations' waterfall
 lh-bench e2 reset                        # cyan's units as gateway.toml and the worker's defaults have them
 ```
 
@@ -315,9 +317,10 @@ A component that fails fails the point: `run.json` keeps `failed` and the error,
 
 The background goodput comes from AIPerf's records rather than from the gateway's request outcomes, whose `completed` counts a response relayed in full whatever its status: it cannot tell a request the engine refused from one it served. The gateway's token rate stays beside it as a check.
 
-**The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
+**The report.** `lh-bench e2 report RUN_DIR... --out DIR` writes `frontier.csv`, `frontier.md` (a table per arm, ordered by background goodput) and, where matplotlib is installed (AIPerf brings it), `frontier.svg` and `waterfall.svg`. A point is on its arm's frontier when no other point of the arm harvests at least as much background goodput at a V2V p95 at least as low, and one of the two strictly better. Run directories without a complete point are named and left out.
 - **Repeats.** Points measured from the same arm file in several campaigns, under the same point name, are repeats of one configuration. `frontier.md` keeps a row per run, named by its campaign (`frontier.csv`'s `campaign`: the directory that holds the run directory), then gives the configuration's median and range (min–max) of V2V p50/p95/p99, background tokens/s, the realtime first byte p95 and failed turns, with its run count. The frontier places the configuration at its medians, and `frontier.svg` draws it there with whiskers over its runs' range on both axes: one marker per configuration keeps each frontier a line through what `frontier.md` marks, and a run that collapsed still shows as a long whisker. A configuration measured once is shown as before.
 - **The realtime first byte** is exact from the run directory's `gateway.jsonl`, even one fetched after the run (from the journal, for the window in `run.json`), and otherwise the summary's; `realtime_first_byte_source` says which, and `frontier.md` marks an interpolated value with `~`.
+- **The stage waterfall** (`waterfall.svg`, and its table in `frontier.md`) splits each configuration's voice turn into stages that follow one another, as means over the replies of its runs: endpointing (`end_of_turn_ms`), the reply to its first sentence (`turn_to_first_sentence_ms`) and TTS to first audio (`tts_first_audio_ms`), from the worker's turn lines, then the rest of the callers' V2V, transport and playout (the mean V2V less the three). So a bar is as long as the mean V2V; a line marks the median V2V and a triangle the p95, over the callers' samples in `bots/turns.jsonl`. A thin bar under it is the LLM's own time to first token (`llm_ttft_ms`), from its request: under preemptive generation the request starts at the final transcript, before the end of the turn, so it lies across the first two stages. `--waterfall POINT` (repeatable) draws only those configurations, in that order; by default every one with turn lines.
 - **Columns only some points have** appear when one of the points has them: the worker's stage times (p50 and p95 of each, in a table of their own in `frontier.md`) and event counts, and, from `gpu.csv`, the GPU's median SM clock and highest temperature during the calls.
 
 ## Mock server
@@ -395,5 +398,5 @@ at each step with every process stopped, the point directory's rules, the commit
 the logs a point keeps: the gateway's request lines and the worker's journal, waiting for its
 sessions to end only when they will. `tests/test_frontier.py` covers the summary over the window,
 the exact first bytes from a request log, the Pareto marking, repeated points placed at their
-medians with every run kept, the report's columns that only some points have, and the names of the
-lines the voice worker writes.
+medians with every run kept, the stage waterfall's means and V2V marks, the report's columns that
+only some points have, and the names of the lines the voice worker writes.

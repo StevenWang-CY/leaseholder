@@ -11,7 +11,8 @@ that went down (its process restarted during the calls) is an error.
 p95 on y, one frontier per arm. A point is on its arm's frontier when no other point of the arm
 harvests at least as much background goodput at a V2V p95 at least as low, and one of the two
 strictly better. Points measured from the same arm file in several campaigns are repeats of one
-configuration, which the frontier places at their medians; the tables keep every run.
+configuration, which the frontier places at their medians; the tables keep every run. The stage
+waterfall splits each configuration's voice turn into the stages that add up to its mean V2V.
 """
 
 from __future__ import annotations
@@ -455,7 +456,25 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         for q in ("p50", "p95")
     }
     row |= {f"events_{kind}": events.get(kind) for kind in ("sent", "dropped", "failed")}
+    # The stage waterfall's inputs, which frontier.csv leaves out: the count and mean of each of the
+    # worker's stages, and the callers' voice-to-voice samples.
+    row["stage_means"] = {s: (c["n"], c["mean"]) for s, c in waterfall.items() if "mean" in c}
+    row["v2v_samples"] = v2v_samples(run_dir / "bots" / "turns.jsonl")
     return row | gpu(run_dir / "gpu.csv", window)
+
+
+def v2v_samples(turns: Path) -> list[float]:
+    """The callers' voice-to-voice samples in their turns.jsonl, pooled as their summary pools them:
+    each answered turn's, and the reply's after each barge-in. None without the file."""
+    if not turns.exists():
+        return []
+    samples = []
+    for row in map(orjson.loads, filter(str.strip, turns.read_text().splitlines())):
+        if "error" not in row:
+            samples.append(row["v2v_ms"])
+            if row["barge_in"]:
+                samples.append(row["v2v_after_barge_in_ms"])
+    return samples
 
 
 def gpu(samples: Path, window: Mapping[str, float] | None) -> dict[str, int | None]:
@@ -548,8 +567,66 @@ def _arm_order(arm: str) -> tuple[int, str]:
     return (int(number[0]) if number else 1000, arm)
 
 
-def write_report(rows: Sequence[Mapping[str, Any]], out_dir: Path) -> list[Path]:
-    """frontier.csv, frontier.md and, when matplotlib is installed, frontier.svg."""
+STACKED = (
+    ("end_of_turn_ms", "Endpointing"),
+    ("turn_to_first_sentence_ms", "Reply to first sentence"),
+    ("tts_first_audio_ms", "TTS first audio"),
+)
+"""The worker's stages that follow one another from the end of the caller's speech, as the stage
+waterfall stacks them; the rest of the callers' V2V is transport and playout."""
+
+
+def stage_waterfall(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Each configuration's voice turn, over the runs that have turn lines: the mean of each STACKED
+    stage over their turns, the rest of the mean V2V (``transport_ms``: the callers' V2V less the
+    worker's stages), the LLM's mean time to first token and when its request started (at the final
+    transcript under preemptive generation, otherwise at the end of the turn), and the mean, median
+    and p95 of the callers' V2V samples. Configurations without turn lines are left out."""
+    cells = []
+    for group in configurations(rows):
+        runs = [r for r in group["runs"] if r["stage_means"] and r["v2v_samples"]]
+        stages = {stage: _pooled(runs, stage) for stage, _ in STACKED}
+        if not runs or None in stages.values():
+            continue
+        v2v = summarize(sample for r in runs for sample in r["v2v_samples"])
+        request = _pooled(runs, "transcript_ms") if runs[0]["preemptive_generation"] else None
+        cells.append(
+            {
+                "point": group["point"],
+                "label": runs[0]["label"],
+                "runs": len(runs),
+                "replies": v2v["n"],
+                **stages,
+                "transport_ms": v2v["mean"] - sum(stages.values()),
+                "llm_request_ms": stages["end_of_turn_ms"] if request is None else request,
+                "llm_ttft_ms": _pooled(runs, "llm_ttft_ms"),
+                "v2v_mean_ms": v2v["mean"],
+                "v2v_p50_ms": v2v["p50"],
+                "v2v_p95_ms": v2v["p95"],
+            }
+        )
+    return cells
+
+
+def _pooled(runs: Iterable[Mapping[str, Any]], stage: str) -> float | None:
+    """A stage's mean over the turns of several runs: each run's mean weighted by its count."""
+    counted = [r["stage_means"][stage] for r in runs if stage in r["stage_means"]]
+    turns = sum(n for n, _ in counted)
+    return sum(n * mean for n, mean in counted) / turns if turns else None
+
+
+def write_report(
+    rows: Sequence[Mapping[str, Any]], out_dir: Path, waterfall: Sequence[str] = ()
+) -> list[Path]:
+    """frontier.csv, frontier.md and, when matplotlib is installed, frontier.svg and waterfall.svg:
+    the stage waterfall of the points ``waterfall`` names, in its order, or of every configuration
+    with turn lines. Naming a point without turn lines in the report is a ValueError."""
+    cells = stage_waterfall(rows)
+    if waterfall:
+        missing = [name for name in waterfall if name not in {c["point"] for c in cells}]
+        if missing:
+            raise ValueError(f"the report has no turn lines of {', '.join(missing)}")
+        cells = [c for name in waterfall for c in cells if c["point"] == name]
     out_dir.mkdir(parents=True, exist_ok=True)
     written = [out_dir / "frontier.csv", out_dir / "frontier.md"]
     with written[0].open("w", newline="") as f:
@@ -560,6 +637,8 @@ def write_report(rows: Sequence[Mapping[str, Any]], out_dir: Path) -> list[Path]
     written[1].write_text(markdown(rows))
     if plot(rows, out_dir / "frontier.svg"):
         written.append(out_dir / "frontier.svg")
+    if cells and plot_waterfall(cells, out_dir / "waterfall.svg"):
+        written.append(out_dir / "waterfall.svg")
     return written
 
 
@@ -571,7 +650,7 @@ def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
 
 def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     """The frontier as a table per arm, ordered by background goodput, then the voice worker's stage
-    times when the points have them."""
+    times when the points have them, and the stage waterfall of the configurations with turn lines."""
     measured = _measured(rows)
     gpu_columns = GPU_COLUMNS in measured
     groups = {(g["arm"], g["point"]): g for g in configurations(rows)}
@@ -630,6 +709,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
                 lines.append(_spread(groups[r["arm"], r["point"]], gpu_columns))
     if WORKER_COLUMNS in measured:
         lines += _stages(rows)
+    if cells := stage_waterfall(rows):
+        lines += _waterfall_table(cells)
     return "\n".join(lines) + "\n"
 
 
@@ -690,6 +771,36 @@ def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return lines
 
 
+def _waterfall_table(cells: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The stage waterfall of each configuration with turn lines, as waterfall.svg draws it."""
+    lines = [
+        "",
+        "## Stage waterfall",
+        "",
+        "Each configuration's voice turn as stages that follow one another, in ms, the mean over the "
+        "replies of its runs: the end-of-turn decision after the end of speech (endpointing), the "
+        "reply's first sentence after that decision and its first audio from TTS, as the voice "
+        "worker times them, then the rest of the callers' V2V, transport and playout. The four add "
+        "up to the mean V2V. The LLM's own first token is timed from its request, which under "
+        "preemptive generation starts at the final transcript, before the end of the turn, so it is "
+        "not a stage of its own. waterfall.svg stacks the four and marks the median and p95 V2V.",
+        "",
+        "| Configuration | Runs | Replies | Endpointing | Reply to first sentence "
+        "| TTS first audio | Transport and playout | Mean V2V | V2V p50 | V2V p95 "
+        "| LLM first token |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    stages = (*(key for key, _ in STACKED), "transport_ms")
+    columns = (*stages, "v2v_mean_ms", "v2v_p50_ms", "v2v_p95_ms")
+    for c in cells:
+        times = " | ".join(_cell(c[key]) for key in columns)
+        lines.append(
+            f"| {c['point']}: {c['label']} | {c['runs']} | {c['replies']} | {times} "
+            f"| {_cell(c['llm_ttft_ms'])} |"
+        )
+    return lines
+
+
 def _cell(value: Any, digits: int = 0) -> str:
     if value is None:
         return "—"
@@ -702,6 +813,7 @@ def _cell(value: Any, digits: int = 0) -> str:
 _SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
 _MARKERS = ("o", "s", "^", "D")
 _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9", "#c3c2b7"
+_SECONDARY = "#52514e"
 
 
 def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
@@ -783,6 +895,79 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path) -> bool:
         for text in legend.get_texts():
             text.set_color(_INK)
     fig.tight_layout()
+    fig.savefig(path, format="svg", facecolor=_SURFACE)
+    plt.close(fig)
+    return True
+
+
+def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:
+    """waterfall.svg: a bar per configuration that stacks the means of its stages from the end of the
+    caller's speech, so that its length is the mean V2V, with a line at the median V2V and a
+    triangle at the p95, and under it a thin bar for the LLM's time to first token from its
+    request. False without matplotlib."""
+    try:
+        import matplotlib
+    except ImportError:
+        return False
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import StrMethodFormatter
+
+    ys = list(range(len(cells)))
+    fig, ax = plt.subplots(
+        figsize=(7.5, 1.9 + 0.5 * len(cells)), facecolor=_SURFACE, layout="constrained"
+    )
+    ax.set_facecolor(_SURFACE)
+    handles, left = [], [0.0] * len(cells)
+    segments = [*STACKED, ("transport_ms", "Transport and playout")]
+    for color, (key, label) in zip(_SERIES, segments, strict=False):
+        widths = [max(0.0, c[key]) for c in cells]
+        bars = ax.barh(ys, widths, left=left, height=0.42, color=color, edgecolor=_SURFACE)
+        handles.append((bars, label))
+        left = [x + width for x, width in zip(left, widths, strict=True)]
+    timed = [(y, c) for y, c in zip(ys, cells, strict=True) if c["llm_ttft_ms"] is not None]
+    llm = ax.barh(
+        [y + 0.32 for y, _ in timed],
+        [c["llm_ttft_ms"] for _, c in timed],
+        left=[c["llm_request_ms"] for _, c in timed],
+        height=0.08,
+        color=_SECONDARY,
+    )
+    median = ax.vlines(
+        [c["v2v_p50_ms"] for c in cells],
+        [y - 0.27 for y in ys],
+        [y + 0.27 for y in ys],
+        colors=_INK,
+        linewidth=2,
+    )
+    p95 = ax.scatter(
+        [c["v2v_p95_ms"] for c in cells], [y - 0.34 for y in ys], s=36, marker="v", color=_INK
+    )
+    handles += [
+        (llm, "LLM first token, from its request"),
+        (median, "V2V median"),
+        (p95, "V2V p95"),
+    ]
+    ax.set_yticks(
+        ys, [c["point"] + (f" ({c['runs']} runs)" if c["runs"] > 1 else "") for c in cells]
+    )
+    ax.set_ylim(len(cells) - 0.5, -0.55)  # the report's order, top to bottom
+    ax.set_xlabel("ms from the end of the caller's speech", color=_INK)
+    ax.set_title(
+        "Voice turn stages, stacked: a bar's length is the mean V2V", color=_INK, loc="left"
+    )
+    ax.grid(axis="x", color=_GRID, linewidth=0.75)
+    ax.set_axisbelow(True)
+    ax.tick_params(colors=_MUTED)
+    ax.tick_params(axis="y", length=0, labelcolor=_INK)
+    ax.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(_AXIS)
+    artists, labels = zip(*handles, strict=True)
+    legend = fig.legend(artists, labels, loc="outside lower left", ncols=3, frameon=False)
+    for text in legend.get_texts():
+        text.set_color(_INK)
     fig.savefig(path, format="svg", facecolor=_SURFACE)
     plt.close(fig)
     return True
