@@ -1,0 +1,20 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml).
+# The gateway's policy leaseholder: KV headroom of one voice turn (1,024 tokens, a turn at its longest in arm 1) per
+# session armed from speech onset, a critical-window budget of 150 ms of predicted background prefill, replies capped
+# at 16 tokens when the headroom was not kept, and aging after 10 s; the engine's make-room variant (two preemptions a
+# step, the budget cap, a 2,048-token reserve for priority 0); the voice worker's lifecycle events.
+arm = 9
+label = "Leaseholder: timed headroom, critical-window throttle, degrade; make-room"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "leaseholder"
+headroom_tokens = 1024
+critical_prefill_budget_ms = 150
+degrade_max_tokens = 16
+
+[engine]
+variant = "make-room"

@@ -1,0 +1,24 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long): the full arm, its knob
+# (the critical-window budget of predicted background prefill: 0, 150 and 500 ms), and one run of each single-mechanism
+# ablation. The gateway runs policy leaseholder, the engine the make-room variant, the voice worker posts lifecycle
+# events, each unless the point turns it off. Grouped by engine, so the engine restarts five times.
+#   benchmarks/e2/campaign.sh benchmarks/e2/a9.campaign
+
+# The make-room engine as arm 9 runs it
+arms/disc-a9-s24.toml
+arms/disc-a9-budget0-s24.toml
+arms/disc-a9-budget500-s24.toml
+arms/disc-a9-no-throttle-s24.toml
+arms/disc-a9-no-headroom-s24.toml
+arms/disc-a9-no-degrade-s24.toml
+arms/disc-a9-trigger-request-s24.toml
+arms/disc-a9-no-events-s24.toml
+arms/disc-a9-engine-only-s24.toml
+
+# make-room with one of its switches off
+arms/disc-a9-no-kv-makeroom-s24.toml
+arms/disc-a9-no-budget-cap-s24.toml
+arms/disc-a9-no-reserve-s24.toml
+
+# The gateway policy on the frozen engine
+arms/disc-a9-gateway-only-s24.toml

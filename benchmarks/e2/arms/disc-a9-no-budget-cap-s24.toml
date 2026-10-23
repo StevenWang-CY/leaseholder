@@ -1,0 +1,18 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml).
+# Arm 9 with make-room without the prefill budget cap (--additional-config.make_room.budget_cap false).
+arm = 9
+label = "Leaseholder, make-room without the prefill budget cap"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "leaseholder"
+headroom_tokens = 1024
+critical_prefill_budget_ms = 150
+degrade_max_tokens = 16
+
+[engine]
+variant = "make-room"
+flags = ["--additional-config.make_room.budget_cap", "false"]
