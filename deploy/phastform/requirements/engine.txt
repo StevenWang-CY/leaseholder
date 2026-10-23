@@ -1,5 +1,8 @@
 # Engine environment for Phastform: vLLM 0.32.0 with the audio extra (serves the LLM and Whisper).
 # Built by deploy/phastform/bootstrap.sh with: uv pip sync --torch-backend cu130
+# The CUDA compiler (nvidia-cuda-nvcc, -crt, -cccl, nvidia-nvvm) is CUDA 13.0's, as cuda-toolkit 13.0.3.0's nvcc extra
+# pins it and as /usr/local/cuda-13.0 is on Phastform: the kernels JIT-compiled on a host without a system toolkit (Gray)
+# need a compiler that matches the runtime headers (nvidia-cuda-runtime 13.0.96), which CCCL checks.
 agent-detector==2.0.0
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.5
@@ -87,10 +90,10 @@ ninja==1.13.2
 numba==0.65.0
 numpy==2.3.5
 nvidia-cublas==13.1.1.3
-nvidia-cuda-cccl==13.3.4.3.1
-nvidia-cuda-crt==13.4.92
+nvidia-cuda-cccl==13.0.85
+nvidia-cuda-crt==13.0.88
 nvidia-cuda-cupti==13.0.85
-nvidia-cuda-nvcc==13.4.92
+nvidia-cuda-nvcc==13.0.88
 nvidia-cuda-nvrtc==13.0.88
 nvidia-cuda-runtime==13.0.96
 nvidia-cudnn-cu13==9.27.0.42
@@ -111,7 +114,7 @@ nvidia-nccl-cu13==2.29.7
 nvidia-nvjitlink==13.4.92
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
-nvidia-nvvm==13.4.92
+nvidia-nvvm==13.0.88
 nvtx==0.2.15
 openai==3.36.0
 opencv-python-headless==5.0.0.93
