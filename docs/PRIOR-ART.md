@@ -109,6 +109,25 @@ Checked in the v0.32.0 source:
 - Through Dynamo, per-request engine priority for TensorRT-LLM is "not currently exposed".
 - **Relation.** Pre-empts retention priority with expiry inside an engine. Not a baseline, since Leaseholder targets vLLM.
 
+### DeepInfer (released 2026-10-16)
+
+[deepseek-ai/DeepInfer](https://github.com/deepseek-ai/DeepInfer) (Apache-2.0) is DeepSeek's engine for DeepSeek-V4.1-Flash, a C++ scheduler under a Python worker. Read in full at 9bd9cf2 (2026-10-21):
+- **No latency tiers.**
+  - There is no priority field.
+  - Prefill is first come, first served, and a blocked head blocks the queue.
+  - A step is all prefill or all decode.
+  - Prefill is attempted only while KV usage is at or below 90% (`scheduler.hpp:80, 313`).
+  - A prompt's first chunk reserves KV for the whole prompt (`scheduler.hpp:386, 518-520`).
+  - Latency control is left outside the engine, to prefill/decode disaggregation and load balancers.
+- **Preemption recomputes or stops.** Decode engines stop a preempted request, and a layer above resubmits it. There is no swap and no CPU tier (`scheduler.hpp:766-790`). The victim is the request with the longest output, meant as the one "occupying the most KV cache" (`sequence.hpp:56`).
+- **Steps are budgeted by measured time.** Each decode CUDA-graph size is timed at startup and the curve is cached (`model_runner.py:561-631`, `decode_perf_cache.py`). The speculative-verification scheduler picks the step size with the most expected accepted tokens per millisecond (`mtp_varlen.hpp:228-258`).
+- **Relation.** Not a baseline: it serves one model on many GPUs and has no tiers. Leaseholder takes three mechanisms and makes them class-aware:
+  - the critical-window throttle budgets background prefill in predicted time;
+  - the make-room patch preempts the lower-priority request that holds the most blocks;
+  - a KV reserve for the realtime class is the class-aware form of the 90% watermark.
+
+  DeepInfer frees a preempted request's blocks only after their copy completes. vLLM 0.32's stock preemption path already does this, and the patch reuses that path.
+
 ## KV across tool calls and turns
 
 ### Research
