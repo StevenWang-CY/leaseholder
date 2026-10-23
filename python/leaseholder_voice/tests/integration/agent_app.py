@@ -3,7 +3,8 @@
 The ``voice_plane`` fixture starts it as
 ``python -m livekit.agents start tests/integration/agent_app.py``. The environment gives
 the LiveKit URL and keys, the Unix sockets of the mock endpoints and a directory for
-per-room event logs; the dispatch metadata selects the interruption handling.
+per-room event logs; the dispatch metadata selects the interruption handling. Like the
+deployed worker, the agent posts its lifecycle events to the LLM's socket, here the mock's.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from leaseholder_voice import plugins
+from leaseholder_voice import events, plugins
 from leaseholder_voice.protocol import room_session_id
 
 AGENT_NAME = "leaseholder-voice-test"
@@ -111,3 +112,4 @@ async def entrypoint(ctx: JobContext) -> None:
     await session.start(
         agent=StoryAgent(log), room=ctx.room, room_options=room_options, record=False
     )
+    events.observe(ctx, session, session_id, uds=os.environ["LH_LLM_UDS"])

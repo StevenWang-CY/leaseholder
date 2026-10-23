@@ -100,6 +100,30 @@ class VoicePlane:
         path = self.events_dir / f"{room}.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+    def lifecycle_events(self, session_id: str, timeout: float = 15.0) -> list[dict[str, Any]]:
+        """The session's lifecycle events at the mock control plane, once its end has arrived (it
+        closes when the bot leaves)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            posted = [e for e in self.mocks.lifecycle_events() if e["session_id"] == session_id]
+            if any(e["type"] == "session_closed" for e in posted) or time.monotonic() > deadline:
+                return posted
+            time.sleep(0.1)
+
+    def agent_turns(self, session_id: str) -> list[dict[str, Any]]:
+        """The worker's turn lines for the session, from its JSON log."""
+        turns = []
+        for line in (self.run_dir / "worker.log").read_text(errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                record = json.loads(line)
+                if (
+                    isinstance(record, dict)
+                    and record.get("name") == "leaseholder_voice.turns"
+                    and record.get("session_id") == session_id
+                ):
+                    turns.append(record)
+        return turns
+
     def run_bot(
         self,
         room: str,

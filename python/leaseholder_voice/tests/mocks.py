@@ -63,7 +63,8 @@ class OpenAIMocks:
     The LLM streams the story one token per ``token_interval`` for ``stream_seconds``
     and records when the client disconnects. The TTS answers every request with
     ``speech_seconds`` of a 440 Hz tone as raw 24 kHz PCM. The STT always returns
-    ``TRANSCRIPT``.
+    ``TRANSCRIPT``. Like the control plane's socket, the LLM's also takes lifecycle
+    events (``POST /v1/events``), and records them.
     """
 
     def __init__(
@@ -85,6 +86,7 @@ class OpenAIMocks:
         self._chat_streams: list[ChatStream] = []
         self._transcriptions: list[Transcription] = []
         self._speech_requests: list[Speech] = []
+        self._lifecycle_events: list[dict[str, Any]] = []
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, name="openai-mocks")
         self._runners: list[web.AppRunner] = []
@@ -114,6 +116,11 @@ class OpenAIMocks:
         with self._lock:
             return list(self._speech_requests)
 
+    def lifecycle_events(self) -> list[dict[str, Any]]:
+        """The events posted, in arrival order, each with its batch's ``received_at``."""
+        with self._lock:
+            return list(self._lifecycle_events)
+
     def _call(self, coro: Any) -> Any:
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout=30)
 
@@ -123,6 +130,7 @@ class OpenAIMocks:
             self.llm_uds: [
                 web.get("/v1/models", self._models),
                 web.post("/v1/chat/completions", self._chat_completions),
+                web.post("/v1/events", self._events),
             ],
             self.tts_uds: [web.post("/v1/audio/speech", self._synthesize)],
         }
@@ -197,6 +205,14 @@ class OpenAIMocks:
         tokens = [FIRST_SENTENCE]
         tokens += [f" {words[i % len(words)]}" for i in range(self.stream_tokens - 1)]
         return tokens
+
+    async def _events(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        batch = body if isinstance(body, list) else [body]
+        received_at = time.monotonic()
+        with self._lock:
+            self._lifecycle_events += [event | {"received_at": received_at} for event in batch]
+        return web.json_response({"accepted": len(batch), "duplicates": 0}, status=202)
 
     async def _transcribe(self, request: web.Request) -> web.Response:
         form = await request.post()

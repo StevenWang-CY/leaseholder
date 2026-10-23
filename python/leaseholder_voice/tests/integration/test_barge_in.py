@@ -2,8 +2,9 @@
 
 The bot speaks a turn; the agent answers from a mock LLM that streams one token per
 100 ms for 20 s; one second into the agent's reply audio the bot barges in. The mock
-LLM records the request headers and the moment the client disconnects. While the
-barge-in plays, the socket audit checks that nothing listens outside loopback.
+LLM records the request headers and the moment the client disconnects, and takes the
+agent's lifecycle events as the control plane does. While the barge-in plays, the socket
+audit checks that nothing listens outside loopback.
 """
 
 from __future__ import annotations
@@ -35,6 +36,19 @@ CASES: dict[str, dict[str, Any]] = {
 
 MIN_INTERRUPTION = 0.5  # interruption.min_duration, the LiveKit default
 
+# The call's lifecycle events, in order, around whatever else VAD makes of the audio: the
+# turn, the reply, the barge-in that interrupts it, its turn and the reply to it, the end.
+SKELETON = (
+    "user_speech_started",
+    "user_turn_ended",
+    "playback_started",
+    "user_speech_started",
+    "interrupted",
+    "user_turn_ended",
+    "playback_started",
+    "session_closed",
+)
+
 # Seconds from the barge-in's speech onset to the mock LLM seeing the disconnect. Measured
 # on cyan, 10 runs (2026-10-22): pause-then-interrupt 2.17-2.20 s, interrupt-on-speech
 # 0.57-0.62 s.
@@ -55,6 +69,11 @@ def _first(events: list[dict[str, Any]], after: float, **match: Any) -> float | 
     return None
 
 
+def _in_order(expected: tuple[str, ...], seen: list[str]) -> bool:
+    remaining = iter(seen)
+    return all(name in remaining for name in expected)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("case", CASES)
 def test_barge_in_closes_llm_stream(
@@ -73,6 +92,9 @@ def test_barge_in_closes_llm_stream(
     onset = barge_in["onset"]
     streams = [s for s in voice_plane.mocks.chat_streams() if s.opened_at > connected["t"]]
     agent = voice_plane.agent_events(room)
+    session_id = room_session_id(connected["room_sid"])
+    lifecycle = voice_plane.lifecycle_events(session_id)
+    turns = voice_plane.agent_turns(session_id)
     record = voice_plane.run_dir / f"{room}.json"
     record.write_text(
         json.dumps(
@@ -81,6 +103,8 @@ def test_barge_in_closes_llm_stream(
                 "agent": agent,
                 "llm_streams": [dataclasses.asdict(s) for s in streams],
                 "socket_audits": [dataclasses.asdict(a) for a in audits],
+                "lifecycle_events": lifecycle,
+                "turns": turns,
             },
             indent=1,
         )
@@ -89,7 +113,6 @@ def test_barge_in_closes_llm_stream(
     assert len(audits) == 1, f"the socket audit did not run once; see {record}"
     assert not audits[0].problems, f"sockets outside loopback:\n{audits[0]}"
 
-    session_id = room_session_id(connected["room_sid"])
     assert streams, f"the agent sent no LLM request; see {record}"
     for stream in streams:
         assert stream.headers.get(SESSION_ID_HEADER.lower()) == session_id
@@ -107,11 +130,27 @@ def test_barge_in_closes_llm_stream(
         assert reply.disconnected_at > barge_in["speech_end"], f"closed too early; see {record}"
     assert close <= BOUND[case], f"closed {close:.3f} s after the barge-in; see {record}"
 
+    # Every lifecycle event reached the control plane, in order.
+    types = [e["type"] for e in lifecycle]
+    ids = [f"{session_id}-{n}" for n in range(1, len(lifecycle) + 1)]
+    assert [e["event_id"] for e in lifecycle] == ids, f"events lost or reordered; see {record}"
+    assert _in_order(SKELETON, types), f"lifecycle events {types}; see {record}"
+    assert types.count("session_closed") == 1 and types[-1] == "session_closed", types
+    # The barge-in's interruption comes with the reply's stream closing, and says how much of
+    # the reply the bot heard.
     spans = next(e for e in events if e["event"] == "agent_audio")["spans"]
+    cut = next(e for e in lifecycle if e["type"] == "interrupted" and e["received_at"] > onset)
+    assert abs(cut["received_at"] - reply.disconnected_at) <= 1.0, f"see {record}"
+    heard = next((end - start for start, end in spans if start < onset <= end), None)
+    assert heard is not None, f"no reply audio under way at the barge-in; see {record}"
+    assert abs(cut["played_ms"] - heard * 1000) <= 250, f"played vs heard; see {record}"
+    assert turns and {"llm_ttft_ms", "e2e_ms"} <= turns[0].keys(), f"turn lines; see {record}"
+
     marks = {
         "agent VAD onset": _first(agent, onset, event="user_state", state="speaking"),
         "agent audio stopped": next((end for start, end in spans if start < onset <= end), None),
         "LLM node cancelled": _first(agent, onset, event="llm_node_finished"),
+        "interrupted event": cut["received_at"],
         "barge-in speech ended": barge_in["speech_end"],
     }
     timeline = ", ".join(

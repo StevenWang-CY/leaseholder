@@ -145,10 +145,15 @@ What the test does:
 - The bot plays a LibriSpeech utterance. Once the agent's reply audio starts, the bot
   waits 1 s, then barges in with a second utterance. Meanwhile the mock LLM is still
   streaming: one token per 100 ms, for 20 s.
-- The test asserts four things:
+- The test asserts five things:
   - every LLM request in the room carries `X-Session-ID: voice-<room SID>` and
     `X-LH-Class: realtime`;
   - the stream that was open at the barge-in is closed by the client, within the bound;
+  - the lifecycle events reach the mock LLM's socket, which takes them as the control
+    plane's does, all of them and in order: the turn, the reply, the barge-in that
+    interrupts it, within 1 s of the stream closing and with `played_ms` within 250 ms of
+    what the bot heard, its turn, the reply to it, the session's end; and the worker logs
+    turn lines;
   - nothing in the namespace listens outside loopback, except the WebRTC clients' ICE
     sockets on the dummy address;
   - none of the test's processes owns a TCP or UDP socket on the host.
