@@ -134,7 +134,10 @@ One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.
 
 ## Checks before heavy work on a shared host
 
-- `nvidia-smi` and `who`. `gpu-guard` refuses to start a GPU unit while another user's process holds the GPU.
+- `nvidia-smi` and `who`. `gpu-guard` refuses to start a GPU unit while another user's process holds the GPU. It cannot stop
+  work that starts after the units; another user's processes run in their own tmux, which `tmux ls` does not show.
+- While a campaign measures, `nvidia-smi --query-compute-apps=pid,used_memory --format=csv` on the GPU node lists only the
+  box's units (their cgroups end in `lh-*.service`). A point measured while any other process held the GPU is measured again.
 - `free -g`, and `df -h /dev/shm`: the CPU tier occupies 20 GiB there.
 - Port audit:
   - on Phastform: `ss -Hlntu | grep -E ':(8000|8100|8880|5557|5558)\b'` shows only `127.0.0.1`;
