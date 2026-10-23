@@ -263,6 +263,17 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 - **What make-room does.** It preempts one priority-2 request at once, through the stock preemption path; with the OffloadingConnector the victim's KV is in the CPU tier for its resume. Both runs end in the same state, one agent request waiting, but the voice turn's first token comes 4.7 s sooner.
 - **An instrument note.** `vllm:num_preemptions_total` stayed 0 through the stock timeline's preemption: vLLM counts a preemption when the victim's next output reaches the frontend, so a victim still waiting is not counted yet. E2's per-point engine counters therefore miss victims that resume after a point's window, and the probe reads the running and waiting counts instead.
 
+**The prefill case.** The probe's `prefill` case sends three priority-2 requests of 10,000 prompt tokens, which prefill beside each other with room left in the pool, and the voice turn once all three run. It times the turn's first token and its 16th, a reply's first sentence (two runs each, on Gray, 2026-10-23):
+
+| Scheduler | Priority-0 TTFT | 16th token |
+|---|---|---|
+| Stock vLLM 0.32.0, priority scheduling | 290, 302 ms | 1,226, 1,226 ms |
+| `make-room` as first built (e0d8ac7: the budget cap only leaves a waiting request its first chunk) | 324, 339 ms | 1,248, 1,277 ms |
+| `make-room`: the budget cap keeps lower-priority prefill out of the steps of a request's first tokens | 280, 374 ms | 576, 671 ms |
+
+- **Why.** Every step of the reply carried the agents' prefill chunks, up to 512 tokens, so its tokens came about 60 ms apart; with the budget cap they come about 18 ms apart. The first token still waits for the step in flight when the turn arrives. E2's first arm-9 point, on the first module, showed the same loss at scale: its waterfall put it in the reply's first sentence (1,335 ms at the median against 536 ms to the first token).
+- **The KV case on the final module:** 228 and 288 ms to the first token, 517 and 577 ms to the 16th.
+
 ## Agent replay on the frozen box: a first retention-headroom signal
 
 Measured in W0: AIPerf `agentic_replay` of the 32×-scaled Claude Code corpus, 16 session trees, think times capped at 120 s, `ignore_eos`, 10 minutes, against the frozen box through the tunnel. `lh-bench kv-metrics` compared vLLM's sampled KV block histograms over the run.

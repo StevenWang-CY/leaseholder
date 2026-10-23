@@ -458,9 +458,10 @@ def test_a_victim_with_cached_blocks_waits_for_the_prefill_it_made_room_for(modu
 
 
 @pytest.mark.parametrize("threshold", [0, 256])
-def test_the_budget_cap_leaves_the_waiting_request_its_first_chunk(module, model, threshold):
-    """A running priority-2 prefill leaves a waiting priority-0 request its first chunk (300 tokens, or the
-    long-prefill threshold) in the step's 512 tokens; the priority-2 decode still gets its token."""
+def test_the_budget_cap_gives_a_waiting_request_that_fits_the_step(module, model, threshold):
+    """A waiting priority-0 request that fits takes its first chunk (300 tokens, or the long-prefill threshold) in a
+    step that a running priority-2 prefill sits out; the priority-2 decode still gets its token. Stock vLLM (the
+    control) gives the prefill the budget first."""
     first_chunk = threshold or 300
 
     def voice_step(make_room):
@@ -478,17 +479,14 @@ def test_the_budget_cap_leaves_the_waiting_request_its_first_chunk(module, model
         sched.add_request(request("voice", 300, priority=0, arrival=2))
         return step(sched).num_scheduled_tokens
 
-    stock = voice_step({})  # the prefill takes the budget first
+    stock = voice_step({})
     assert stock["decode"] == 1 and stock.get("voice", 0) < first_chunk
 
-    capped = voice_step({"budget_cap": True})
-    assert capped["decode"] == 1 and capped["voice"] == first_chunk
-    assert capped["prefill"] == min(threshold or 511, 511 - first_chunk)
+    assert voice_step({"budget_cap": True}) == {"decode": 1, "voice": first_chunk}
 
 
 def test_the_budget_cap_never_cuts_a_decode(module, model):
-    """A priority-2 decode scheduled after the capped prefill keeps its token, though it takes one of the waiting
-    request's 256."""
+    """A priority-2 decode scheduled after the prefill that sits out the step keeps its token."""
     sched = scheduler(
         module.Scheduler,
         model,
@@ -501,8 +499,55 @@ def test_the_budget_cap_never_cuts_a_decode(module, model):
     step(sched)
     run(sched, request("decode", 40, priority=2, arrival=1))  # runs after the prefill
     sched.add_request(request("voice", 300, priority=0, arrival=2))
-    tokens = step(sched).num_scheduled_tokens
-    assert (tokens["prefill"], tokens["decode"], tokens["voice"]) == (256, 1, 255)
+    assert step(sched).num_scheduled_tokens == {"decode": 1, "voice": 256}
+
+
+def test_a_waiting_request_that_does_not_fit_holds_nothing_back(module, model):
+    """Without KV make-room, a priority-0 request of 10 blocks does not fit beside the priority-2 prefill in flight,
+    which still needs 10 of the 12 free blocks: the prefill, whose blocks it waits for, goes on."""
+    sched = scheduler(module.Scheduler, model, 33, {"budget_cap": True}, max_num_batched_tokens=64)
+    run(sched, request("decode", blocks(16), priority=2, arrival=0))
+    prefill = request("prefill", 14 * BLOCK, priority=2, arrival=1)
+    sched.add_request(prefill)
+    step(sched)  # admitted, as its 14 blocks fit; 63 of its 224 tokens beside the decode
+    assert free_blocks(sched) == 12
+    sched.add_request(request("voice", blocks(10), priority=0, arrival=2))
+    for _ in range(2):
+        tokens = step(sched).num_scheduled_tokens
+        assert tokens["prefill"] == 63 and "voice" not in tokens
+
+
+@pytest.mark.parametrize("make_room", [{"budget_cap": True, "budget_cap_tokens": 4}, {}])
+def test_lower_priority_prefill_sits_out_a_requests_first_tokens(module, model, make_room):
+    """Once the priority-0 request runs, the running priority-2 prefill and a waiting priority-2 request sit out the
+    steps until it has its first 4 tokens, while the priority-2 decode keeps its token; then both go on. A request's
+    first tokens hold back only lower priorities: before the voice turn, the decode's first tokens hold back no
+    prefill of its own priority. Stock vLLM (the control) schedules the prefill in every step."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        400,
+        make_room,
+        long_prefill_token_threshold=256,
+        max_model_len=4096,
+    )
+    run(sched, request("decode", 40, priority=2, arrival=0))
+    sched.add_request(request("prefill", 3000, priority=2, arrival=1))
+    assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 256}
+    voice = request("voice", 100, priority=0, arrival=2)
+    sched.add_request(voice)
+    tokens = step(sched).num_scheduled_tokens  # its whole prompt
+    assert tokens == {"decode": 1, "voice": 100} or not make_room
+    assert voice.num_output_tokens == 1
+    sched.add_request(request("late", 300, priority=2, arrival=3))
+    steps = [step(sched).num_scheduled_tokens for _ in range(4)]
+
+    if make_room:
+        assert steps[:3] == [{"decode": 1, "voice": 1}] * 3
+        assert steps[3]["prefill"] == 256 and steps[3]["late"] > 0
+    else:
+        assert all(tokens["prefill"] == 256 for tokens in steps)
+    assert all(tokens["decode"] == tokens["voice"] == 1 for tokens in steps)
 
 
 # The reserve

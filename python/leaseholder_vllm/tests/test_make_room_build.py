@@ -37,8 +37,9 @@ def test_build_adds_the_change_and_nothing_else(tmp_path: Path) -> None:
     for line in (
         "make_room = (",
         "make_room_victims = self._make_room(waiting_req, scheduled_timestamp)",
+        "first_tokens_priority = self._make_room_first_tokens_priority(waiting_req)",
         "if request in make_room_victims:",
-        "num_new_tokens, max(token_budget - num_waiting_tokens, 0)",
+        "and request.priority > first_tokens_priority",
         "and self._num_blocks_short(request) > 0",
         "def _make_room(self, request: Request, timestamp: float) -> set[Request]:",
         "victim, timestamp, drop_stale_output=self.requires_kv_delivery",

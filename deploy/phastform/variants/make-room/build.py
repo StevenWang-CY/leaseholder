@@ -18,8 +18,11 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
    resumed in the step that preempted it. Blocks whose free is deferred (async scheduling with a KV-consumer
    connector, as on the frozen box) count as free: they, like the victims', are free by the next step, when the
    request is admitted; blocks a connector's pending transfers will free are waited for, as the running loop waits.
-2. ``budget_cap``: a running prefill of a lower priority than that waiting request leaves the waiting request's first
-   chunk in the step's token budget. Decodes are never cut.
+2. ``budget_cap``: prefills of a lower priority, running or waiting, sit out the steps of a request's first tokens:
+   from the step in which the waiting request of the highest priority fits (deferred frees counted) until it has its
+   first ``budget_cap_tokens`` output tokens (16: a voice reply's first sentence). Those steps carry its tokens and
+   the decodes alone; decodes are never cut. A waiting request that does not fit holds nothing back, so prefills that
+   will free its blocks go on.
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
    sequence, the blocks in-flight prefills still need and this reserve all fit in the free blocks, so a request of
    priority 0 (Leaseholder's realtime class) usually finds room without preempting anyone. With
@@ -58,6 +61,7 @@ SWITCHES = """        # Make room for waiting requests of a higher priority: pre
         )
         self.max_preemptions_per_step = make_room.get("max_preemptions_per_step", 0)
         self.prefill_budget_cap = make_room.get("budget_cap", False)
+        self.prefill_budget_cap_tokens = make_room.get("budget_cap_tokens", 16)
         self.reserve_blocks = cdiv(make_room.get("reserve_tokens", 0), block_size)
         num_max_len_blocks = cdiv(self.max_model_len, block_size)
         if self.reserve_blocks and (
@@ -75,6 +79,9 @@ MAKE_ROOM = """        # Make room for the waiting request of the highest priori
         make_room_victims: set[Request] = set()
         if waiting_req is not None and self.max_preemptions_per_step:
             make_room_victims = self._make_room(waiting_req, scheduled_timestamp)
+        # Prefills of a lower priority sit out the steps of a request's first
+        # tokens.
+        first_tokens_priority = self._make_room_first_tokens_priority(waiting_req)
 
 """
 
@@ -85,23 +92,23 @@ NOT_RESUMED = """                if request in make_room_victims:
 """
 
 BUDGET_CAP = """            if (
-                self.prefill_budget_cap
-                and waiting_req is not None
+                first_tokens_priority is not None
                 and request.is_prefill_chunk
-                and request.priority > waiting_req.priority
+                and request.priority > first_tokens_priority
             ):
-                # Leave the waiting request its first chunk; decodes are not cut.
-                num_waiting_tokens = (
-                    waiting_req.num_tokens - waiting_req.num_computed_tokens
-                )
-                if 0 < long_prefill_token_threshold < num_waiting_tokens:
-                    num_waiting_tokens = long_prefill_token_threshold
-                num_new_tokens = min(
-                    num_new_tokens, max(token_budget - num_waiting_tokens, 0)
-                )
+                # A request of a higher priority awaits its first tokens: this
+                # step is theirs and the decodes'.
+                num_new_tokens = 0
 """
 
 RESERVE = """                if (
+                    request_queue is self.waiting
+                    and first_tokens_priority is not None
+                    and request.priority > first_tokens_priority
+                ):
+                    # Nor does a prefill of a lower priority start meanwhile.
+                    break
+                if (
                     request_queue is self.waiting
                     and (
                         (self.reserve_blocks and request.priority > 0)
@@ -138,6 +145,32 @@ HELPERS = '''
         if request is None or self._is_blocked_waiting_status(request.status):
             return None
         return request
+
+    def _make_room_first_tokens_priority(
+        self, waiting_req: Request | None
+    ) -> int | None:
+        """The highest priority of the requests whose first tokens are due, if
+        the budget cap is on: the running ones with fewer than
+        `budget_cap_tokens` output tokens, and `waiting_req` once it fits beside
+        them, deferred frees counted."""
+        if not self.prefill_budget_cap:
+            return None
+        priorities = [
+            req.priority
+            for req in self.running
+            if req.num_output_tokens < self.prefill_budget_cap_tokens
+        ]
+        if waiting_req is not None:
+            num_active = len(self.running) + self.num_waiting_for_streaming_input
+            num_deferred = self._num_freeable_blocks(
+                *(blocks for _, blocks in self.deferred_frees)
+            )
+            if (
+                num_active < self.max_num_active_reqs
+                and self._num_blocks_short(waiting_req) <= num_deferred
+            ):
+                priorities.append(waiting_req.priority)
+        return min(priorities, default=None)
 
     def _num_blocks_short(self, request: Request) -> int:
         """Free blocks `request` lacks to be admitted with its whole remaining
