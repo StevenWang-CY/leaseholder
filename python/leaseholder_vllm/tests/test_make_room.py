@@ -296,8 +296,9 @@ def test_an_inflight_prefill_gives_back_what_it_still_reserves(module, model):
 
 def test_a_victim_is_not_resumed_in_the_step_that_preempted_it(module, model):
     """The room counts the 8 blocks an in-flight prefill still needs: the priority-0 request of 4 blocks, with 10 free,
-    preempts the decode of 3. The prefill takes 4 blocks in the running loop and the request 4, so 5 stay free, enough
-    to resume the decode in the waiting loop; it waits for the next step."""
+    preempts the decode of 14. The prefill takes 4 blocks in the running loop and the request 4, so 16 stay free,
+    enough to resume the decode in the waiting loop; it waits for the next step. The prefill is of the decode's
+    priority, so nothing else holds the decode back."""
     sched = scheduler(
         module.Scheduler,
         model,
@@ -307,10 +308,10 @@ def test_a_victim_is_not_resumed_in_the_step_that_preempted_it(module, model):
     )
     run(
         sched,
-        request("rt", blocks(15), priority=0, arrival=0),
-        request("bg", blocks(3), priority=2, arrival=1),
+        request("rt", blocks(4), priority=0, arrival=0),
+        request("bg", blocks(14), priority=2, arrival=1),
     )
-    prefill = request("prefill", 12 * BLOCK, priority=0, arrival=2)
+    prefill = request("prefill", 12 * BLOCK, priority=2, arrival=2)
     sched.add_request(prefill)
     step(sched)
     assert prefill.is_prefill_chunk and free_blocks(sched) == 10
@@ -319,7 +320,7 @@ def test_a_victim_is_not_resumed_in_the_step_that_preempted_it(module, model):
     out = step(sched)
     assert out.preempted_req_ids == {"bg"}
     assert scheduled(out) == {"rt", "prefill", "voice"}
-    assert free_blocks(sched) == 5
+    assert free_blocks(sched) == 16
 
 
 def test_the_room_includes_the_watermark(module, model):

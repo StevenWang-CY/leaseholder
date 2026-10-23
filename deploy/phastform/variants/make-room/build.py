@@ -23,9 +23,9 @@ requests of a lower priority for KV and for step budget. Each part is a switch:
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
    sequence, the blocks in-flight prefills still need and this reserve all fit in the free blocks, so a request of
    priority 0 (Leaseholder's realtime class) usually finds room without preempting anyone. With
-   ``max_preemptions_per_step`` on and no reserve, the same check holds with a reserve of 0: a victim, back in the
-   waiting queue with its blocks still cached, would otherwise take them back between the chunks of the request it
-   made room for.
+   ``max_preemptions_per_step`` on, the same check, with a reserve of 0, holds back a request while a prefill of a
+   higher priority is in flight: a victim, back in the waiting queue with its blocks still cached, would otherwise
+   take them back between the chunks of the request it made room for.
 
 The switches are keys of ``--additional-config``'s ``make_room`` table, read once at scheduler init and ignored unless
 the policy is priority; with none set, the module schedules exactly as stock. The edits match anchors in 0.32.0's
@@ -102,15 +102,24 @@ BUDGET_CAP = """            if (
 """
 
 RESERVE = """                if (
-                    (self.reserve_blocks or self.max_preemptions_per_step)
-                    and request.priority > 0
-                    and request_queue is self.waiting
+                    request_queue is self.waiting
+                    and (
+                        (self.reserve_blocks and request.priority > 0)
+                        or (
+                            self.max_preemptions_per_step
+                            and any(
+                                req.priority < request.priority
+                                for req in self._inflight_prefills
+                            )
+                        )
+                    )
                     and self._num_blocks_short(request) > 0
                 ):
-                    # A positive priority value leaves the KV reserve free and,
-                    # with make-room on, what in-flight prefills still need: a
-                    # victim would otherwise take its cached blocks back before
-                    # the request it made room for has its next chunk.
+                    # A positive priority value leaves the KV reserve free, and a
+                    # priority below an in-flight prefill's leaves free what
+                    # in-flight prefills still need: otherwise a request preempted
+                    # to make room could take back its cached blocks between the
+                    # chunks of the request it made room for.
                     break
 
 """
