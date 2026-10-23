@@ -75,27 +75,48 @@ pub fn sweep(
     cells: &[Cell],
     jobs: usize,
 ) -> Result<Vec<CellResult>, String> {
+    par_map(traces, plan, cells, jobs, |corpus, &cell| {
+        let mut cfg = base.clone();
+        cfg.replay.concurrency = cell.sessions;
+        cfg.replay.pauses = cell.pauses;
+        run_cell(corpus, &cfg, cell)
+    })
+}
+
+/// Runs [`Arm::E1`] in `cell` with `cfg`, whose concurrency and pauses are the cell's.
+pub(crate) fn run_cell(
+    corpus: &mut Corpus,
+    cfg: &RunConfig,
+    cell: Cell,
+) -> Result<CellResult, String> {
+    let arms = run::run(corpus, cfg, &Arm::E1, &[cell.capacity], |_| {})?
+        .into_iter()
+        .map(|r| r.summary)
+        .collect();
+    Ok(CellResult { cell, arms })
+}
+
+/// Maps `f` over `items` on `jobs` threads, each with its own opening of `traces`, keeping their order.
+pub(crate) fn par_map<C: Sync, R: Send>(
+    traces: &Path,
+    plan: PlanOptions,
+    items: &[C],
+    jobs: usize,
+    f: impl Fn(&mut Corpus, &C) -> Result<R, String> + Sync,
+) -> Result<Vec<R>, String> {
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut out: Vec<Option<CellResult>> = vec![None; cells.len()];
     let results = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..jobs.clamp(1, cells.len().max(1)))
+        let workers: Vec<_> = (0..jobs.clamp(1, items.len().max(1)))
             .map(|_| {
-                scope.spawn(|| -> Result<Vec<(usize, CellResult)>, String> {
+                scope.spawn(|| -> Result<Vec<(usize, R)>, String> {
                     let mut corpus = Corpus::open(traces, plan)?;
                     let mut done = Vec::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(&cell) = cells.get(i) else {
+                        let Some(item) = items.get(i) else {
                             return Ok(done);
                         };
-                        let mut cfg = base.clone();
-                        cfg.replay.concurrency = cell.sessions;
-                        cfg.replay.pauses = cell.pauses;
-                        let arms = run::run(&mut corpus, &cfg, &Arm::E1, &[cell.capacity], |_| {})?
-                            .into_iter()
-                            .map(|r| r.summary)
-                            .collect();
-                        done.push((i, CellResult { cell, arms }));
+                        done.push((i, f(&mut corpus, item)?));
                     }
                 })
             })
@@ -105,14 +126,15 @@ pub fn sweep(
             .map(|w| w.join().expect("a sweep worker panicked"))
             .collect::<Vec<_>>()
     });
+    let mut out: Vec<Option<R>> = items.iter().map(|_| None).collect();
     for r in results {
-        for (i, cell) in r? {
-            out[i] = Some(cell);
+        for (i, x) in r? {
+            out[i] = Some(x);
         }
     }
     Ok(out
         .into_iter()
-        .map(|c| c.expect("every cell ran"))
+        .map(|x| x.expect("every cell ran"))
         .collect())
 }
 
@@ -127,45 +149,52 @@ fn opt(x: Option<f64>) -> String {
     x.map_or(String::new(), |v| format!("{v:.3}"))
 }
 
+/// The columns of [`csv`].
+pub(crate) const CSV_COLUMNS: &str = "pauses,sessions,cpu_ratio,arm,requests,resume_ttft_p50_ms,\
+     resume_ttft_p90_ms,resume_ttft_p99_ms,gap_closed_p50,gap_closed_p90,gpu_share,cpu_share,\
+     computed_share,recomputed_share,pcie_restored_bytes,pcie_prefetched_bytes,pcie_stored_bytes,\
+     kv_pressure_mean,pi,rho";
+
 /// One row per cell and arm.
 pub fn csv(results: &[CellResult]) -> String {
-    let mut text = String::from(
-        "pauses,sessions,cpu_ratio,arm,requests,resume_ttft_p50_ms,resume_ttft_p90_ms,\
-         resume_ttft_p99_ms,gap_closed_p50,gap_closed_p90,gpu_share,cpu_share,computed_share,\
-         recomputed_share,pcie_restored_bytes,pcie_prefetched_bytes,pcie_stored_bytes,\
-         kv_pressure_mean,pi,rho\n",
-    );
+    let mut text = format!("{CSV_COLUMNS}\n");
     for r in results {
         for (s, &arm) in r.arms.iter().zip(&Arm::E1) {
-            let c = &r.cell;
-            writeln!(
-                text,
-                "{},{},{},{},{},{:.1},{:.1},{:.1},{},{},{:.4},{:.4},{:.4},{:.4},{},{},{},{:.3},{:.3},{:.4}",
-                pauses_name(c.pauses),
-                c.sessions,
-                c.cpu_ratio,
-                s.arm,
-                s.requests,
-                s.resume_ttft_ms.p50,
-                s.resume_ttft_ms.p90,
-                s.resume_ttft_ms.p99,
-                opt(r.gap_closed(arm, 50)),
-                opt(r.gap_closed(arm, 90)),
-                s.shares.gpu,
-                s.shares.cpu,
-                s.shares.computed,
-                s.shares.recomputed,
-                s.pcie_restored_bytes,
-                s.pcie_prefetched_bytes,
-                s.pcie_stored_bytes,
-                s.regime.kv_pressure_mean,
-                s.regime.pi,
-                s.regime.rho,
-            )
-            .expect("writing to a String");
+            csv_row(&mut text, r, s, arm);
+            text.push('\n');
         }
     }
     text
+}
+
+/// Appends the [`CSV_COLUMNS`] of `arm` in `r` (its summary `s`), without a line end.
+pub(crate) fn csv_row(text: &mut String, r: &CellResult, s: &Summary, arm: Arm) {
+    let c = &r.cell;
+    write!(
+        text,
+        "{},{},{},{},{},{:.1},{:.1},{:.1},{},{},{:.4},{:.4},{:.4},{:.4},{},{},{},{:.3},{:.3},{:.4}",
+        pauses_name(c.pauses),
+        c.sessions,
+        c.cpu_ratio,
+        s.arm,
+        s.requests,
+        s.resume_ttft_ms.p50,
+        s.resume_ttft_ms.p90,
+        s.resume_ttft_ms.p99,
+        opt(r.gap_closed(arm, 50)),
+        opt(r.gap_closed(arm, 90)),
+        s.shares.gpu,
+        s.shares.cpu,
+        s.shares.computed,
+        s.shares.recomputed,
+        s.pcie_restored_bytes,
+        s.pcie_prefetched_bytes,
+        s.pcie_stored_bytes,
+        s.regime.kv_pressure_mean,
+        s.regime.pi,
+        s.regime.rho,
+    )
+    .expect("writing to a String");
 }
 
 fn pct(x: Option<f64>) -> String {
