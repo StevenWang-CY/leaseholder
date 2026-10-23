@@ -1,6 +1,8 @@
-# W2's second E2 batch: the arms that take an earlier arm's winner. At 16 sessions the frozen box (step cap 512,
-# long-prefill threshold 256) had the lowest V2V p95 of arms 2-4 at the same background goodput, so it is the engine
-# here. Frozen-engine points first, then the flag variants, so the engine restarts three times.
+# W2's second E2 batch: the arms that take an earlier arm's winner. At 16 sessions the best arm 4 cells, step cap 1024
+# with no long-prefill threshold and the frozen box (512/256), were within noise of each other (V2V p95 2,167 and
+# 2,215 ms over 50 turns, background goodput within 4%), so both go to 24 sessions, and the other arms run on the
+# frozen box, the configuration every earlier result was measured on. Frozen-engine points first, then the flag
+# variants, so the engine restarts three times.
 #   benchmarks/e2/campaign.sh benchmarks/e2/w2b.campaign
 
 # The frozen box at 24 sessions, and the gateway-side arms in front of it
@@ -22,5 +24,5 @@ arms/calls6-s16.toml
 arms/a5-watermark10-s16.toml
 arms/a5-queued8192-s16.toml
 
-# The second-best step cap at 24 sessions
-arms/a4-b1024-t256-s24.toml
+# The other best step cap at 24 sessions
+arms/a4-b1024-t0-s24.toml

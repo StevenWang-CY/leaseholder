@@ -1,0 +1,10 @@
+# E2 arm 4, the cell with the best point estimate at 16 sessions (step cap 1024, no long-prefill threshold), beside 24
+# agent session trees.
+arm = 4
+label = "priority, step cap 1024, long-prefill threshold 0"
+
+[agents]
+sessions = 24
+
+[engine]
+flags = ["--max-num-batched-tokens", "1024", "--long-prefill-token-threshold", "0"]
