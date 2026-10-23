@@ -263,7 +263,7 @@ This layer is *planned*; agentic-api's own cost in front of the engine is measur
 
 - **Indicators, targets and alerts.** See [SLO.md](SLO.md).
 - **What exists.** `lh-gateway` serves its metrics at `/metrics`, among them the admission point's (`lh_gateway_admission_*`: admitted, waiting, wait time, refused by reason, resubmits, discarded tokens; under `leaseholder`, deferrals by reason, aged and oversize admissions, degraded replies and false alarms with their token-seconds) and the realtime sessions by state, with state timeouts. It logs one JSON line per request, with its admission wait and what deferred it, and per lifecycle event ([`lh-gateway` README](../crates/lh-gateway/README.md#metrics-and-logs)). The voice worker logs one line per reply with its stage times (§7). Each E2 point keeps the gateway's request lines (the exact first-byte percentiles), the worker's journal (the stage waterfall and the event counts), the GPU's clocks and temperature once a second, and snapshots of the gateway's and the engine's metrics around the calls (`lh-bench e2`).
-- **Dashboards** (*planned*, as code in `ops/`):
+- **Dashboards** (*planned*, as code in `ops/`; the voice turn's stage waterfall exists as E2's `waterfall.svg`, from the worker's turn lines):
   1. the voice turn waterfall and SLOs;
   2. KV and leases: pool occupancy, tier residency, prefetch outcomes, PCIe budget;
   3. admission and the ledger: decisions, deferrals, causes, rejections.

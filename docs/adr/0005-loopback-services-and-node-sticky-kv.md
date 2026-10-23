@@ -28,6 +28,6 @@ The GPU nodes are joined by 1 GbE, slower than recomputing a prompt on the card.
 ## Consequences
 
 - No public ports, by construction. Every smoke test and deploy check audits the listening sockets.
-- The voice plane cannot reach the internet or the host network directly. Joining a call from a browser, for the demo video, needs an explicit bridge, built when the demo is.
+- The voice plane cannot reach the internet or the host network directly. Joining a call from a browser would need an explicit bridge; the demo video needs none, since it is rendered from calls the measurement callers record (`lh-voice bots --save-audio`).
 - A tunnel adds a loopback hop on each side, sub-millisecond on this network. Every measured path to the engine crosses it, direct or through the control plane; the control-plane overhead in the SLO ends at the upstream write and leaves it out.
 - Losing a node costs a re-prefill of its sessions. The node-loss drill measures it.

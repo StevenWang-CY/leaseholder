@@ -130,6 +130,8 @@ Beside AIPerf's and the callers' records, each point keeps the gateway's request
 
 One point runs at a time: the pid of the running one is in `~/leaseholder/runs/.lh-bench-e2.lock` on cyan, and SIGINT to it stops AIPerf and the callers and marks the point failed.
 
+**Demo points.** The demo video needs a point whose callers saved their audio. `campaign.sh` does not pass that option, so measure such a point by hand on cyan, with the GPU node already on the arm's engine: `~/leaseholder/venvs/bench/bin/lh-bench e2 run ARM --out ~/leaseholder/runs/e2/demo/POINT --save-audio`. Each caller writes `call-<i>.wav` and `call-<i>.json` beside its turns; `uv run benchmarks/e2/demo.py LEFT RIGHT` renders the video from two such points ([`benchmarks/e2/README.md`](../benchmarks/e2/README.md)).
+
 ## Checks before heavy work on a shared host
 
 - `nvidia-smi` and `who`. `gpu-guard` refuses to start a GPU unit while another user's process holds the GPU.

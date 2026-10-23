@@ -65,8 +65,8 @@ State after week 3 (W3) of a 12-week plan:
 | `lh-sim`: the agent replay through a model of vLLM's two-tier KV cache and its step loop (calibrated within 8% of resume TTFT at 8 and 16 sessions), with stock arms, E1's information-level arms, a clairvoyant reference and the regime map | **W2** ([`crates/lh-sim`](crates/lh-sim)); E1's gate (G-sim) came out negative |
 | `lh-node` | W5, with leases and engine epochs |
 | `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **v0** ([`python/leaseholder_vllm`](python/leaseholder_vllm)); CPU-tested against vLLM's real offload manager, live-checked on the GPU; off in E2, as G-sim decided |
-| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison, tier and voice-turn probes, and `lh-bench e2`, the E2 harness (arm files, campaigns, per-point summaries with exact first bytes, the stage waterfall and the GPU's clocks, the frontier report) | **W3** ([`python/leaseholder_bench`](python/leaseholder_bench), [`benchmarks/e2`](benchmarks/e2)) |
-| `leaseholder_voice`: the voice agent (`lh-voice-worker`) with its lifecycle events and per-turn stage times, measurement callers that read latency from waveforms (`lh-voice bots`), LiveKit plugin factory, barge-in test | **W3** ([`python/leaseholder_voice`](python/leaseholder_voice)); measured alone and beside the agent replay in every E2 point |
+| `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, live-reply replay, KV lifecycle comparison, tier and voice-turn probes, and `lh-bench e2`, the E2 harness (arm files, campaigns, per-point summaries with exact first bytes, the stage waterfall and the GPU's clocks, the frontier report with repeats, compact records and `make reproduce-e2`) | **W3** ([`python/leaseholder_bench`](python/leaseholder_bench), [`benchmarks/e2`](benchmarks/e2)) |
+| `leaseholder_voice`: the voice agent (`lh-voice-worker`) with its lifecycle events and per-turn stage times, measurement callers that read latency from waveforms and can record a call (`lh-voice bots`), LiveKit plugin factory, barge-in test | **W3** ([`python/leaseholder_voice`](python/leaseholder_voice)); measured alone and beside the agent replay in every E2 point |
 
 The experiments are planned in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). The headline is E2: the voice SLO frontier against tuned stock vLLM while background agents harvest the GPU.
 
@@ -78,6 +78,7 @@ Development needs Rust 1.98, uv and Python 3.12. No GPU is required.
 make check                                   # lint and every test CI runs (below)
 make schema                                  # regenerate crates/lh-proto/schema after changing a wire type
 VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm   # the engine plugin tests against an existing vLLM checkout
+make reproduce-e2                            # E2's frontiers, tables and waterfall from the committed records
 ```
 
 `make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
