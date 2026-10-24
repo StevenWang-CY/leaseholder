@@ -737,8 +737,9 @@ def kv_token_bytes(engine: Mapping[str, Any] | None) -> float | None:
 def export_point(run_dir: Path, out: Path) -> Path | None:
     """Write the compact record of the point in ``run_dir`` into ``out``, at CAMPAIGN/POINT as the
     run directory sits in its campaign, and return its directory; None for a point that did not
-    complete. Its summary.json is :func:`compact`'s. Its engine.json (engine-NODE.json for each of
-    several nodes) keeps only what says which engine the point ran on (:func:`engine_settings`)."""
+    complete. Its run.json and summary.json are :func:`compact`'s, the run.json with every path under
+    a home directory written from ``~``. Its engine.json (engine-NODE.json for each of several nodes)
+    keeps only what says which engine the point ran on (:func:`engine_settings`)."""
     if (point := compact(run_dir)) is None:
         return None
     run, summary = point
@@ -748,8 +749,9 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
     for name in RECORD:
         if name != "run.json" and (run_dir / name).exists():
             shutil.copyfile(run_dir / name, record / name)
-    # As e2 run writes them, so that a run.json the record keeps as it was stays the same bytes.
-    (record / "run.json").write_bytes(orjson.dumps(run, option=orjson.OPT_INDENT_2) + b"\n")
+    # As e2 run writes them, so that a run.json the record keeps as it was stays the same bytes. The
+    # gateway's configuration names files under the account's home directory (its cache-salt secret).
+    (record / "run.json").write_bytes(orjson.dumps(_home(run), option=orjson.OPT_INDENT_2) + b"\n")
     (record / "summary.json").write_bytes(orjson.dumps(summary, option=orjson.OPT_INDENT_2) + b"\n")
     for name in [f"engine-{node}.json" for node in nodes] or ["engine.json"]:
         if (engine := run_dir / name).exists():

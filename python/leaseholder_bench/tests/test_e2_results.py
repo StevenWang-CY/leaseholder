@@ -964,6 +964,24 @@ def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, 
     assert "no complete point to export" in capsys.readouterr().err
 
 
+def test_a_record_names_no_account_where_the_run_named_a_file_in_its_home(tmp_path: Path) -> None:
+    # The gateway's configuration in run.json names its cache-salt secret file, under the home
+    # directory of cyan's account; the record names it from ~, as it does the engine's paths.
+    run_dir = point(tmp_path / "runs" / "w5-r1", "disc-frozen", "4", 3700, 10800)
+    run = json.loads((run_dir / "run.json").read_text())
+    secret = ".config/leaseholder/cache-salt-secret"
+    run["cyan"] = {"gateway": {"config": {"cache_salt_secret_file": f"/home/someone/{secret}"}}}
+    (run_dir / "run.json").write_text(json.dumps(run))
+    record = export_point(run_dir, tmp_path / "records")
+    recorded = json.loads((record / "run.json").read_text())
+    assert recorded == run | {
+        "cyan": {"gateway": {"config": {"cache_salt_secret_file": f"~/{secret}"}}}
+    }
+    assert not any(
+        re.search(r"/(home|Users|root)/", p.read_text()) for p in record.rglob("*") if p.is_file()
+    )
+
+
 def test_the_report_gives_the_cpu_tiers_loads_and_stores_in_tokens(tmp_path: Path) -> None:
     # A point measured before the summary kept the CPU tier's counts: its snapshots have them.
     run_dir = whole(point(tmp_path / "runs" / "r1", "disc-a9-s24", "9", 3400, 2057))
