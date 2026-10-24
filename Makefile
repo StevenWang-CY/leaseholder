@@ -6,6 +6,9 @@ VLLM_REF := v0.32.0
 VLLM_SRC ?= $(HOME)/.cache/leaseholder/vllm-$(VLLM_REF)
 # Every Python package except the engine plugins (tested by test-vllm); each one has a `test` extra.
 PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,%,$(wildcard python/*/pyproject.toml)))
+# The Python that make lint checks: the packages, and the scripts of lh-sim, E2 and the engine variants (not the
+# recorded runs' own scripts under benchmarks/results).
+PY_SOURCES := python crates/lh-sim/scripts $(wildcard benchmarks/e2/*.py deploy/phastform/variants/*/*.py)
 # E2's committed records (lh-bench e2 export), one directory per point under its campaign, and where
 # reproduce-e2 writes their report.
 E2_RESULTS := benchmarks/results/2026-10-23-e2
@@ -23,13 +26,13 @@ lint-rust:
 	cargo clippy --all-targets --locked -- -D warnings
 
 lint-python:
-	$(RUFF) check python
-	$(RUFF) format --check python
+	$(RUFF) check $(PY_SOURCES)
+	$(RUFF) format --check $(PY_SOURCES)
 
 fmt:
 	cargo fmt --all
-	$(RUFF) check --fix python
-	$(RUFF) format python
+	$(RUFF) check --fix $(PY_SOURCES)
+	$(RUFF) format $(PY_SOURCES)
 
 test: test-rust test-vllm test-python
 
