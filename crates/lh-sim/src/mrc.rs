@@ -151,6 +151,60 @@ impl Curve {
     }
 }
 
+/// The capacities, in blocks, at `multiples` of a pool of `pool` blocks: each rounded, at least one.
+pub fn capacities(pool: u64, multiples: &[f64]) -> Vec<u64> {
+    multiples
+        .iter()
+        .map(|m| (m * pool as f64).round().max(1.0) as u64)
+        .collect()
+}
+
+/// The miss-ratio table of the lh-sim README (`lh-sim mrc --markdown`): the per-block miss ratios of
+/// LRU and MIN, to three decimals, at each of `multiples` of the pool (where MIN was run), on the
+/// replay (`scaled`, with its pool in blocks) and, where there is one, on the same admission order at
+/// the original token counts (`same_order`, `factor` times the replay's tokens).
+pub fn markdown(
+    multiples: &[f64],
+    factor: u32,
+    scaled: (&Curve, u64),
+    same_order: Option<(&Curve, u64)>,
+) -> String {
+    let curves: Vec<(&Curve, u64)> = std::iter::once(scaled).chain(same_order).collect();
+    let mut text = if same_order.is_some() {
+        format!(
+            "| Pool multiple | LRU, {factor}× | LRU, original tokens, same order | MIN, {factor}× \
+             | MIN, original tokens, same order |\n|---|---|---|---|---|\n"
+        )
+    } else {
+        "| Pool multiple | LRU | MIN |\n|---|---|---|\n".to_string()
+    };
+    for (i, multiple) in multiples.iter().enumerate() {
+        let at: Vec<&Point> = curves
+            .iter()
+            .map(|(curve, pool)| {
+                let capacity = capacities(*pool, multiples)[i];
+                curve
+                    .points
+                    .iter()
+                    .find(|p| p.capacity == capacity)
+                    .expect("the curve has a point at each capacity MIN ran at")
+            })
+            .collect();
+        let miss = |hits: u64, curve: &Curve| 1.0 - hits as f64 / curve.prompt_tokens.max(1) as f64;
+        let mut row = format!("| {multiple} |");
+        for (point, (curve, _)) in at.iter().zip(&curves) {
+            row += &format!(" {:.3} |", miss(point.lru_block_hits, curve));
+        }
+        for (point, (curve, _)) in at.iter().zip(&curves) {
+            let hits = point.min_block_hits.expect("MIN ran at this capacity");
+            row += &format!(" {:.3} |", miss(hits, curve));
+        }
+        text += &row;
+        text.push('\n');
+    }
+    text
+}
+
 /// A Fenwick tree of counts over access times.
 struct Fenwick(Vec<i32>);
 
@@ -493,6 +547,47 @@ mod tests {
             last = (p.lru_block_hits, p.lru_prefix_hits, mb, mp);
         }
         assert!(curve.points.last().unwrap().lru_block_hits <= curve.prompt_tokens);
+    }
+
+    #[test]
+    fn the_markdown_table_gives_each_curves_miss_ratios_at_the_pools_multiples() {
+        let point = |capacity, lru, min| Point {
+            capacity,
+            lru_block_hits: lru,
+            lru_prefix_hits: lru,
+            min_block_hits: min,
+            min_prefix_hits: min,
+        };
+        // A replay of 1,000 prompt tokens on a pool of 9 blocks, and its same order at 32x.
+        let scaled = Curve {
+            requests: 3,
+            prompt_tokens: 1_000,
+            points: vec![
+                point(2, 100, Some(400)),
+                point(5, 300, None),
+                point(9, 500, Some(700)),
+            ],
+        };
+        let same = Curve {
+            requests: 3,
+            prompt_tokens: 32_000,
+            points: vec![
+                point(72, 3_300, Some(12_810)),
+                point(287, 16_010, Some(22_400)),
+            ],
+        };
+        assert_eq!(capacities(9, &[0.25, 1.0]), vec![2, 9]);
+        assert_eq!(capacities(287, &[0.25, 1.0]), vec![72, 287]);
+        assert_eq!(
+            markdown(&[0.25, 1.0], 32, (&scaled, 9), Some((&same, 287))),
+            "| Pool multiple | LRU, 32× | LRU, original tokens, same order | MIN, 32× \
+             | MIN, original tokens, same order |\n|---|---|---|---|---|\n\
+             | 0.25 | 0.900 | 0.897 | 0.600 | 0.600 |\n| 1 | 0.500 | 0.500 | 0.300 | 0.300 |\n"
+        );
+        assert_eq!(
+            markdown(&[1.0], 1, (&scaled, 9), None),
+            "| Pool multiple | LRU | MIN |\n|---|---|---|\n| 1 | 0.500 | 0.300 |\n"
+        );
     }
 
     #[test]

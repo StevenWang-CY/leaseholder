@@ -58,7 +58,8 @@ schema:
 
 # E1's tables in crates/lh-sim/README.md from the 32x corpus, which stays outside the repository (`lh-bench
 # scale-traces` writes it; python/leaseholder_bench/README.md): the regime map, the realistic regime over 20 seeds,
-# and the other GPUs at the 32x replay and at their own scalings. Usage: make reproduce-e1 CORPUS=<its directory>.
+# the other GPUs at the 32x replay and at their own scalings, and the miss ratios with the idle service. Usage: make
+# reproduce-e1 CORPUS=<its directory>.
 E1_REPORT ?= build/reproduce-e1
 E1_SIM = target/release/lh-sim
 reproduce-e1:
@@ -72,6 +73,7 @@ reproduce-e1:
 	$(E1_SIM) hardware $(CORPUS) --csv $(E1_REPORT)/hardware.csv --markdown $(E1_REPORT)/hardware.md >/dev/null
 	$(E1_SIM) hardware $(CORPUS) --fit --csv $(E1_REPORT)/hardware-fit.csv --markdown $(E1_REPORT)/hardware-fit.md \
 	  >/dev/null
+	$(E1_SIM) mrc $(CORPUS) --service idle --csv $(E1_REPORT)/mrc.csv --markdown $(E1_REPORT)/mrc.md >/dev/null
 	@ls $(E1_REPORT)/*.md
 
 # The simulator's calibration and its validation against W0 (crates/lh-sim/README.md, and BENCHMARKS' table of W2's points)

@@ -286,6 +286,10 @@ struct MrcArgs {
     /// Write every curve point as CSV to this file.
     #[arg(long)]
     csv: Option<PathBuf>,
+    /// Write the miss ratios at the --min-at capacities as a Markdown table to this file: the
+    /// README's, on the replay and on the same order at the original token counts.
+    #[arg(long)]
+    markdown: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -598,18 +602,12 @@ fn mrc(args: MrcArgs) -> Result<(), String> {
         }
     };
     let bt = cfg.replay.block_tokens;
-    let caps = |pool: u64, multiples: &[f64]| -> Vec<u64> {
-        multiples
-            .iter()
-            .map(|m| (m * pool as f64).round().max(1.0) as u64)
-            .collect()
-    };
     let curve = |acc: &[mrc::Access<'_>], pool: u64| {
         mrc::Curve::compute(
             acc,
             bt as u64,
-            &caps(pool, &lru_grid()),
-            &caps(pool, &args.min_at),
+            &mrc::capacities(pool, &lru_grid()),
+            &mrc::capacities(pool, &args.min_at),
         )
     };
     // (sequence, token scale, usable pool blocks, curve)
@@ -704,6 +702,19 @@ fn mrc(args: MrcArgs) -> Result<(), String> {
     }
     if let Some(path) = &args.csv {
         write(path, &text)?;
+    }
+    if let Some(path) = &args.markdown {
+        let of = |name: &str| {
+            curves
+                .iter()
+                .find(|(n, ..)| *n == name)
+                .map(|(_, _, pool, c)| (c, *pool))
+        };
+        let scaled = of("scaled").expect("the replay's curve is always computed");
+        write(
+            path,
+            &mrc::markdown(&args.min_at, factor, scaled, of("unscaled-same-order")),
+        )?;
     }
     Ok(())
 }

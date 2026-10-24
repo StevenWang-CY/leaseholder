@@ -91,7 +91,7 @@ lh-sim regime DATA/weka-x32 --csv regime.csv --markdown regime.md         # the 
 lh-sim regime DATA/weka-x32 --sessions 8,12,16,24 --cpu-ratio 4 --pause-sources trace --seeds $(seq 11 30 | paste -sd, -)
 lh-sim hardware DATA/weka-x32 --csv hw.csv --markdown hw.md               # other GPUs, modeled
 lh-sim hardware DATA/weka-x32 --fit --csv hw-fit.csv --markdown hw-fit.md # each at its own scaling
-lh-sim mrc DATA/weka-x32 --service idle --csv mrc.csv                     # miss-ratio curves (the table below)
+lh-sim mrc DATA/weka-x32 --service idle --csv mrc.csv --markdown mrc.md   # miss-ratio curves (the table below)
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl      # a measured run through the engine model
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl --timed --csv w0-timed.csv
 ```
@@ -193,7 +193,7 @@ With trace pauses up to 24 sessions, `mori` loses 1–15% at p50 and 10–24% at
 
 ## Miss-ratio curves
 
-`lh-sim mrc` computes curves for the GPU tier alone on the reference arm's admission sequence: LRU at 41 capacities from 1/16 to 64 times the pool in one pass of Mattson stack distances, and MIN at chosen capacities. Each request looks up its blocks, then its blocks become the most recent in the order vLLM frees them. Hits are token weighted, per block and per prefix (a block counts only when its whole prefix hits). MIN's per-block hit ratio is a bound: no policy hits more blocks of this sequence at that capacity. Its prefix hit ratio is a reference.
+`lh-sim mrc` computes curves for the GPU tier alone on the reference arm's admission sequence: LRU at 41 capacities from 1/16 to 64 times the pool in one pass of Mattson stack distances, and MIN at chosen capacities. Each request looks up its blocks, then its blocks become the most recent in the order vLLM frees them. Hits are token weighted, per block and per prefix (a block counts only when its whole prefix hits). MIN's per-block hit ratio is a bound: no policy hits more blocks of this sequence at that capacity. Its prefix hit ratio is a reference. `--markdown` writes the table below: the per-block miss ratios, at `--min-at`'s multiples of the pool, of the replay and of the same order at the original token counts; `make reproduce-e1` writes it with the idle service.
 
 Three sequences: the 32× replay; the same admission order with every prompt cut at its original token counts (64-token hash blocks, outputs ×32, capacities ×32); and the replay run again at the original token counts. Miss ratios on the W0 configuration, with the idle service:
 
