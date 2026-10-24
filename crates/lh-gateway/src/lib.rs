@@ -20,9 +20,8 @@
 //!   nodes; `POST /v1/sessions` places a session ahead of its first request;
 //! - **metrics** at `GET /metrics` and one structured log line per request.
 //!
-//! The admission policies are E2's baselines and Leaseholder's own (E2 arm 9), and the placement policies those
-//! of E2's two-node points; Leaseholder's leases are to arrive with `lh-core`, and the gateway is the place they
-//! will run.
+//! The admission policies are E2's baselines and Leaseholder's own (E2 arm 9); the placement policies are those of
+//! E2's two-node points, which have not run yet.
 
 mod admission;
 mod auth;
