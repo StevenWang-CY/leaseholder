@@ -1,8 +1,9 @@
 """A point's results from its run directory (:mod:`.run`): its summary and its compact record.
 
 :func:`summarize_point` reads one run directory of ``lh-bench e2 run``: the callers' summary, the
-per-request records of the AIPerf replay, the ``/metrics`` snapshots taken when the calls started
-and ended, and the voice worker's journal of the calls. Every metric covers that window. A metric
+per-request records of the AIPerf replay, the gateway's request lines of the calls, the ``/metrics``
+snapshots taken when the calls started and ended, and the voice worker's journal of the calls. Every
+metric covers that window. A metric
 that the gateway or the engine does not export is null, never zero, and a counter that went down
 (its process restarted during the calls) is an error. A point on several GPU nodes reports its
 totals as a point on one does, its engines' counters added up, and each node's share.
@@ -24,10 +25,9 @@ from typing import Any
 
 import orjson
 
-from leaseholder_bench.kv_metrics import Histogram, Labels, metric_samples, samples
+from leaseholder_bench.kv_metrics import Labels, metric_samples, samples
 from leaseholder_bench.load import summarize
 
-FIRST_BYTE = "lh_gateway_first_byte_seconds"
 OUTCOMES = "lh_gateway_request_outcomes_total"
 """By class and outcome; ``shed`` is a request the admission point gave up for a stricter class."""
 REFUSED = "lh_gateway_admission_refused_total"
@@ -82,13 +82,19 @@ def summarize_point(
     ``ValueError`` when the point measured nothing to place on the frontier. A point on several GPU
     ``nodes`` adds up their engines' counters and reports each node's share under ``nodes``. The
     ``warmup_turns`` that open each call are measured by nothing: the callers leave them out, and so
-    does the worker's account of the turns."""
+    does the worker's account of the turns. The first bytes come from the gateway's request lines of
+    the calls (gateway.jsonl), without which the point fails."""
     bots = orjson.loads((run_dir / "bots" / "summary.json").read_bytes())
     if bots["v2v_ms"].get("n", 0) <= bots["v2v_ms"].get("censored", 0):
         raise ValueError(f"the calls measured no voice-to-voice latency ({bots['errors']} failed)")
     metrics = run_dir / "metrics"
     records = run_dir / "aiperf" / "profile_export.jsonl"
     requests = gateway_requests(run_dir, start, end)
+    if requests is None:
+        raise ValueError(
+            "the gateway logged no request line for the calls (gateway.jsonl): the first bytes come "
+            'from them, with its log_format = "json"'
+        )
     engines = {node: engine_counts(*_snapshots(metrics, f"engine-{node}")) for node in nodes}
     voice = ("turns", "errors", "v2v_ms", "barge_in_to_silence_ms", "barge_ins")
     summary = {
@@ -118,18 +124,18 @@ def _snapshots(metrics: Path, name: str) -> tuple[str, str]:
 def node_shares(
     run_dir: Path,
     seconds: float,
-    requests: Sequence[Mapping[str, Any]] | None,
+    requests: Sequence[Mapping[str, Any]],
     engines: Mapping[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """Each GPU node's share of a point on several: the calls the voice worker placed on it (None when
     its journal places none), the agent requests and the first bytes of the realtime requests the
-    gateway sent it (None without its request log), and its engine's counters."""
+    gateway sent it, from its request lines of the calls, and its engine's counters."""
     placed = call_nodes(run_dir)
     turns = _json_lines((run_dir / "bots" / "turns.jsonl").read_text()) if placed else ()
     turns = measured_turns(turns)
     shares = {}
     for node, engine in engines.items():
-        sent = None if requests is None else [r for r in requests if r.get("node") == node]
+        sent = [r for r in requests if r.get("node") == node]
         callers = {caller for caller, on in placed.items() if on == node}
         shares[node] = {
             "voice": (
@@ -137,8 +143,8 @@ def node_shares(
                 if placed
                 else None
             ),
-            "background": None if sent is None else logged_background(sent, seconds),
-            "realtime_first_byte_ms": None if sent is None else logged_first_byte(sent, "realtime"),
+            "background": logged_background(sent, seconds),
+            "realtime_first_byte_ms": logged_first_byte(sent, "realtime"),
             "engine": engine,
         }
     return shares
@@ -375,13 +381,13 @@ def fixed_window(
 
 
 def gateway_counts(
-    before: str, after: str, seconds: float, requests: list[dict[str, Any]] | None = None
+    before: str, after: str, seconds: float, requests: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
-    """The gateway's first byte by class, what its admission point shed, refused and resubmitted, and
-    its own count of the background tokens served over the window of ``seconds``; every counter that
-    moved is listed under ``counters``. The admission counts are null for a gateway without an
-    admission point, the background rate for one without usage counters. ``requests`` are the
-    window's lines of the gateway's request log, when the run kept it."""
+    """The gateway's first byte by class, exactly from ``requests``, the window's lines of its request
+    log; what its admission point shed, refused and resubmitted, and its own count of the background
+    tokens served over the window of ``seconds``; every counter that moved is listed under
+    ``counters``. The admission counts are null for a gateway without an admission point, the
+    background rate for one without usage counters."""
     names = {name for name, _, _ in metric_samples(after) if name.startswith("lh_gateway_")}
     counters = {
         name: deltas(before, after, name, "gateway") or {}
@@ -398,8 +404,8 @@ def gateway_counts(
     prompt = total(USAGE, {"class": "background", "kind": "prompt"})
     completion = total(USAGE, {"class": "background", "kind": "completion"})
     return {
-        "realtime_first_byte_ms": first_byte_ms(before, after, "realtime", requests),
-        "background_first_byte_ms": first_byte_ms(before, after, "background", requests),
+        "realtime_first_byte_ms": logged_first_byte(requests, "realtime"),
+        "background_first_byte_ms": logged_first_byte(requests, "background"),
         "shed": total(OUTCOMES, {"outcome": "shed"}) if admission else None,
         "refused": total(REFUSED, {}),
         "resubmitted": total(RESUBMITS, {}),
@@ -492,21 +498,10 @@ def deltas(before: str, after: str, name: str, source: str) -> dict[Labels, floa
     return grown
 
 
-def first_byte_ms(
-    before: str, after: str, slo_class: str, requests: list[dict[str, Any]] | None
-) -> dict[str, Any]:
-    """A class's time to first byte at the gateway over the window. From its request log when the run
-    has one (``source`` "log"), which is exact; otherwise interpolated inside its histogram's buckets
-    ("histogram"), whose bounds are 0.1, 0.25, 0.5 and 1 s in the range that matters for voice."""
-    if requests is None:
-        cell = histogram_ms(before, after, FIRST_BYTE, {"class": slo_class})
-        return cell | {"source": "histogram"}
-    return logged_first_byte(requests, slo_class)
-
-
 def logged_first_byte(requests: Iterable[Mapping[str, Any]], slo_class: str) -> dict[str, Any]:
-    """Count, mean and p50/p95/p99 of a class's first byte in ms, from the gateway's request lines:
-    the requests it sent upstream (with an outcome) that had a first byte, as its histogram counts."""
+    """Count, mean and p50/p95/p99 of a class's first byte at the gateway in ms, exactly from its
+    request lines (``source`` "log"): the requests it sent upstream (with an outcome) that had a first
+    byte, as its first-byte histogram counts them."""
     first_bytes = [
         r["first_byte_ms"]
         for r in requests
@@ -516,23 +511,6 @@ def logged_first_byte(requests: Iterable[Mapping[str, Any]], slo_class: str) -> 
     return {key: cell[key] for key in ("n", "mean", "p50", "p95", "p99") if key in cell} | {
         "source": "log"
     }
-
-
-def histogram_ms(
-    before: str, after: str, name: str, match: Mapping[str, str]
-) -> dict[str, float | int]:
-    """Count, mean and p50/p95/p99 in ms over the window; quantiles interpolate inside buckets."""
-    hist = Histogram.parse(after, name, match) - Histogram.parse(before, name, match)
-    if hist.total <= 0:
-        return {"n": 0}
-    pick = tuple(sorted(match.items()))
-    seconds = samples(after, f"{name}_sum").get(pick, 0.0)
-    seconds -= samples(before, f"{name}_sum").get(pick, 0.0)
-    cell: dict[str, float | int] = {"n": round(hist.total)}
-    cell["mean"] = round(seconds / hist.total * 1e3, 1)
-    for q in (0.5, 0.95, 0.99):
-        cell[f"p{round(q * 100)}"] = round((hist.quantile(q) or 0.0) * 1e3, 1)
-    return cell
 
 
 def _series(name: str, labels: Labels) -> str:

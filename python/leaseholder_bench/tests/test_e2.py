@@ -606,7 +606,8 @@ class FakeHost(Host):
 class FakeSystemd(Systemd):
     """Records systemctl calls; the worker runs with fixed endpointing and registers at once. A unit
     in ``failing`` does not start, and its log says why. ``journals`` gives a unit's journal from
-    ``since`` to ``until``; any other unit's holds only the worker's registration."""
+    ``since`` to ``until``; otherwise the gateway's holds the request lines of ten realtime requests
+    (GATEWAY_FIRST_BYTES) and any other unit's only the worker's registration."""
 
     def __init__(self, env: dict[str, str] | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -635,7 +636,16 @@ class FakeSystemd(Systemd):
             return f"{unit}: starting\n{unit}: config: unknown field `upstream_priority`\n"
         if unit in self.journals:
             return self.journals[unit](since, until)
+        if unit == "lh-gateway":
+            return "\n".join(
+                logged_request(since + n / 100, "realtime", first_byte)
+                for n, first_byte in enumerate(GATEWAY_FIRST_BYTES, 1)
+            )
         return "registered worker"
+
+
+GATEWAY_FIRST_BYTES = (50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0)
+"""The first bytes of the realtime requests the fake gateway logs during the calls."""
 
 
 @dataclass
@@ -717,10 +727,10 @@ def test_voice_alone_runs_the_calls_against_the_box_as_it_is(cyan: Cyan) -> None
     assert summary["name"] == "a1-voice" and summary["background"] is None
     assert summary["voice"]["v2v_ms"]["p95"] == 1800.0
     assert summary["engine"]["preemptions"] == 1  # one scrape apart
-    # This gateway logs no JSON request lines, so the first byte comes from its histogram.
-    assert not (out / "gateway.jsonl").exists()
+    # Exactly from the gateway's request lines of the calls, which the run keeps.
+    assert len((out / "gateway.jsonl").read_text().splitlines()) == len(GATEWAY_FIRST_BYTES)
     assert summary["gateway"]["realtime_first_byte_ms"] == {
-        "n": 10, "mean": 90.0, "p50": 62.5, "p95": 400.0, "p99": 480.0, "source": "histogram",
+        "n": 10, "mean": 95.0, "p50": 95.0, "p95": 135.5, "p99": 139.1, "source": "log",
     }  # fmt: skip
     assert summary["worker"] is None  # nor does this worker log turn lines
     assert json.loads((out / "summary.json").read_text()) == summary
@@ -899,6 +909,15 @@ def test_a_call_opens_with_its_warm_up_turns_which_nothing_measures(cyan: Cyan) 
     waterfall = summary["worker"]["waterfall"]["e2e_ms"]
     assert (summary["worker"]["turns"], waterfall["n"], waterfall["p50"]) == (6, 6, 1200.0)
     assert "calls: 2 callers, 3 turns each after 1 warm-up" in (out / "run.log").read_text()
+
+
+def test_a_gateway_that_logs_no_request_lines_fails_the_point(cyan: Cyan) -> None:
+    cyan.systemd.journals = {"lh-gateway": lambda since, until: "lh-gateway serving"}  # text
+    with pytest.raises(E2Error, match="the gateway logged no request line for the calls"):
+        run(cyan, "a1-voice", VOICE_ALONE)
+    run_json = record(cyan, "a1-voice")
+    assert run_json["status"] == "failed" and 'log_format = "json"' in run_json["error"]
+    assert not (cyan.host.root / "runs" / "a1-voice" / "summary.json").exists()
 
 
 def test_the_worker_journal_waits_only_for_sessions_that_end(

@@ -70,8 +70,8 @@ COLUMNS = (
 """frontier.csv's columns; goodput is in tokens and requests per second, latencies in ms. A point's
 workload is the agents' corpus and the number of callers ("weka-x32, 2 callers"). A run's campaign
 is the directory that holds its run directory (campaign.sh measures a campaign's points into
-CAMPAIGN/POINT). The realtime first byte is the gateway's, from its request log ("log", exact) or
-its histogram ("histogram", interpolated). Refused adds up the gateway's admission point and the
+CAMPAIGN/POINT). The realtime first byte is the gateway's, exactly from its request log (its
+source, "log" in every record). Refused adds up the gateway's admission point and the
 engine's queue limits; the gateway's own count of the background tokens it served checks AIPerf's
 goodput."""
 CONFIGURATION_ARMS = {
@@ -566,9 +566,9 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "Background goodput (prompt and completion tokens per second of the agent requests that "
         "completed during the calls) against voice-to-voice latency in ms, by workload: the agents' "
         "corpus (`[agents] data`) and the number of callers, since points of different workloads "
-        "are not compared. • marks the points on their arm's frontier in their workload. The "
-        "realtime first byte is the gateway's, from its request log; ~ marks one interpolated "
-        "inside its histogram's buckets, for a point without the log. Refused counts the gateway's "
+        "are not compared. • marks the points on their arm's frontier in their workload, where "
+        "the arm has more than one configuration. The realtime first byte is the gateway's, from "
+        "its request log. Refused counts the gateway's "
         "admission point and the engine's queue limits; — is a count the point's gateway or engine "
         "does not keep. A failed turn, one the agent did not answer within the callers' reply "
         f"timeout, counts as a V2V sample censored at {REPLY_TIMEOUT_MS:,.0f} ms, so that ≥ marks a "
@@ -653,19 +653,19 @@ def _arm_rows(
     rows: Sequence[Mapping[str, Any]],
     groups: Mapping[tuple[str, str, str], Mapping[str, Any]],
     gpu_columns: bool,
-    window_columns: bool = False,
+    window_columns: bool,
 ) -> list[str]:
-    """An arm's table rows in a workload: a line per run, and a repeated configuration's medians."""
+    """An arm's table rows in a workload: a line per run, and a repeated configuration's medians.
+    An arm with one configuration marks no frontier: it is its own."""
     lines = []
+    several = len({_configuration(r) for r in rows}) > 1
     for r in rows:
         group = groups[_configuration(r)]
         counts = " / ".join(_cell(r[k]) for k in ("shed", "refused", "resubmitted"))
         ttft = f"{_cell(r['agent_ttft_p50_ms'])} / {_cell(r['agent_ttft_p99_ms'])}"
         first_byte = _cell(r["realtime_first_byte_p95_ms"])
-        if r["realtime_first_byte_source"] == "histogram" and first_byte != "—":
-            first_byte = f"~{first_byte}"
         # A repeated configuration's frontier mark goes on its medians' line.
-        name, mark = f"{r['point']}: {_label(r)}", "•" if r["frontier"] else ""
+        name, mark = f"{r['point']}: {_label(r)}", "•" if r["frontier"] and several else ""
         if len(group["runs"]) > 1:
             name, mark = f"{r['point']} ({r['campaign']})", ""
         window = f" {_window(r, _cell(r['fixed_window_tokens_per_s']))} |" if window_columns else ""
@@ -681,13 +681,15 @@ def _arm_rows(
             line += f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
         lines.append(line)
         if len(group["runs"]) > 1 and r is group["runs"][-1]:
-            lines.append(_spread(group, gpu_columns, window_columns))
+            lines.append(_spread(group, gpu_columns, window_columns, several))
     return lines
 
 
-def _spread(group: Mapping[str, Any], gpu_columns: bool, window_columns: bool = False) -> str:
+def _spread(
+    group: Mapping[str, Any], gpu_columns: bool, window_columns: bool, several: bool
+) -> str:
     """A repeated configuration's line in its arm's table: the median and range of each REPEATED
-    column over its runs, and its frontier mark."""
+    column over its runs, and its frontier mark when its arm has ``several`` configurations."""
     runs = group["runs"]
 
     def spread(column: str) -> str:
@@ -702,8 +704,6 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool, window_columns: bool = 
         return f"{_cell(median, digits)} ({_cell(min(values))}\N{EN DASH}{_cell(max(values))})"
 
     first_byte = spread("realtime_first_byte_p95_ms")
-    if any(r["realtime_first_byte_source"] == "histogram" for r in runs) and first_byte != "—":
-        first_byte = f"~{first_byte}"
     first = runs[0]
     window = ""
     if window_columns:
@@ -712,7 +712,7 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool, window_columns: bool = 
         window = f" {spread('fixed_window_tokens_per_s')}{' †' if short else ''} |"
     line = (
         f"| {first['point']}: {_label(first)}; median (range) of {len(runs)} runs "
-        f"| {'•' if group['frontier'] else ''} | {first['sessions']} "
+        f"| {'•' if group['frontier'] and several else ''} | {first['sessions']} "
         f"| {spread('background_tokens_per_s')} |{window} | {spread('v2v_p50_ms')} "
         f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} "
         f"| {spread('agent_ttft_p50_ms')} / {spread('agent_ttft_p99_ms')} | {first_byte} | | |"
