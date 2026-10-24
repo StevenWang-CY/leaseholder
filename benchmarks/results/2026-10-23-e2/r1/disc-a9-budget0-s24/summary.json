@@ -110,6 +110,12 @@
       "p90": 97324.61,
       "p95": 102029.75,
       "p99": 104431.82
+    },
+    "fixed_window": {
+      "seconds": 240.0,
+      "requests": 66,
+      "requests_per_s": 0.275,
+      "tokens_per_s": 3419.6
     }
   },
   "gateway": {
@@ -172,7 +178,9 @@
     "refused": {
       "max_num_queued_reqs": 0,
       "max_num_queued_tokens": 0
-    }
+    },
+    "kv_offload_load_bytes": 3628597248,
+    "kv_offload_store_bytes": 133736693760
   },
   "gpu": {
     "sm_clock_p50_mhz": 2730,

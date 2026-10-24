@@ -36,6 +36,12 @@
       "p90": 573.84,
       "p95": 1335.3,
       "p99": 3601.25
+    },
+    "fixed_window": {
+      "seconds": 240.0,
+      "requests": 271,
+      "requests_per_s": 1.129,
+      "tokens_per_s": 5579.9
     }
   },
   "gateway": {
@@ -87,6 +93,8 @@
     "refused": {
       "max_num_queued_reqs": 0,
       "max_num_queued_tokens": 0
-    }
+    },
+    "kv_offload_load_bytes": 61818273792,
+    "kv_offload_store_bytes": 17057710080
   }
 }

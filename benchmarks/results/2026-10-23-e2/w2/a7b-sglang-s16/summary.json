@@ -36,6 +36,12 @@
       "p90": 5496.93,
       "p95": 7546.86,
       "p99": 10029.8
+    },
+    "fixed_window": {
+      "seconds": 240.0,
+      "requests": 356,
+      "requests_per_s": 1.483,
+      "tokens_per_s": 6295.7
     }
   },
   "gateway": {
@@ -79,6 +85,8 @@
   "engine": {
     "preemptions": null,
     "prompt_tokens_by_source": null,
-    "refused": null
+    "refused": null,
+    "kv_offload_load_bytes": null,
+    "kv_offload_store_bytes": null
   }
 }

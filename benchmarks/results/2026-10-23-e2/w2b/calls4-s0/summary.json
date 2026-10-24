@@ -59,6 +59,8 @@
     "refused": {
       "max_num_queued_reqs": 0,
       "max_num_queued_tokens": 0
-    }
+    },
+    "kv_offload_load_bytes": 0,
+    "kv_offload_store_bytes": 681836544
   }
 }
