@@ -11,7 +11,7 @@ PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,
 E2_RESULTS := benchmarks/results/2026-10-23-e2
 E2_REPORT ?= build/reproduce-e2
 
-.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e2
+.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e2 e2-figures
 
 check: lint test
 
@@ -57,3 +57,16 @@ schema:
 reproduce-e2:
 	@cd python/leaseholder_bench && uv run -q lh-bench e2 report \
 	  $(abspath $(dir $(wildcard $(E2_RESULTS)/*/*/run.json))) --out $(abspath $(E2_REPORT))
+
+# E2's figures in the docs, docs/figures/e2-frontier.svg (README) and e2-waterfall.svg (BENCHMARKS.md), from the records
+# of the configurations an operator could deploy (the ablations left out), each with all its runs.
+E2_DEPLOYABLE := a1-voice disc-frozen-s24 disc-a4-b1024-t0-s24 disc-a6-reserve2048-s24 disc-a7b-sglang-hicache-s24 \
+  disc-a8c-resubmit-s24 disc-a9-s24 disc-pr-ab48-s24
+E2_STAGES := a1-voice disc-frozen-s24 disc-a6-reserve2048-s24 disc-a8c-resubmit-s24 disc-a9-s24 disc-pr-ab48-s24
+e2-figures:
+	@cd python/leaseholder_bench && uv run -q lh-bench e2 report \
+	  $(abspath $(dir $(foreach p,$(E2_DEPLOYABLE),$(wildcard $(E2_RESULTS)/*/$(p)/run.json)))) \
+	  $(foreach p,$(E2_STAGES),--waterfall $(p)) --out $(abspath build/e2-figures) >/dev/null
+	@mkdir -p docs/figures
+	cp build/e2-figures/frontier-weka-x32-long.svg docs/figures/e2-frontier.svg
+	cp build/e2-figures/waterfall.svg docs/figures/e2-waterfall.svg

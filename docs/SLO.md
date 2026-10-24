@@ -15,7 +15,7 @@ The voice targets are calibrated against voice alone on the frozen box (W1, 2026
 | Indicator | Definition | Target |
 |---|---|---|
 | Server-side voice turn | The utterance sent to STT, until the first byte of TTS audio (`lh-bench voice-turn`): the part serving controls | p95 ≤ 800 ms (voice alone: 589 ms p50, 665 ms p90) |
-| Voice V2V | End of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing | p95 at most 250 ms above voice alone with as many callers, which the experiment that reads it measures again: 1,614 ms p50, 1,760 ms p95 and 1,889 ms p99 in W1; 1,744 ms p95 for E2's W2 points, an SLO of 1,994 ms, measured again in E2's rounds 3 and 4 and standard rounds s1 and s2 |
+| Voice V2V | End of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing | p95 at most 250 ms above voice alone with as many callers, which the experiment that reads it measures again: 1,614 ms p50, 1,760 ms p95 and 1,889 ms p99 in W1; 1,744 ms p95 for E2's W2 points, an SLO of 1,994 ms; for its W4 rounds the median of five runs (1,744–1,805 ms), 1,767 ms, an SLO of 2,017 ms |
 | Barge-in to silence | The caller starts speaking during the agent's speech, until the agent's audio falls below threshold | p95 ≤ 250 ms beyond the configured minimum interruption duration |
 | Audio continuity | Share of the agent's utterances with any gap of 100 ms or more | ≤ 1% |
 | LLM time to first sentence | Realtime request to the end of the first sentence | Reported; this stage dominates V2V under load |

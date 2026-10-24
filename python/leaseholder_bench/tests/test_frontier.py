@@ -382,7 +382,9 @@ def test_each_workload_has_its_section_its_voice_slo_and_its_figure(tmp_path: Pa
         assert [p.name for p in written if p.suffix == ".svg"] == figures
         texts = {name: (out / name).read_text() for name in figures}
         assert "E2 frontier: weka-x32, 2 callers" in texts["frontier.svg"]
-        assert "Voice SLO, 2,010 ms: voice alone + 250 ms" in texts["frontier-weka-x32-long.svg"]
+        assert (
+            "the voice SLO, 2,010 ms: voice alone + 250 ms" in texts["frontier-weka-x32-long.svg"]
+        )
         assert "a1-voice" not in texts["frontier-weka-x32-long.svg"]  # only its workload's points
         assert "No point of voice alone with 4 callers" in texts["frontier-4-callers.svg"]
 
@@ -1014,7 +1016,7 @@ def test_the_figure_draws_families_and_leaves_a_collapse_off_its_scale(tmp_path:
     assert all(f"<!-- {arm} -->" in figure for arm in ("1", "2", "3", "8a"))
     assert "Off the scale: a7b-s16, 9,000 ms at 5,000 tokens/s." in figure
     assert "<!-- 7b -->" not in figure  # its only point is off the scale
-    assert "Voice SLO, 2,010 ms" in figure
+    assert "The dashed line is the voice SLO, 2,010 ms" in figure
 
 
 def test_a_point_summary_reads_its_run_directory(tmp_path: Path) -> None:

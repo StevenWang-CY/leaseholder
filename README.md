@@ -10,14 +10,18 @@
 | Stock vLLM, tuned: priority scheduling, a 512-token step cap | 10.1 s | 3,710 | 99 s |
 | The best arm without an engine change: abort background work before its first byte and resubmit it | 2.59 s | 3,630 | 160 s |
 | **vLLM with #63350 and #63351**, a 48-token window | **2.19 s** | 3,493 | 97 s |
-| Leaseholder's arm 9: the same engine change, replies capped at 16 tokens | 2.06 s | 3,411 | 103 s |
+| Leaseholder's arm 9: the engine change with a 16-token window and a KV reserve, its gateway policy capping replies at 16 tokens | 2.06 s | 3,411 | 103 s |
 
 Medians of five runs (three for the PRs' configuration); the SLO is voice alone plus 250 ms, 2.02 s. [BENCHMARKS.md](docs/BENCHMARKS.md#voice-under-agent-load-e2) has every configuration with its runs and range, and [docs/PRODUCTION.md](docs/PRODUCTION.md) the configuration to deploy, what to watch and how it fails.
 
+![E2's frontier: voice-to-voice p95 against the agents' goodput for every configuration an operator can deploy](docs/figures/e2-frontier.svg)
+
+Each configuration at the median of its runs, whiskers over their range (`make e2-figures`). The open diamond is stock vLLM, tuned; 4 is its best step cap, 6 a static KV reservation, 7b SGLang with HiCache and 8c abort-and-resubmit. Arm 9's line joins Leaseholder's arm 9 (left) and the two PRs with a 48-token window (right).
+
 What the measurements say:
 - **The voice turn loses its seconds waiting for the LLM's first sentence**: 3.8 s of a 5.2 s mean turn on stock vLLM, against 0.3 s alone. Endpointing and TTS barely move.
-- **Nothing deployable fixes it in the engine today.** vLLM's priority scheduling with any step cap, its pending request-count preemption (#54530) and SGLang's priority preemption, with or without its host tier, leave the p95 between 8.8 and 12.1 s. A static KV reservation halves it; a router that aborts and resubmits background work holds 2.6 s, at the agents' tail.
-- **The scheduler change holds it.** A waiting voice turn preempts lower-priority requests for KV, whose KV stays in the CPU tier for their resume (#63350), and lower-priority prefill sits out the steps of the turn's first tokens (#63351). The second part is the necessary one: #63350 alone stops at 5.8 s. The window has to cover the reply's first sentence: at 16 tokens full replies leave 3.2 s, at 48 the p95 is 2.2 s.
+- **Nothing deployable fixes it in the engine today.** vLLM's priority scheduling with any step cap, its pending request-count preemption (#54530) and SGLang's priority preemption, with or without its host tier, leave the p95 between 8.8 and 12.1 s. A static KV reservation halves it; a router that aborts and resubmits background work brings it to 2.6 s, at the cost of the agents' tail.
+- **The scheduler change brings it from 10.1 s to within 0.2 s of the SLO.** A waiting voice turn preempts lower-priority requests for KV, whose KV stays in the CPU tier for their resume (#63350), and lower-priority prefill sits out the steps of the turn's first tokens (#63351). The second part is the necessary one: #63350 alone stops at 5.8 s. The window has to cover the reply's first sentence: at 16 tokens full replies leave 3.2 s, at 48 the p95 is 2.2 s.
 - **Timing the protection from the conversation does not pay here.** Leaseholder was built to test it: KV headroom held from speech onset, a prefill throttle while a turn is in flight, events from the voice agent. With the engine change each is within the spread of leaving it out; without it, voice stays where stock vLLM leaves it (11.0 s). A negative result, like the simulator's for prefetching agents' KV before their tools return (E1).
 - **Where the KV pool has room, there is nothing to fix.** At the standard scenario's realistic load the change and stock vLLM are within noise (2.20 and 2.32 s, both over the SLO).
 
@@ -86,6 +90,7 @@ make check                                   # lint and every test CI runs (belo
 make schema                                  # regenerate crates/lh-proto/schema after changing a wire type
 VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm   # the engine plugin tests against an existing vLLM checkout
 make reproduce-e2                            # E2's report, tables, frontiers and waterfall from the committed records
+make e2-figures                              # the docs' E2 figures from the same records
 ```
 
 `make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
@@ -103,7 +108,7 @@ python/leaseholder_voice/ the voice agent, measurement callers, LiveKit integrat
 benchmarks/               E2's arm files and campaigns, the committed records, and runs against upstream projects
 deploy/                   per-host bootstrap, systemd units, engine variants, tunnels, smoke test
 ops/                      the runbook; dashboards and alert rules are planned
-docs/                     architecture, protocol, SLOs, experiments, benchmarks, production guide, prior art, ADRs
+docs/                     architecture, protocol, SLOs, experiments, benchmarks, production guide, prior art, ADRs, figures
 ```
 
 ## Why not llm-d, Dynamo or vllm-project/router?
@@ -115,12 +120,11 @@ docs/                     architecture, protocol, SLOs, experiments, benchmarks,
   - vllm-project/router admits agent Programs with a logical KV TTL.
   - In the engines, vLLM and SGLang preempt by priority, but neither lets a waiting request preempt running work when the KV cache is full.
 
-  Leaseholder claims none of these. llm-d flow control (emulated), SMG and both engines' priority preemption are baselines it is measured against, and in the discriminating scenario none of them holds the voice tail.
+  Leaseholder claims none of these. llm-d flow control (emulated), SMG and both engines' priority preemption are baselines it is measured against, and in the discriminating scenario none of them meets the voice SLO.
 - **What it adds:**
   - a change to vLLM's priority scheduling for a full KV cache: a waiting request preempts lower-priority running work, whose KV stays in the CPU tier, and lower-priority prefill sits out its first tokens (#63350 and #63351; SGLang's counterpart is its own draft, #45686);
   - E2: the voice SLO measured end to end, from waveforms, against every deployable alternative, with single-mechanism ablations, five repeats and each turn's stages;
-  - measured negatives: lifecycle-timed headroom and throttling beside that change (E2), lifecycle-informed retention and prefetch of agents' KV (E1);
-  - a recompute ledger validated by injected causes (planned).
+  - measured negatives: lifecycle-timed headroom and throttling beside that change (E2), lifecycle-informed retention and prefetch of agents' KV (E1).
 - **The gateway is a harness.** `lh-gateway` is a small Rust proxy for experiments on one GPU without Kubernetes. It does not compete with fleet routers. What goes where production runs:
   - the engine change, as two vLLM scheduler PRs under #40004: [#63350](https://github.com/vllm-project/vllm/pull/63350) lets a waiting request preempt lower-priority work for KV, and [#63351](https://github.com/vllm-project/vllm/pull/63351) holds lower-priority prefill out of its first tokens;
   - E1's negative result for agent-side retention and prefetch, on vLLM #57103 and vllm-project/router #428;

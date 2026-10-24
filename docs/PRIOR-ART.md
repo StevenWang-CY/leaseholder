@@ -2,16 +2,17 @@
 
 *Checked against primary sources (papers, issue and PR threads, release notes, documentation, code) on 2026-10-22. Status is as of that date, except for Leaseholder's own upstream work, as of 2026-10-23: vLLM #63350 and #63351, opened that day, and a comment with Leaseholder's data on #40004. Dates are UTC.*
 
-This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and (planned) tool waits for agents. E2 measured that timing adding nothing beside an engine change which, with replies capped to fit its first-tokens window, holds the voice tail.
+This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and (planned) tool waits for agents. E2 measured that timing adding nothing beside an engine change, which takes the voice tail from 10.1 s to within 0.2 s of the SLO.
 
 ## Positioning
 
 > Leaseholder applies known co-serving and KV-tiering mechanisms to a workload pair published systems have not measured together, a cascaded voice pipeline beside long-context agents on one GPU, and measures when lifecycle timing beats static reservation and engine priority, and when it does not.
 
-**Claimed.** Three parts, argued in [What is distinctive](#what-is-distinctive):
+**Claimed.** Two parts, argued in [What is distinctive](#what-is-distinctive):
 1. **Lifecycle-timed headroom, freed by parking: a measured negative result.** GPU room for the next realtime turn is held before the request exists, from speech onset or end of turn. It is counted in KV tokens and made by parking background sessions in host RAM rather than killing their requests. In E2's discriminating scenario the timing added nothing measurable: beside the engine change (2.), switching the headroom off or arming it by the request lands within the spread of the full configuration's runs, and without the engine change the gateway's policy leaves voice where stock vLLM does.
 2. **The engine "make room" fix.** A waiting high-priority request may preempt running work when the KV cache is full, keeping or offloading the victim's KV; neither vLLM nor SGLang does this today. Lower-priority prefill also sits out the steps of the request's first tokens, the part E2 found necessary; the KV preemption, or a class-aware KV reserve in its place, does the rest.
-3. **The validated recompute ledger.** Every recomputed prompt token is attributed to a cause, and the attribution is checked by injecting causes.
+
+**Planned**, not built: a recompute ledger that attributes every recomputed prompt token to a cause, checked by injecting causes.
 
 Everything else is a baseline or a reference: [At a glance](#at-a-glance) lists each mechanism and where it exists, and [What we do not claim](#what-we-do-not-claim) gathers them.
 
@@ -232,7 +233,7 @@ Each point below rests on the sources above, as of 2026-10-22.
    - vLLM preempts among running requests but never for a waiting one (#40004, open since 2026-04-16); its open fixes cover only the `max_num_seqs` cap.
    - SGLang's priority preemption does not fire when KV memory runs out; the fix is a draft opened on 2026-10-21 (#45686).
    - Leaseholder's version is proposed as vLLM [#63350](https://github.com/vllm-project/vllm/pull/63350) under #40004, a victim's KV kept in the CPU tier when an offloading connector is configured, with [#63351](https://github.com/vllm-project/vllm/pull/63351) holding lower-priority prefill out of the request's first tokens. Preempting work and resuming it from kept KV is published (ConServe); the contribution is the change to vLLM's scheduler, not the idea.
-3. **A recompute ledger validated by injected causes.** The stacks above expose per-request cached-token counts (vLLM) or a cache-discontinuity log (vllm-project/router Progress-TTL). We found none that attributes recomputed tokens to causes. This is observability, not a research result.
+3. **A recompute ledger validated by injected causes** (*planned*). The stacks above expose per-request cached-token counts (vLLM) or a cache-discontinuity log (vllm-project/router Progress-TTL). We found none that attributes recomputed tokens to causes. This is observability, not a research result.
 
 Two measurements carry the rest:
 - **The workload pair.** We found no published system that measures a cascaded voice pipeline beside long-context agent traffic on one GPU, with voice-to-voice latency taken from waveforms. ConServe, HyGen, BROS, Niyama and Valve co-serve online and offline LLM requests. Metronome, Voice-Light and Unmute measure voice workloads alone. NVIDIA's single-GPU profile documents the regression.

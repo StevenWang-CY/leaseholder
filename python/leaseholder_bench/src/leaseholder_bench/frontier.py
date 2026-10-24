@@ -1288,24 +1288,14 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
             for g in groups
             if g["v2v_p95_ms"] > fence
         ]
+    taken = []  # what the arms' names keep clear of
     if slo is None:
         notes.append(f"No point of voice alone with {rows[0]['callers']} callers sets a voice SLO")
-    taken = []  # what the arms' names keep clear of
-    if slo is not None:
-        line = ax.axhline(slo, color=_INK, linewidth=0.75, linestyle=(0, (4, 3)), zorder=1.5)
-        note = f"Voice SLO, {slo:,.0f} ms: voice alone + {SLO_MARGIN_MS:.0f} ms"
-        taken += [
-            line,
-            ax.annotate(
-                note,
-                (0, slo),
-                xycoords=ax.get_yaxis_transform(),
-                xytext=(4, 3),
-                textcoords="offset points",
-                fontsize=8,
-                color=_INK,
-            ),
-        ]
+    else:  # said above the plot: on the line, it would cover the points that reach it
+        notes.append(
+            f"The dashed line is the voice SLO, {slo:,.0f} ms: voice alone + {SLO_MARGIN_MS:.0f} ms"
+        )
+        taken.append(ax.axhline(slo, color=_INK, linewidth=0.75, linestyle=(0, (4, 3)), zorder=1.5))
     title = f"E2 frontier: {rows[0]['workload']}"
     ax.set_title(title, color=_INK, loc="left", pad=12 + 11 * len(notes))
     ax.annotate(
