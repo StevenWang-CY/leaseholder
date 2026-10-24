@@ -455,6 +455,21 @@ def report(exports: Path, corpus: Path, binary: Path, out: Path) -> str:
             f"| {sessions} | {n(m['requests'])} | {' / '.join(map(n, m['ttft']))} ms | {m['itl50']:.1f} ms | "
             f"{shares(m['run_shares'])}% | {m['preemptions']} |"
         )
+    # The repeats beside the table's fresh points, as the table measures them.
+    s16 = [meas[run] for run in (POINTS[1][2], WARM[0][2], W0)]
+    p90 = [m["ttft"][1] for m in s16]
+    split = [m["run_shares"] for m in s16]
+    apart = max(max(s[i] for s in split) - min(s[i] for s in split) for i in range(3))
+    lines += [
+        "",
+        "**Repeatability.** Three 16-session runs (fresh, after the 8-session run, and W0): TTFT p90 "
+        + " / ".join(map(n, p90))
+        + f" ms ({n(min(p90))}{DASH}{n(max(p90))}); prompt tokens GPU / CPU tier / computed "
+        + ", ".join(shares(s) for s in split)
+        + f"%, at most {apart:.1f} points apart. The 24-session run after the 16-session one: "
+        f"TTFT p90 {n(meas[WARM[1][2]]['ttft'][1])} ms, against "
+        f"{n(meas[POINTS[2][2]]['ttft'][1])} on a fresh engine.",
+    ]
     text = "\n".join(lines) + "\n"
     (out / "calibration.md").write_text(text)
     return text
