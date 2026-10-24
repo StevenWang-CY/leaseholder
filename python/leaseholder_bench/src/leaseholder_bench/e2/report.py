@@ -743,10 +743,12 @@ def _waterfall_table(cells: Sequence[Mapping[str, Any]]) -> list[str]:
         "worker times them, then the rest of the callers' V2V, transport and playout. The four add "
         "up to the mean V2V. The LLM's own first token is timed from its request, which under "
         "preemptive generation starts at the final transcript, before the end of the turn, so it is "
-        "not a stage of its own. waterfall.svg stacks the four and marks the median and p95 V2V.",
+        "not a stage of its own. Its V2V p50 and p95 pool the replies of the configuration's runs, "
+        "where the tables above give the median of the runs' own. waterfall.svg stacks the four and "
+        "marks the pooled median and p95.",
         "",
         "| Configuration | Runs | Replies | Endpointing | Reply to first sentence "
-        "| TTS first audio | Transport and playout | Mean V2V | V2V p50 | V2V p95 "
+        "| TTS first audio | Transport and playout | Mean V2V | Pooled V2V p50 | Pooled V2V p95 "
         "| LLM first token |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
