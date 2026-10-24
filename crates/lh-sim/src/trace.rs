@@ -20,8 +20,8 @@ pub struct Request {
     /// to the subagent's spawn; [`crate::aiperf`] normalizes them as AIPerf does.
     pub t: f64,
     pub model: String,
-    /// Recorded input tokens. Only AIPerf's naming of side chains reads it; the prompt length the
-    /// simulator uses is `hash_ids.len() * block_size`, because the raw count overcounts.
+    /// Recorded input tokens, `hash_ids.len() * block_size` on every request of the corpus. Only
+    /// AIPerf's naming of side chains reads it; the simulator takes the prompt from the hash ids.
     pub input: u64,
     pub out: u64,
     pub hash_ids: Vec<u32>,
