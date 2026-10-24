@@ -91,7 +91,7 @@ lh-sim regime DATA/weka-x32 --csv regime.csv --markdown regime.md         # the 
 lh-sim regime DATA/weka-x32 --sessions 8,12,16,24 --cpu-ratio 4 --pause-sources trace --seeds $(seq 11 30 | paste -sd, -)
 lh-sim hardware DATA/weka-x32 --csv hw.csv --markdown hw.md               # other GPUs, modeled
 lh-sim hardware DATA/weka-x32 --fit --csv hw-fit.csv --markdown hw-fit.md # each at its own scaling
-lh-sim mrc DATA/weka-x32 --csv mrc.csv                                    # miss-ratio curves
+lh-sim mrc DATA/weka-x32 --service idle --csv mrc.csv                     # miss-ratio curves (the table below)
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl      # a measured run through the engine model
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl --timed --csv w0-timed.csv
 ```

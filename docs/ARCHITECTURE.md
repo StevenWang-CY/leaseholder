@@ -84,7 +84,7 @@ See [ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md).
 - **The voice plane** runs in a network namespace with no route out. libwebrtc binds ICE sockets on every non-loopback interface and gathers no candidate on loopback alone, so the namespace holds loopback plus one dummy interface (10.255.0.1/32).
 - **Sanitized inputs.** The gateway strips the request fields and headers that vLLM, SGLang and SMG trust for scheduling, caching and routing, and sets its own: the class's priority, `X-Session-ID` and the tenant's `cache_salt`, derived from the tenant's name, so tenants never share prefix-cache entries ([PROTOCOL.md](PROTOCOL.md#headers)). Sessions are scoped to the tenant: a session id from an untrusted tenant is hashed with the tenant's name.
 - **KV never crosses the network.** A session stays on the node that holds its KV; when a node fails, its sessions are placed again and re-prefill there.
-- **Known gap.** The hosts' other users share their loopback: on cyan they can reach the tunnels' TCP ports, and the engine runs vLLM's development mode for the harness. Unix-socket forwards and a production unit without development mode come after v0.3 ([ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md#co-tenants-2026-10-24)).
+- **Known gap.** The hosts' other users share their loopback: on the GPU nodes they reach the engine (in vLLM's development mode, for the harness), STT and TTS directly, and on cyan the tunnels' TCP ports, SMG and the gateway's `/metrics`. Closing it takes Unix sockets end to end and a production unit without development mode, W6's production hardening ([ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md#co-tenants-2026-10-24)).
 
 ## 4. The measurement harness
 
@@ -117,7 +117,7 @@ The Rust workspace has four crates: `lh-proto` (wire types and their JSON Schema
 
 ## 5. The simulator (E1)
 
-`lh-sim` ([`crates/lh-sim`](../crates/lh-sim/README.md)) replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context), as AIPerf's `agentic_replay` sends them, through a model of vLLM 0.32's two-tier prefix cache and its step loop (the step cap, chunked prefill, priority-then-arrival order), with a step time fitted to the box. It reproduces resume TTFT within 8% at 8 and 16 session trees and is 18–30% optimistic at 24. Its arms are LRU with and without the CPU tier, TTL holds, prefetch timed by session history or by an oracle, simplified Tokencake, MORI and InferCept, and a clairvoyant reference (Belady's MIN in each tier). `lh-sim hardware` places an L4 and an H100 SXM on the same regime map, with the box's costs scaled by their published peaks, labeled as modeled.
+`lh-sim` ([`crates/lh-sim`](../crates/lh-sim/README.md)) replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context), as AIPerf's `agentic_replay` sends them, through a model of vLLM 0.32's two-tier prefix cache and its step loop (the step cap, chunked prefill, first come first served, as at one priority), with a step time fitted to the box. It reproduces resume TTFT p50 and p90 within 8% at 8 and 16 session trees and is 18–30% optimistic at 24. Its arms are LRU with and without the CPU tier, TTL holds, prefetch timed by session history or by an oracle, simplified Tokencake, MORI and InferCept, and a clairvoyant reference (Belady's MIN in each tier). `lh-sim hardware` places an L4 and an H100 SXM on the same regime map, with the box's costs scaled by their published peaks, labeled as modeled.
 
 ## 6. Tested and not adopted
 

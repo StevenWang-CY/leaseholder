@@ -58,7 +58,7 @@ Each baseline is what an operator could deploy today, configured as its authors 
 
 ### Where the pool has room: the standard scenario
 
-The whole corpus at 8, 16 and 24 agent session trees. At 8, W2's vLLM arms meet the SLO, and arm 9, run there once in W4, lands 43 ms above it. At 16, the realistic operating point, none clearly does: the best land 100–220 ms above it and within noise of each other, and no gateway policy or engine knob separates itself from tuned stock. At 24 none meets it. Repeated three times at 16, arm 9 (2,196 ms) and the frozen box (2,323 ms) are within noise of each other: where the pool has room an engine change has nothing to do, and what remains is agent prefill sharing the steps of the reply.
+The whole corpus at 8, 16 and 24 agent session trees. At 8, W2's vLLM arms meet the SLO, and arm 9, run there once in W4, lands 43 ms above it. At 16, the realistic operating point, none clearly does: the best land 87–198 ms above it and within noise of each other, and no gateway policy or engine knob separates itself from tuned stock. At 24 none meets it. Repeated three times at 16, arm 9 (2,196 ms) and the frozen box (2,323 ms) are within noise of each other: where the pool has room the KV preemption has nothing to do, a full reply outruns the 16-token window, and what remains is agent prefill sharing the steps of the reply.
 
 ### Where agent KV fills the pool: the discriminating scenario
 
@@ -76,7 +76,7 @@ Arm 9 has two halves and a signal between them:
 - **The voice worker** tells the gateway where each call is: speech onset, the end of the turn, the reply's first audio and its end, a barge-in, the call's end.
 
 The engine half took three rounds, each found in a point's stage breakdown and isolated by a probe before it changed:
-1. KV preemption alone passed its probe (a voice turn behind two 18k-token requests in a full pool: 4.9 s to the first token on stock vLLM, 0.27 s with it) and lost the first E2 point to preempt-resubmit (V2V p95 4.3 s against 2.6 s). The stages put the loss between the reply's first token and its first sentence: the agents' 512-token prefill chunks shared every step of the reply.
+1. KV preemption alone passed its probe (a voice turn behind two 18k-token requests in a full pool: 4.9 s to the first token on stock vLLM, 0.25–0.32 s with it) and lost the first E2 point to preempt-resubmit (V2V p95 4.3 s against 2.6 s). The stages put the loss between the reply's first token and its first sentence: the agents' 512-token prefill chunks shared every step of the reply.
 2. Holding lower-priority prefill for a turn's first tokens fixed the decode (232 ms from first token to first sentence at the median, against 300 ms for preempt-resubmit) and left a first-token tail (p95 2.1 s).
 3. The tail was a turn whose prefix the agents had evicted from the GPU between turns, loading back from the CPU tier: once its KV had arrived, it waited for the scheduler's waiting loop, which runs only on budget the running prefills leave. Holding prefill through the load took a synthetic load's call TTFT p95 from 3.2 s to 0.3 s.
 
@@ -84,7 +84,7 @@ The points measured on the first two versions are kept and reported, not placed 
 
 ### The results
 
-Five runs of each headline configuration and three of each ablation and PR configuration, in rounds that rotate the order of the engine groups, so that no configuration always runs at the same hour. V2V p95, the median of the runs and their range:
+Five runs of each headline configuration and three of each ablation and PR configuration, in rounds that rotate the order of the engine groups, so that no configuration always runs at the same hour; the PRs' configurations ran later, in a session of their own with no control (10-23 23:16Z – 10-24 01:25Z). V2V p95, the median of the runs and their range:
 
 | Configuration | V2V p95 | Background tokens/s | Agent TTFT p99 |
 |---|---:|---:|---:|
@@ -101,8 +101,8 @@ Five runs of each headline configuration and three of each ablation and PR confi
 Each configuration at the median of its runs, whiskers over their range. The open diamond is the frozen box; 4 is its best step cap, 6 the static reservation, 7b SGLang with HiCache and 8c preempt-resubmit. Arm 9 (left) and the PRs' configuration with a 48-token window (9-pr-ab48, right) are separate configurations, each measured at one load, so no line joins them.
 
 - **The engine change takes the voice tail to the SLO's edge.** With full replies and a 48-token window, the PRs' configuration is 176 ms over the SLO (2,193 ms). Arm 9, whose gateway capped every reply at 16 tokens, is 40 ms over it at the median, and two of its five runs are under it. No configuration without the engine change has a run under the SLO.
-- **The prefill cap is the necessary half.** Without it the p95 stays at 5.3 s even with the KV preemption and the reserve. The KV preemption and the reserve substitute for each other: without one or the other, arm 9 is within the spread of its own runs (2,037 and 2,116 ms). #63350 alone gets the turn into the batch, and its reply then decodes beside agent prefill (5.8 s).
-- **The reply has to fit the window.** This voice agent's replies run 20 tokens at the median and 39 at most. With a 16-token window, a full reply's first sentence outruns it and decodes beside agent prefill again: 3.2–4.0 s, with the gateway or without. Degrade capped every reply here, which is what fits arm 9's replies into the window; a 48-token window fits full replies instead, about 140 ms above the capped ones (526 against 429 ms to the first sentence).
+- **The prefill cap is the necessary half.** Without it the p95 stays at 5.3 s even with the KV preemption and the reserve. Either the KV preemption or the reserve makes the room. With full replies they gave 2,193 ms (the KV preemption, as the PRs) and 2,205 ms (the reserve, with arm 9's policy and a 48-token window). With capped replies the reserve alone gave 2,037 ms and the KV preemption alone 2,116 ms (2,115–2,155, every run above arm 9's median); with both, the reserve kept the pool from filling and the KV preemption never fired (0 preemptions in five runs). #63350 alone gets the turn into the batch, and its reply then decodes beside agent prefill (5.8 s).
+- **The reply has to fit the window.** This voice agent's replies run 20 tokens at the median and 39 at most. With a 16-token window, a full reply outruns it and decodes beside agent prefill again: 3.2–4.0 s, with the gateway or without. Degrade capped every reply here, which is what fits arm 9's replies into the window; a 48-token window fits full replies instead, about 140 ms above the capped ones (526 against 429 ms to the first sentence).
 - **The agents keep most of their throughput.** Arm 9 keeps 92% of the frozen box's background goodput and the PRs' configuration 94%, with the agents' TTFT p99 unchanged. Preempt-resubmit keeps 98% at a 160 s tail, so neither it nor arm 9 dominates the other on the frontier.
 
 ![The voice turn by stage](figures/e2-waterfall.svg)
@@ -140,8 +140,11 @@ Three configurations of two GPU nodes: a voice node and an agent node (dedicate)
 ## Limitations
 
 - One model (Qwen3-4B-FP8), one GPU model, one host; synthesized callers and fixed endpointing.
-- 50 turns a point: a p95 lies between the third- and fourth-largest turn, so single runs differ by a few hundred milliseconds; a configuration near the SLO moves about 150 ms from run to run, one that misses it up to 1.5 s, and SGLang 7 s.
+- 50 turns a point: a p95 lies between the third- and fourth-largest turn, so single runs differ by a few hundred milliseconds; a configuration near the SLO moves about 150 ms from run to run, one that misses it up to 1.9 s, and SGLang 7 s.
 - The agent traces are block-scaled 32×, which keeps their reuse structure and changes their timing.
 - Every turn counts, the first of each call included, which is slower under load: without it, the standard scenario's p95 at 16 session trees drops from 2,323 to 2,186 ms for the frozen box. Background goodput is counted over the calls, whose duration differs by configuration.
 - vLLM counts a preemption when the victim next produces output, so per-point preemption counts are lower bounds.
+- Every run replays the same workload sample (agent seed 11, caller seed 0): the ranges are timing noise, not workload variation.
+- The vLLM PRs' configurations ran in a session of their own, after the rounds and with no control (10-23 23:16Z – 10-24 01:25Z).
+- vLLM 0.32's prompt-token counters see only a request's first scheduling: what a preempted request reloads or recomputes when it resumes is not in them.
 - The two-node points are not measured yet.
