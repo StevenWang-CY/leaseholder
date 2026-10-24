@@ -205,19 +205,41 @@ V03_CONF_SHA256 = "853dacb1a096a97e2a06762ac7ca6f875c35550d3a386dc59edb2c6ab9dbe
 def test_the_w5_control_is_make_room_as_v03_built_it() -> None:
     control = PHASTFORM / "variants" / "make-room-v03"
     assert hashlib.sha256((control / "build.py").read_bytes()).hexdigest() == V03_BUILD_SHA256
-    # v0.3's lh-engine.conf with a first line saying what it is, and its own build.py and module.
+    # v0.3's lh-engine.conf with a first line saying what it is, its own build.py and cache directory,
+    # and its module renamed, so that the engine's scheduler_cls tells it from make-room's.
     first, rest = (control / "lh-engine.conf").read_text().split("\n", 1)
     assert first.startswith("# W5's control: make-room as the v0.3 tag has it")
-    v03 = rest.replace("make-room-v03", "make-room")
+    cache = "%h/leaseholder/cache/make-room-v03"
+    rename = f"ExecStartPre=/bin/mv -f {cache}/lh_make_room_scheduler.py {cache}/lh_make_room_v03_scheduler.py\n"
+    assert rest.count(rename) == 1
+    v03 = (
+        rest.replace(rename, "")
+        .replace("lh_make_room_v03_scheduler", "lh_make_room_scheduler")
+        .replace("make-room-v03", "make-room")
+    )
     assert hashlib.sha256(v03.encode()).hexdigest() == V03_CONF_SHA256
-    assert "variants/make-room-v03/build.py %h/leaseholder/cache/make-room-v03" in rest
-    assert "Environment=PYTHONPATH=%h/leaseholder/cache/make-room-v03" in rest
+    assert f"variants/make-room-v03/build.py {cache}" in rest
+    assert f"Environment=PYTHONPATH={cache}" in rest
     assert e2.variant_flags("make-room-v03") == (
-        "--scheduler-cls", "lh_make_room_scheduler.AsyncScheduler",
+        "--scheduler-cls", "lh_make_room_v03_scheduler.AsyncScheduler",
         "--additional-config.make_room.max_preemptions_per_step", "2",
         "--additional-config.make_room.budget_cap", "true",
         "--additional-config.make_room.reserve_tokens", "2048",
     )  # fmt: skip
+
+
+def test_the_engine_check_tells_the_w5_control_from_make_room() -> None:
+    # The control runs make-room's switches under a scheduler class of its own, so that a point on the
+    # other module fails before anything starts.
+    switches = {"make_room": MAKE_ROOM}
+    final = vllm(switches, scheduler_cls=MAKE_ROOM_CLS)
+    control = vllm(switches, scheduler_cls="lh_make_room_v03_scheduler.AsyncScheduler")
+    check_engine(Engine("make-room", ()), final)
+    check_engine(Engine("make-room-v03", ()), control)
+    with pytest.raises(E2Error, match=r"use make-room-v03$"):
+        check_engine(Engine("make-room-v03", ()), final)
+    with pytest.raises(E2Error, match=r"use make-room$"):
+        check_engine(Engine("make-room", ()), control)
 
 
 W5 = ("w5-a1-voice", "w5-disc-frozen-s24", "w5-disc-pr-ab48-s24", "w5-disc-pr-ab48-v03-s24")
