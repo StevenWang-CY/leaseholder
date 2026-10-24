@@ -14,6 +14,8 @@ SERVICES = {8000, 8100, 8880}
 """A GPU node's services on its loopback: the engine, STT and TTS."""
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMa9oQ1uNw4Z5fT1n2x0bq7d1H0mGJ1s7mYcQjv8Yw5k"
 """A tunnel key's type and blob, as ssh-keygen writes them before the comment."""
+LOGIN = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB7m2Qp9xR4tYc3vLk8wNs6fJd0aHe5uPq1zXo2iGb4M me@laptop"
+"""Another key in a GPU node's authorized_keys: its user's own."""
 
 FAKE_SSH = """\
 #!/bin/sh
@@ -24,10 +26,13 @@ cd "$FAKE_HOSTS/$host" && exec sh -c "$*"
 """
 
 
-def authorize(tmp_path: Path, public_key: str, authorized_keys: str = "") -> tuple[str, str]:
-    """Runs authorize-tunnel.sh from cyan to phastform, cyan's tunnel key being ``public_key`` and
-    phastform's authorized_keys ``authorized_keys``; returns what it prints and the file it leaves."""
-    hosts, bin_dir = tmp_path / "hosts", tmp_path / "bin"
+def authorize(
+    work: Path, public_key: str, authorized_keys: str = ""
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Runs authorize-tunnel.sh from cyan to phastform, hosts kept under ``work``, cyan's tunnel key
+    being ``public_key`` and phastform's authorized_keys ``authorized_keys``; returns the run and the
+    file it leaves."""
+    hosts, bin_dir = work / "hosts", work / "bin"
     for host in ("cyan", "phastform"):
         (hosts / host / ".ssh").mkdir(parents=True)
     (hosts / "cyan" / ".ssh" / "lh_tunnel_ed25519.pub").write_text(f"{public_key}\n")
@@ -46,9 +51,8 @@ def authorize(tmp_path: Path, public_key: str, authorized_keys: str = "") -> tup
         env=env,
         capture_output=True,
         text=True,
-        check=True,
     )
-    return done.stdout, authorized.read_text()
+    return done, authorized.read_text()
 
 
 def permitted(authorized_keys: str) -> set[int]:
@@ -72,5 +76,24 @@ def test_the_gpu_nodes_publish_no_kv_events_and_the_tunnels_reach_only_their_ser
     audited = re.search(r"grep -E ':\(([\d|]+)\)\$'", smoke)
     assert audited is not None
     assert {int(port) for port in audited.group(1).split("|")} == SERVICES
-    _, authorized = authorize(tmp_path, f"{KEY} lh-tunnel@cyan")
+    done, authorized = authorize(tmp_path, f"{KEY} lh-tunnel@cyan")
+    assert done.returncode == 0, done.stderr
     assert permitted(authorized) == SERVICES
+
+
+def test_the_tunnel_key_may_forward_to_the_services_and_listen_nowhere(tmp_path: Path) -> None:
+    earlier = f'restrict,port-forwarding,permitopen="127.0.0.1:5558" {KEY} lh-tunnel@cyan'
+    options = (
+        'restrict,port-forwarding,permitopen="127.0.0.1:8000",permitopen="127.0.0.1:8100",'
+        'permitopen="127.0.0.1:8880",permitlisten="127.0.0.1:1",command="/bin/false"'
+    )
+    # The key as ssh-keygen writes it, and without its comment, which is optional.
+    for name, public_key in (("commented", f"{KEY} lh-tunnel@cyan"), ("bare", KEY)):
+        done, authorized = authorize(tmp_path / name, public_key, f"{LOGIN}\n{earlier}\n")
+        # The earlier entry for the key is replaced; every other key stays.
+        assert authorized.splitlines() == [LOGIN, f"{options} {public_key}"], name
+        assert done.stdout == f"authorized: {public_key.rsplit(' ', 1)[-1]} (1 entry)\n", name
+    # A client without a key changes nothing.
+    done, authorized = authorize(tmp_path / "empty", "", f"{LOGIN}\n")
+    assert done.returncode == 2 and "no public key" in done.stderr
+    assert authorized == f"{LOGIN}\n"
