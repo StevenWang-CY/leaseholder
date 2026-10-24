@@ -279,13 +279,18 @@ def test_the_w5_campaign_rotates_its_four_configurations_over_five_seeded_rounds
 
 W5_PR = {"w5-disc-pr-a-s24": "disc-pr-a-s24", "w5-disc-pr-ab-s24": "disc-pr-ab-s24"}
 """The PRs' other two configurations W5 re-measures, each with the W4 one it re-measures."""
+W5_PR_ROUNDS = ("w5-disc-frozen-s24", *W5_PR, "w5-disc-pr-ab48-s24")
+"""The PR campaign's four configurations: the two, and two of W5's campaign beside them."""
 
 
-def test_the_w5_pr_campaign_alternates_the_prs_other_two_configurations_over_w5s_seeds() -> None:
+def test_the_w5_pr_campaign_rotates_the_prs_configurations_beside_the_frozen_box() -> None:
     rounds = [campaign_lines(BENCHMARKS / f"w5-pr-r{r}.campaign") for r in range(1, 6)]
     assert [lines[0] for lines in rounds] == [f"agents-seed {seed}" for seed in range(11, 16)]
     orders = [[Path(line).stem for line in lines[1:]] for lines in rounds]
-    assert orders == [[*W5_PR] if r % 2 else [*W5_PR][::-1] for r in range(1, 6)]
+    assert orders[0] == list(W5_PR_ROUNDS)
+    for order, then in itertools.pairwise(orders):
+        assert then == [*order[1:], order[0]]  # rotated by one from round to round
+    assert all({order[place] for order in orders} == set(W5_PR_ROUNDS) for place in range(4))
     for name, w4 in W5_PR.items():
         arm, before = (
             load_arm(BENCHMARKS / "arms" / f"{name}.toml"),
