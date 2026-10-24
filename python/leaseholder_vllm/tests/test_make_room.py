@@ -544,6 +544,32 @@ def test_no_preemption_when_it_would_not_make_room(module, model):
         assert not out.preempted_req_ids and "voice" not in scheduled(out)
 
 
+def test_the_room_is_net_of_the_requests_prefix_cache_hit(module, model):
+    """The priority-0 request shares an 18-block prefix that a priority-2 runner holds: while the runner holds them,
+    those blocks cost it nothing, so it lacks only 3 of the 5 blocks of its own (2 free). The other runner, the
+    latest arrival, gives them, and the request is admitted beside the runner that holds its prefix."""
+    sched = scheduler(
+        module.Scheduler, model, 33, {"max_preemptions_per_step": 2}, prefix_caching=True
+    )
+    prefix = [5] * (18 * BLOCK)
+    holder = request("holder", 0, priority=2, arrival=1, prompt=prefix + [6] * 8)
+    run(
+        sched,
+        request("rt", blocks(5), priority=0, arrival=0, token=1),
+        holder,
+        request("bg", blocks(6), priority=2, arrival=2, token=2),
+    )
+    assert free_blocks(sched) == 2
+
+    voice = request("voice", 0, priority=0, arrival=3, prompt=prefix + [8] * 72)
+    sched.add_request(voice)
+    out = step(sched)
+
+    assert out.preempted_req_ids == {"bg"}
+    assert "voice" in scheduled(out) and voice.num_computed_tokens == len(prefix) + 72
+    assert holder.status == RequestStatus.RUNNING
+
+
 def test_a_victim_holding_the_requests_prefix_releases_none_of_it(module, model):
     """The priority-0 request shares an 18-block prefix that a priority-2 runner holds: those blocks cost it nothing
     while the runner holds them, and preempting the runner only puts them in the free queue, which the request takes
@@ -815,6 +841,27 @@ def test_a_paused_streaming_session_does_not_mask_the_requests_behind_it(module,
     assert "voice" in scheduled(out)
 
 
+def test_a_request_compiling_its_grammar_does_not_mask_the_requests_behind_it(module, model):
+    """A priority-0 request whose structured-output grammar is still compiling waits ahead of a later priority-0
+    request: the waiting loop cannot schedule it yet, so make-room makes room for the request behind it, though the
+    first would fit."""
+    sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2})
+    run(
+        sched,
+        request("rt", blocks(22), priority=0, arrival=0),
+        request("bg", blocks(8), priority=2, arrival=1),
+    )
+    compiling = request("compiling", BLOCK, priority=0, arrival=2)
+    # Blocked as vLLM's own tests block one.
+    compiling.status = RequestStatus.WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR
+    sched.add_request(compiling)
+    sched.add_request(request("voice", 100, priority=0, arrival=3))
+    out = step(sched)
+
+    assert out.preempted_req_ids == {"bg"} and "voice" in scheduled(out)
+    assert compiling.status == RequestStatus.WAITING_FOR_STRUCTURED_OUTPUT_GRAMMAR
+
+
 def test_no_room_for_a_request_awaiting_output_from_before_its_preemption(module, model):
     """Under pipeline parallelism, a preempted request's output can be in flight for steps after its preemption, and
     the waiting loop skips it until that output is delivered: make-room makes no room for it meanwhile. (Only
@@ -1024,6 +1071,16 @@ def loading(module, model, make_room, max_num_seqs: int = 16):
         voice.status == RequestStatus.WAITING_FOR_REMOTE_KVS and voice in sched._inflight_prefills
     )
     return sched, voice
+
+
+def test_a_load_counts_the_blocks_it_still_needs_once(module, model):
+    """A request loading its KV reserves the blocks it still needs among the in-flight prefills' reservations, so
+    its own shortfall counts them once."""
+    sched, voice = loading(module, model, {"max_preemptions_per_step": 2})
+    reserved = sched._inflight_prefill_reserved_blocks()
+    # Its 44 tokens, and the prefill's.
+    assert sched._request_remaining_blocks(voice) == 3 < reserved
+    assert sched._num_blocks_short(voice, None) == reserved - free_blocks(sched)
 
 
 @pytest.mark.parametrize("make_room", [{"budget_cap": True, "budget_cap_tokens": 4}, {}])
