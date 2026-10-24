@@ -419,7 +419,7 @@ AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to t
 
 | Session trees (KV pressure) | `lru-cpu` resume p50 / p90 | Oracle prefetch p50 / p90 | Clairvoyant reference p50 / p90 |
 |---|---|---|---|
-| 8 (1.6) | 86 / 267 ms | +3.4% / +28.0% | +1.3% / +15.5% |
+| 8 (1.6) | 86 / 267 ms | +3.4% / +28.0% | +1.4% / +15.5% |
 | 12 (2.4) | 103 / 299 ms | +3.3% / +28.8% | +0.5% / +8.0% |
 | 16 (3.2) | 139 / 895 ms | +8.2% (+10%) / +13.2% (−3%) | +1.7% / +9.4% |
 | 24 (4.4, outside the calibration) | 208 / 1,645 ms | −2.4% (−24%) / −16.9% (−24%) | +2.3% / +10.9% |

@@ -90,9 +90,10 @@ make schema                                  # regenerate crates/lh-proto/schema
 VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm   # the engine plugin tests against an existing vLLM checkout
 make reproduce-e2                            # E2's report, tables, frontiers and waterfall from the committed records
 make e2-figures                              # the docs' E2 figures from the same records
+make reproduce-e1 CORPUS=DIR                 # E1's tables with lh-sim, from the 32x corpus in DIR
 ```
 
-`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
+`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. `make reproduce-e1` rebuilds E1's tables in about a minute from the 32× corpus, which stays outside the repository ([how to build it](crates/lh-sim/README.md#usage)). Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
 
 ## Repository layout
 

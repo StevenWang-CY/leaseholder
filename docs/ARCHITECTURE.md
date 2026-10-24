@@ -117,7 +117,7 @@ The Rust workspace has four crates: `lh-proto` (wire types and their JSON Schema
 
 ## 5. The simulator (E1)
 
-`lh-sim` ([`crates/lh-sim`](../crates/lh-sim/README.md)) replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context), as AIPerf's `agentic_replay` sends them, through a model of vLLM 0.32's two-tier prefix cache and its step loop (the step cap, chunked prefill, priority-then-arrival order), with a step time fitted to the box. It reproduces resume TTFT within 8% at 8 and 16 session trees and is 18–30% optimistic at 24. Its arms are LRU with and without the CPU tier, S3-FIFO, TTL holds, prefetch timed by session history or by an oracle, simplified Tokencake, MORI and InferCept, and a clairvoyant reference (Belady's MIN in each tier). `lh-sim hardware` places an L4 and an H100 SXM on the same regime map, with the box's costs scaled by their published peaks, labeled as modeled.
+`lh-sim` ([`crates/lh-sim`](../crates/lh-sim/README.md)) replays the SemiAnalysis Claude Code traces, block-scaled 32× (32k context), as AIPerf's `agentic_replay` sends them, through a model of vLLM 0.32's two-tier prefix cache and its step loop (the step cap, chunked prefill, priority-then-arrival order), with a step time fitted to the box. It reproduces resume TTFT within 8% at 8 and 16 session trees and is 18–30% optimistic at 24. Its arms are LRU with and without the CPU tier, TTL holds, prefetch timed by session history or by an oracle, simplified Tokencake, MORI and InferCept, and a clairvoyant reference (Belady's MIN in each tier). `lh-sim hardware` places an L4 and an H100 SXM on the same regime map, with the box's costs scaled by their published peaks, labeled as modeled.
 
 ## 6. Tested and not adopted
 
@@ -147,7 +147,7 @@ Still planned: the two-node points (dedicate against pool, in a window on Gray),
 |---|---|
 | `lh-proto` | Wire formats pinned by examples; schemas kept current |
 | `lh-core` | The cost model against E0's cells, the KV geometry, the step-time model; each admission policy's decisions on hand-made sequences of requests and turns; each placement policy's choice |
-| `lh-sim` | The AIPerf port against AIPerf's own plan; the step loop on hand-made sequences; the clairvoyant tiers against exhaustive search; every arm end to end on a 16-trace subset |
+| `lh-sim` | The AIPerf port against AIPerf's own plan; the step loop on hand-made sequences; the clairvoyant tiers against exhaustive search; every arm end to end on a 16-trace subset; `make reproduce-e1` regenerates E1's tables (not in CI: the corpus stays outside the repository) |
 | `lh-gateway` | Against an in-process mock engine: disconnects, backpressure, sanitization and tenant-scoped sessions, event idempotency, every admission policy, placement on two mock engines, the placement table under concurrent requests; the proxy's overhead in process |
 | Engine | The generated `make-room` module built from v0.32.0's source; its behavior on vLLM's real scheduler with CPU torch; the plugins against vLLM's real offload manager; the GPU probes |
 | Voice | A hermetic LiveKit test in the voice-plane namespace (barge-in, headers, lifecycle events in order); unit tests of the event delivery and of a call's node |
