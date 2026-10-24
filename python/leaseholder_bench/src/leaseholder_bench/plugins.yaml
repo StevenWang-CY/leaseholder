@@ -7,7 +7,7 @@ endpoint:
       OpenAI chat completions plus Leaseholder's per-session metadata: the X-Session-ID
       header (the session-tree root, shared by a parent and its subagents), the X-LH-Class
       header, and the prompt_cache_key and vLLM priority body fields.
-      Configured by LH_BENCH_CLASS, LH_BENCH_CLASS_MAP and LH_BENCH_SEND_PRIORITY.
+      Configured by LH_BENCH_CLASS and LH_BENCH_SEND_PRIORITY.
     metadata:
       endpoint_path: /v1/chat/completions
       supports_streaming: true

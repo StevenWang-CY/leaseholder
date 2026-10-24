@@ -30,11 +30,6 @@ def session_id(request_info: RequestInfo) -> str:
     return request_info.root_correlation_id or request_info.x_correlation_id
 
 
-def trace_id(request_info: RequestInfo) -> str:
-    """The source trace; child conversations are named ``<trace id>::<kind>:<n>``."""
-    return request_info.source_trace_id or request_info.conversation_id.split("::", 1)[0]
-
-
 class LeaseholderChatEndpoint(ChatEndpoint):
     """OpenAI chat completions with ``X-Session-ID``, ``X-LH-Class`` and ``priority`` per session."""
 
@@ -44,12 +39,12 @@ class LeaseholderChatEndpoint(ChatEndpoint):
 
     def get_endpoint_headers(self, request_info: RequestInfo) -> dict[str, str]:
         headers = super().get_endpoint_headers(request_info)
-        headers.update(self.tagger.headers(session_id(request_info), trace_id(request_info)))
+        headers.update(self.tagger.headers(session_id(request_info)))
         return headers
 
     def format_payload(self, request_info: RequestInfo) -> dict[str, Any]:
         payload = super().format_payload(request_info)
-        payload.update(self.tagger.body(session_id(request_info), trace_id(request_info)))
+        payload.update(self.tagger.body(session_id(request_info)))
         return payload
 
 

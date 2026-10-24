@@ -6,12 +6,10 @@ in sync. The AIPerf endpoint plugin renders its requests' metadata through :clas
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
@@ -62,45 +60,31 @@ def parse_flag(value: str) -> bool:
     raise ValueError(f"expected a boolean, got {value!r}")
 
 
-def load_class_map(path: Path) -> dict[str, SloClass]:
-    """Read a JSON object that maps trace ids to SLO classes."""
-    raw = json.loads(path.read_text())
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path}: expected a JSON object of trace id -> class")
-    return {str(trace_id): parse_class(cls) for trace_id, cls in raw.items()}
-
-
 @dataclass(frozen=True)
 class SessionTagger:
-    """Assigns each replayed trace its SLO class and renders the per-request metadata."""
+    """Renders the per-request metadata of a replay whose sessions share one SLO class."""
 
-    default_class: SloClass = SloClass.BACKGROUND
-    trace_classes: Mapping[str, SloClass] = field(default_factory=dict)
+    slo_class: SloClass = SloClass.BACKGROUND
     send_priority: bool = True
 
-    def class_for(self, trace_id: str) -> SloClass:
-        return self.trace_classes.get(trace_id, self.default_class)
+    def headers(self, session_id: str) -> dict[str, str]:
+        return {SESSION_HEADER: session_id, CLASS_HEADER: self.slo_class.value}
 
-    def headers(self, session_id: str, trace_id: str) -> dict[str, str]:
-        return {SESSION_HEADER: session_id, CLASS_HEADER: self.class_for(trace_id).value}
-
-    def body(self, session_id: str, trace_id: str) -> dict[str, Any]:
+    def body(self, session_id: str) -> dict[str, Any]:
         fields: dict[str, Any] = {"prompt_cache_key": session_id}
         if self.send_priority:
-            fields["priority"] = ENGINE_PRIORITY[self.class_for(trace_id)]
+            fields["priority"] = ENGINE_PRIORITY[self.slo_class]
         return fields
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> SessionTagger:
-        """Configure from ``LH_BENCH_CLASS``, ``LH_BENCH_CLASS_MAP`` and ``LH_BENCH_SEND_PRIORITY``.
+        """Configure from ``LH_BENCH_CLASS`` and ``LH_BENCH_SEND_PRIORITY``.
 
         AIPerf builds the endpoint plugin itself, in every worker process, so the environment is
         the plugin's only configuration channel.
         """
-        class_map = env.get("LH_BENCH_CLASS_MAP")
         send_priority = env.get("LH_BENCH_SEND_PRIORITY")
         return cls(
-            default_class=parse_class(env.get("LH_BENCH_CLASS", SloClass.BACKGROUND.value)),
-            trace_classes=load_class_map(Path(class_map)) if class_map else {},
+            slo_class=parse_class(env.get("LH_BENCH_CLASS", SloClass.BACKGROUND.value)),
             send_priority=parse_flag(send_priority) if send_priority else True,
         )

@@ -73,7 +73,6 @@ since AIPerf builds the endpoint itself, in every worker:
 | Variable | Default | Meaning |
 |---|---|---|
 | `LH_BENCH_CLASS` | `background` | Class of every session |
-| `LH_BENCH_CLASS_MAP` | unset | JSON file `{trace id: class}`; overrides the default per trace |
 | `LH_BENCH_SEND_PRIORITY` | `true` | `false` sends no `priority`, as a plain client would. vLLM 0.32 acts on it only under `--scheduling-policy priority`; its FCFS scheduler ignores it |
 
 AIPerf also sends its own `X-Correlation-ID` and `X-Session-Affinity`, which identify each agent
