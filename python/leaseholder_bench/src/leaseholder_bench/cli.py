@@ -1,19 +1,15 @@
-"""The ``lh-bench`` command line: trace scaling, replays, latency probes, engine metrics and E2
-points."""
+"""The ``lh-bench`` command line: trace scaling, latency probes, engine metrics and E2 points."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import dataclasses
-import os
 import signal
 import sys
 from pathlib import Path
 
 from leaseholder_bench.load import LoadSpec, parse_lengths
-from leaseholder_bench.protocol import SessionTagger, SloClass, load_class_map
-from leaseholder_bench.replay import DEFAULT_MODEL, DEFAULT_URL
+from leaseholder_bench.protocol import DEFAULT_MODEL, SloClass
 
 Commands = argparse._SubParsersAction  # what add_subparsers returns
 
@@ -55,104 +51,6 @@ def _add_scale_traces(commands: Commands) -> None:
     scale.add_argument("--ids", type=Path, help="keep only the trace ids listed in this file")
     scale.add_argument("--limit", type=int, help="stop after this many traces")
     scale.set_defaults(func=_scale)
-
-
-def _replay(args: argparse.Namespace) -> int:
-    from leaseholder_bench.replay import ReplayConfig, replay
-
-    tagger = SessionTagger.from_env()
-    if args.slo_class is not None:
-        tagger = dataclasses.replace(tagger, default_class=args.slo_class)
-    if args.class_map is not None:
-        tagger = dataclasses.replace(tagger, trace_classes=load_class_map(args.class_map))
-    if args.no_priority:
-        tagger = dataclasses.replace(tagger, send_priority=False)
-    config = ReplayConfig(
-        url=args.url,
-        model=args.model,
-        sessions=args.sessions,
-        duration=args.duration,
-        grace=args.grace,
-        think_cap=args.think_cap,
-        timeout=args.timeout,
-        ignore_eos=not args.no_ignore_eos,
-        seed=args.seed,
-    )
-    replayer = asyncio.run(replay(config, tagger, args.traces, args.out))
-    print(replayer.summary())
-    return 0 if any(stat.ok for stat in replayer.stats) else 1
-
-
-def _add_replay(commands: Commands) -> None:
-    replay = commands.add_parser(
-        "replay",
-        help="replay scaled traces, feeding each live reply into the next turn",
-        description="Closed-loop replay of scaled traces with recorded think times and "
-        "subagents. Each turn's history carries the model's actual reply. Writes one JSON "
-        "line per request.",
-    )
-    replay.add_argument("traces", type=Path, help="directory of scaled trace *.json files")
-    replay.add_argument("--out", type=Path, required=True, help="per-request JSONL file")
-    replay.add_argument(
-        "--url",
-        default=os.environ.get("LH_BENCH_URL", DEFAULT_URL),
-        help="chat completions URL (env LH_BENCH_URL; default %(default)s)",
-    )
-    replay.add_argument(
-        "--model",
-        default=os.environ.get("LH_BENCH_MODEL", DEFAULT_MODEL),
-        help="model name sent in each request (env LH_BENCH_MODEL; default %(default)s)",
-    )
-    replay.add_argument(
-        "--sessions", type=int, default=4, help="concurrent session trees (default %(default)s)"
-    )
-    replay.add_argument(
-        "--duration",
-        type=float,
-        default=60.0,
-        help="seconds during which new requests start (default %(default)s)",
-    )
-    replay.add_argument(
-        "--grace",
-        type=float,
-        default=30.0,
-        help="seconds after --duration before in-flight requests are cancelled "
-        "(default %(default)s)",
-    )
-    replay.add_argument(
-        "--think-cap",
-        type=float,
-        default=600.0,
-        help="cap on each recorded think time, in seconds (default %(default)s)",
-    )
-    replay.add_argument(
-        "--timeout",
-        type=float,
-        default=300.0,
-        help="per-request timeout in seconds (default %(default)s)",
-    )
-    replay.add_argument(
-        "--class",
-        dest="slo_class",
-        type=SloClass,
-        choices=list(SloClass),
-        help="SLO class of every session (env LH_BENCH_CLASS; default background)",
-    )
-    replay.add_argument(
-        "--class-map", type=Path, help="JSON object of trace id -> class (env LH_BENCH_CLASS_MAP)"
-    )
-    replay.add_argument(
-        "--no-priority",
-        action="store_true",
-        help="omit the vLLM priority field (needed against a server without priority scheduling)",
-    )
-    replay.add_argument(
-        "--no-ignore-eos", action="store_true", help="let the model stop before the trace's out"
-    )
-    replay.add_argument(
-        "--seed", type=int, default=0, help="seed of the trace order (default %(default)s)"
-    )
-    replay.set_defaults(func=_replay)
 
 
 def _mock(args: argparse.Namespace) -> int:
@@ -514,7 +412,6 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     for add in (
         _add_scale_traces,
-        _add_replay,
         _add_mock_server,
         _add_kv_metrics,
         _add_tiers,

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from aiperf.config.loader import load_config
 
-from leaseholder_bench.replay import DEFAULT_MODEL, DEFAULT_URL
+from leaseholder_bench.protocol import DEFAULT_MODEL
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -13,7 +13,7 @@ def test_agentic_replay_template_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("LH_BENCH_DATA", str(tmp_path))
     benchmark = load_config(CONFIGS / "agentic_replay.yaml").benchmark
 
-    assert benchmark.endpoint.urls == [DEFAULT_URL]
+    assert benchmark.endpoint.urls == ["http://127.0.0.1:8000/v1/chat/completions"]
     assert benchmark.endpoint.type == "leaseholder_chat"
     assert benchmark.get_model_names() == [DEFAULT_MODEL]
     assert benchmark.endpoint.extra == {"ignore_eos": True}  # decode the trace's output lengths

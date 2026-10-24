@@ -19,12 +19,12 @@ def chat(session: str, *messages: tuple[str, str], max_tokens: int = 4) -> tuple
     return headers, body
 
 
-def test_records_metadata_cached_prefix_and_echoed_replies():
+def test_records_metadata_and_the_cached_prefix():
     recorder = Recorder(max_tokens=64)
     first = recorder.receive(*chat("s1", ("system", "Session s1."), ("user", " a b c d")))
     reply = "".join(first.tokens)
     assert len(first.tokens) == 4
-    assert first.record["cached_tokens"] == 0 and first.record["echoed_replies"] == 0
+    assert first.record["cached_tokens"] == 0
     assert first.record["headers"]["X-Session-ID"] == "s1"
     assert first.record["body"] == {"model": "m", "max_completion_tokens": 4, "priority": 2}
     assert first.record["messages"] == [["system", 11], ["user", 8]]
@@ -33,17 +33,14 @@ def test_records_metadata_cached_prefix_and_echoed_replies():
         *chat("s1", ("system", "Session s1."), ("user", " a b c d"), ("assistant", reply),
               ("user", " e f"))
     )  # fmt: skip
-    assert second.record["echoed_replies"] == 1
     # The whole first prompt is a prefix of the second: "system:", "Session", "s1.", "user:" + 4.
     assert second.record["cached_tokens"] == 8
     assert second.usage["prompt_tokens_details"] == {"cached_tokens": 8}
     assert second.usage["completion_tokens"] == 4
 
-    # A synthesized assistant turn is not an echo, and sessions do not share a cache.
-    other = recorder.receive(
-        *chat("s2", ("system", "Session s1."), ("user", " a b c d"), ("assistant", " x y"))
-    )
-    assert other.record["echoed_replies"] == 0 and other.record["cached_tokens"] == 0
+    # Sessions do not share a cache.
+    other = recorder.receive(*chat("s2", ("system", "Session s1."), ("user", " a b c d")))
+    assert other.record["cached_tokens"] == 0
 
 
 def test_records_serialize_with_aiohttp_headers():

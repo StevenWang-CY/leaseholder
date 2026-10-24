@@ -13,7 +13,6 @@ from aiperf.transports.aiohttp_transport import AioHttpTransport
 from helpers import model_endpoint
 
 from leaseholder_bench.aiperf_plugin import LeaseholderChatEndpoint, WekaTraceScaledLoader
-from leaseholder_bench.protocol import SessionTagger
 
 
 def request_info(me: ModelEndpointInfo, correlation_id: str, root: str, conversation: str):
@@ -95,14 +94,3 @@ def test_static_headers_and_api_key_are_kept():
     assert headers["X-Bench-Run"] == "r1"
     assert headers["Authorization"] == "Bearer key"
     assert headers["X-Session-ID"] == "root-3"
-
-
-def test_plugin_and_driver_send_identical_metadata(parent_and_child):
-    endpoint, _, child = parent_and_child
-    tagger = SessionTagger()
-    headers = endpoint.get_endpoint_headers(child)
-    payload = endpoint.format_payload(child)
-    for key, value in tagger.headers("root-1", "trace-a").items():
-        assert headers[key] == value
-    for key, value in tagger.body("root-1", "trace-a").items():
-        assert payload[key] == value

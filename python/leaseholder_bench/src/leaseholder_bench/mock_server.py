@@ -2,13 +2,10 @@
 
 It binds 127.0.0.1 only and streams chat completions with a fixed time to first token and
 inter-token gap. Each request appends one JSON line to the log: arrival and end times, every
-header, every body field except ``messages``, a role/size digest of the messages, and two checks:
-
-- ``cached_tokens``: the longest word-level prefix the prompt shares with one of the session's
-  recent prompts, a stand-in for a per-session prefix cache. It is also returned as
-  ``usage.prompt_tokens_details.cached_tokens``.
-- ``echoed_replies``: how many assistant messages repeat a reply this mock streamed to the same
-  session. Only a client that feeds the live reply back (``lh-bench replay``) scores above zero.
+header, every body field except ``messages``, a role/size digest of the messages, and
+``cached_tokens``: the longest word-level prefix the prompt shares with one of the session's recent
+prompts, a stand-in for a per-session prefix cache. It is also returned as
+``usage.prompt_tokens_details.cached_tokens``.
 
 Sessions are keyed by the ``X-Session-ID`` header. Token counts are whitespace words.
 """
@@ -56,33 +53,29 @@ class Recorder:
         self.history = history
         self.max_sessions = max_sessions
         self._serial = itertools.count()
-        self._sessions: OrderedDict[str, tuple[deque[str], deque[int]]] = OrderedDict()
+        self._sessions: OrderedDict[str, deque[str]] = OrderedDict()
 
-    def _session(self, key: str) -> tuple[deque[str], deque[int]]:
-        state = self._sessions.pop(key, None) or (deque(maxlen=self.history), deque(maxlen=256))
-        self._sessions[key] = state
+    def _session(self, key: str) -> deque[str]:
+        prompts = self._sessions.pop(key, None)
+        if prompts is None:
+            prompts = deque(maxlen=self.history)
+        self._sessions[key] = prompts
         while len(self._sessions) > self.max_sessions:
             self._sessions.popitem(last=False)
-        return state
+        return prompts
 
     def receive(self, headers: Mapping[str, str], body: dict[str, Any]) -> Exchange:
         messages = body.get("messages") or []
         texts = [_text(m.get("content")) for m in messages]
         prompt = "\n".join(f"{m.get('role')}: {t}" for m, t in zip(messages, texts, strict=True))
-        prompts, replies = self._session(headers.get(SESSION_HEADER, ""))
+        prompts = self._session(headers.get(SESSION_HEADER, ""))
         shared = max((common_prefix_len(p, prompt) for p in prompts), default=0)
         cached = len(prompt[:shared].split())
-        echoed = sum(
-            1
-            for m, t in zip(messages, texts, strict=True)
-            if m.get("role") == "assistant" and hash(t) in replies
-        )
         serial = next(self._serial)
         requested = body.get("max_completion_tokens", body.get("max_tokens"))
         count = max(1, min(16 if requested is None else int(requested), self.max_tokens))
         tokens = [f" r{serial}t{i}" for i in range(count)]
         prompts.append(prompt)
-        replies.append(hash("".join(tokens)))
         prompt_tokens = len(prompt.split())
         usage = {
             "prompt_tokens": prompt_tokens,
@@ -96,7 +89,6 @@ class Recorder:
             "messages": [[m.get("role"), len(t)] for m, t in zip(messages, texts, strict=True)],
             "prompt_tokens": prompt_tokens,
             "cached_tokens": cached,
-            "echoed_replies": echoed,
         }
         return Exchange(serial, record, tokens, usage)
 

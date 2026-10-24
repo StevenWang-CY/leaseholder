@@ -1,8 +1,7 @@
 """Per-session request metadata that Leaseholder's load generators send.
 
 Names and values mirror the Rust crate ``lh-proto`` (``headers.rs`` and ``class.rs``); keep the two
-in sync. The AIPerf endpoint plugin and ``lh-bench replay`` both render requests through
-:class:`SessionTagger`, so the two tools put identical metadata on the wire.
+in sync. The AIPerf endpoint plugin renders its requests' metadata through :class:`SessionTagger`.
 """
 
 from __future__ import annotations
@@ -21,6 +20,9 @@ SESSION_HEADER: Final = "X-Session-ID"
 
 CLASS_HEADER: Final = "X-LH-Class"
 """SLO class of the request: ``realtime``, ``interactive`` or ``background``."""
+
+DEFAULT_MODEL: Final = "Qwen/Qwen3-4B-Instruct-2507-FP8"
+"""The frozen box's model: the probes' default, and ``configs/agentic_replay.yaml``'s."""
 
 
 class SloClass(StrEnum):

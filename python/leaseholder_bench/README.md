@@ -11,7 +11,6 @@ the tier cost model (E0) and server-side voice turns.
 | AIPerf loader `weka_trace_scaled` | `aiperf_plugin.py` | AIPerf's Weka loader, fixed to read each trace's own block size |
 | AIPerf endpoint `leaseholder_chat` | `aiperf_plugin.py` | Chat completions plus `X-Session-ID`, `X-LH-Class`, `prompt_cache_key` and `priority` |
 | `configs/agentic_replay.yaml`, `configs/aiperf.env` | | AIPerf `agentic_replay` run: steady-state session trees with recycling |
-| `lh-bench replay` | `replay.py` | Live-reply driver: feeds the model's actual reply into the next turn |
 | `lh-bench mock-server` | `mock_server.py` | Recording OpenAI-compatible mock on 127.0.0.1 for CPU-only dry runs |
 | `lh-bench tiers` | `tiers.py` | E0: time to first token from the GPU pool, the CPU tier and recompute, verified per sample by vLLM's prefix-cache counters; optional background load |
 | `lh-bench voice-turn` | `voice_turn.py` | One server-side voice turn timed per stage (STT, LLM first sentence, TTS first audio); optional background load |
@@ -58,20 +57,18 @@ The full corpus takes about 22 s and 1.8 GB of RAM per factor on cyan; each outp
 
 ## Wire metadata
 
-Both the AIPerf endpoint and the replay driver render requests through
-`leaseholder_bench.protocol.SessionTagger`, so they send identical metadata. Names and values
-mirror the Rust crate `lh-proto`.
+The AIPerf endpoint renders each request's metadata through
+`leaseholder_bench.protocol.SessionTagger`. Names and values mirror the Rust crate `lh-proto`.
 
 | Field | Value |
 |---|---|
-| Header `X-Session-ID` | The session-tree root: a parent agent and all of its subagents share it. AIPerf mints one per session play (`root_correlation_id`); the driver mints a UUID per play |
+| Header `X-Session-ID` | The session-tree root: a parent agent and all of its subagents share it. AIPerf mints one per session play (`root_correlation_id`) |
 | Header `X-LH-Class` | `realtime`, `interactive` or `background` |
 | Body `prompt_cache_key` | The session id |
 | Body `priority` | vLLM priority from `ENGINE_PRIORITY`: realtime 0, interactive 1, background 2. vLLM schedules lower values first |
 
-Agent replay defaults to `background`. Configuration, read from the environment by the AIPerf
-plugin (AIPerf builds the endpoint itself, in every worker) and by `lh-bench replay`, whose
-`--class`, `--class-map` and `--no-priority` flags override it:
+Agent replay defaults to `background`. The plugin reads its configuration from the environment,
+since AIPerf builds the endpoint itself, in every worker:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -136,65 +133,11 @@ Things to know:
   which in `agentic_replay` is nearly always.
 - **vLLM flags.** Cached-token counts need `--enable-prompt-tokens-details`; the `priority` field
   takes effect only with `--scheduling-policy priority`.
-- AIPerf replays a synthesized assistant history, never the model's reply. See below.
-
-## Live-reply driver
-
-AIPerf's history replays assistant content synthesized from hash blocks, so the KV the model
-writes while decoding turn k is never matched by turn k+1, as it is when a real agent resends its
-own output. E1 and E3 need that reuse. Options considered:
-
-- **SGLang's multi-turn benchmarks.** `benchmark/hicache/bench_multiturn.py` and
-  `python -m sglang.benchmark.serving --dataset-name agentic-trace` both append the generated
-  text to the next round. Neither can replay this workload. `bench_multiturn.py` synthesizes
-  random or ShareGPT rounds of set lengths at a global Poisson rate. `agentic-trace` needs full
-  message text (OpenHands-style JSON) and sends rounds back to back with one output length for
-  every turn. Neither has per-session think time, subagents or per-session headers, and both
-  import the `sglang` package.
-- **An AIPerf option.** There is none for Weka traces. AIPerf threads live replies into history
-  only in the `deltas_without_responses` context mode. The Weka loader hardcodes
-  `deltas_with_responses`, whose deltas already carry synthesized assistant blocks, and no
-  setting changes it. The live-reply mode also assumes linear traversal, which `agentic_replay`'s
-  mid-trace starts break. Using it would mean forking AIPerf's Weka reconstruction (about 3,600
-  lines).
-- **Our own thin driver.** It reads the same scaled trace files and keeps their structure,
-  in one module of under 400 lines.
-
-**Decision: our own driver, `lh-bench replay`.** AIPerf stays the tool for steady-state
-background load (`agentic_replay`, E2). The driver serves E1 and E3, where decode-written KV
-reuse, `offload_prompt_only` and chat-template re-render breaks matter. On cyan, 248 of 248
-driver requests with assistant history carried the model's earlier replies; 0 of 197 AIPerf
-requests did.
-
-How it works:
-
-- **Prompt text.** Each hash block becomes `block_size` words, seeded by trace and hash id. Equal
-  hash ids give equal text, so block-level prefix identity holds on the wire. Every word is a
-  single Qwen3 token, so prompts track the trace's `in`. A per-play system line keeps two plays
-  of one trace from sharing KV.
-- **History.** Each request continues the chain of its agent whose last prompt shares the
-  longest hash prefix with it, or starts a new one, as AIPerf does for interleaved side chains.
-  If the request extends that prompt, the live reply stands for the first `ceil(out / block_size)`
-  new blocks and the rest become one user message; a reply longer than the extension counts
-  against the next request's new blocks. If it keeps only part of it (a compaction or an edit),
-  the messages inside the shared prefix stay and the rest is resent.
-- **Decode length.** Each request asks for the trace's `out` tokens with `ignore_eos`, so
-  contexts grow as recorded (`--no-ignore-eos` to let the model stop).
-- **Timing.** Think times are waited out, capped by `--think-cap`. Subagents run concurrently
-  under the parent's session id. A parent waits for a subagent only where the trace shows it
-  did, that is, the subagent ended before the parent's next request.
-- **Load.** `--sessions` lanes each replay one trace at a time from turn 0, cycling through the
-  directory in seeded random order. No new request starts after `--duration`, and in-flight
-  requests are cancelled after `--grace`.
-
-Output: one JSON line per request with `start` (wall-clock send time), `session_id`, `trace_id`,
-`agent_id` (null for the main agent), `chain`, `turn`, `class`, `status`, `error`, `trace_in`,
-`trace_out`, `messages`, `prompt_tokens`, `cached_tokens`
-(`usage.prompt_tokens_details.cached_tokens`), `completion_tokens`, `ttft_ms` and `latency_ms`.
-A summary prints at the end, and the command exits 1 if no request succeeded.
-
-Not yet: mid-trace starts (sessions start at turn 0, so a run should span several session
-lengths), and parallel replay of side chains within one agent (they run in recorded order).
+- **Assistant history.** AIPerf replays assistant content synthesized from hash blocks, never the
+  model's reply, so the KV the model writes while decoding turn k is never matched by turn k+1, as
+  it is when a real agent resends its own output. AIPerf 0.13.0 threads live replies into history
+  only in the `deltas_without_responses` context mode, and the Weka loader hardcodes
+  `deltas_with_responses`.
 
 ## Latency probes (`lh-bench tiers`, `lh-bench voice-turn`)
 
@@ -341,10 +284,8 @@ The background goodput comes from AIPerf's records rather than from the gateway'
 
 `lh-bench mock-server --port P --log FILE` binds 127.0.0.1 only and streams chat completions.
 Each request appends one JSON line to the log: arrival and end times, every header, every body
-field except `messages`, a role/size digest of the messages, `cached_tokens` (the longest prefix
-shared with one of the session's recent prompts, also returned in `usage`), and `echoed_replies`
-(assistant messages that repeat a reply it streamed to the same session). The replay tests use
-the same recorder in process.
+field except `messages`, a role/size digest of the messages, and `cached_tokens` (the longest
+prefix shared with one of the session's recent prompts, also returned in `usage`).
 
 ## Quickstart (cyan)
 
@@ -375,10 +316,6 @@ LH_BENCH_SESSIONS=8 LH_BENCH_DURATION=60 LH_BENCH_GRACE=15 LH_BENCH_THINK_CAP=3 
 LH_BENCH_ARTIFACTS=$HOME/leaseholder/runs/w0-e2e/aiperf \
   aiperf profile --config configs/agentic_replay.yaml
 
-# Live-reply driver, 60 s (restart the mock with --log .../mock-replay.jsonl to keep the logs apart)
-lh-bench replay ~/leaseholder/data/weka-x32-sub16 --url http://127.0.0.1:19180/v1/chat/completions \
-  --sessions 8 --duration 60 --grace 15 --think-cap 3 --out ~/leaseholder/runs/w0-e2e/replay/requests.jsonl
-
 # What reached the server
 python -c 'import json,sys; r=json.loads(open(sys.argv[1]).readlines()[-1]); print(r["headers"], r["body"])' \
   ~/leaseholder/runs/w0-e2e/mock-aiperf.jsonl
@@ -387,10 +324,9 @@ kill $(cat ~/leaseholder/runs/w0-e2e/mock.pid)
 
 Results on 2026-10-22, against the mock:
 
-| Run | Requests | Every request carries the four fields | `X-Session-ID` is the tree root | Assistant history that is the live reply |
-|---|---|---|---|---|
-| AIPerf, 8 session trees, 60 s | 7 warmup + 236, 0 errors | 243/243 | 243/243 (103 subagent requests) | 0/197 |
-| `lh-bench replay`, 8 sessions, 60 s | 345, 0 errors | 345/345 | yes (158 subagent requests) | 248/248 |
+| Run | Requests | Every request carries the four fields | `X-Session-ID` is the tree root |
+|---|---|---|---|
+| AIPerf, 8 session trees, 60 s | 7 warmup + 236, 0 errors | 243/243 | 243/243 (103 subagent requests) |
 
 ## Tests
 
@@ -403,9 +339,8 @@ uv run --extra test pytest      # in python/leaseholder_bench
 They cover the scaling math and schema, the loader's prefix reproduction (both loaders, through
 AIPerf's own reconstruction with a tokenizer-free prompt generator), the plugin's headers and
 body as AIPerf's transport sends them, the wire names and class-to-priority mapping against
-`lh-proto`, the YAML template, the probes against in-process fake servers, and the driver against
-an in-process server: live replies, compaction cuts, side chains, subagent joins, think-time caps
-and failures. `tests/test_e2.py` runs whole E2 points against a fake gateway and engine on
+`lh-proto`, the YAML template and the probes against in-process fake servers. `tests/test_e2.py`
+runs whole E2 points against a fake gateway and engine on
 loopback, a recording `systemctl` and stand-ins for AIPerf and the callers that run as real
 processes (`tests/fakes/`): the sequence, the units each arm restarts, the engine check, failures
 at each step with every process stopped, the point directory's rules, the committed arm files, and
