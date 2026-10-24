@@ -73,7 +73,7 @@ These ship classes, admission and eviction today.
   - [#428](https://github.com/vllm-project/router/issues/428): workflow output-length hints that produce a bounded prefetch or offload hint before a tool returns, acknowledged by the backend and evaluated in shadow mode first.
   - [#435](https://github.com/vllm-project/router/issues/435): worker overload admission, bounded backpressure and load shedding.
 
-  Relation: complement. E1's gate G-sim was negative, so Leaseholder proposes no agent-side lease or prefetch policy here; E1's regime map and negative result go to #428 instead ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)). `LeaseConnector`'s per-request hit receipts are one form of the acknowledgement #427 asks for.
+  Relation: complement. E1's gate G-sim was negative, so Leaseholder proposes no agent-side lease or prefetch policy here; E1's regime map and negative result go to #428 instead ([EXPERIMENTS.md](EXPERIMENTS.md#e1-parking)). `LeaseConnector`'s per-request hit receipts, in v0.3, were one form of the acknowledgement #427 asks for.
 
 ## Engines
 

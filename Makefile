@@ -1,5 +1,5 @@
-# Development tasks. Each Python package is tested in its own uv environment, because the engine plugins, the
-# benchmark tools and the voice worker have disjoint dependencies (vLLM, AIPerf, LiveKit).
+# Development tasks. Each Python package is tested in its own uv environment, because the engine variants'
+# tests, the benchmark tools and the voice worker have disjoint dependencies (a vLLM checkout, AIPerf, LiveKit).
 
 RUFF := uvx ruff@0.17.1
 VLLM_REF := v0.32.0

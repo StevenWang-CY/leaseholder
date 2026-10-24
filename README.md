@@ -63,18 +63,18 @@ The name is the original design's, in which the control plane held leases on ses
 
 ## Status
 
-As of v0.3, 2026-10-24:
+As of 2026-10-24 (v0.3; main has since removed the unused lease code):
 
 | Component | State |
 |---|---|
 | Frozen box on the GPU node: vLLM 0.32 LLM + Whisper STT + Kokoro TTS, pinned environment, NUMA-pinned `systemd --user` units, smoke test | **Deployed** on Phastform, and on Gray, the identical second node, for booked windows; paused when idle ([`deploy/phastform`](deploy/phastform), [`deploy/gray`](deploy/gray)) |
 | Engine variants for E2: vLLM #54530 ported to 0.32.0, SGLang 0.5.22, CUDA MPS, engine flags from an arm file, and `make-room`, Leaseholder's scheduler change for priority scheduling under KV pressure (#40004), generated from vLLM's source with three switches | **Deployed** ([`deploy/phastform/variants`](deploy/phastform/variants)); `make-room` tested on vLLM's real scheduler, probed on the GPU (4.9–5.1 s → 0.22–0.30 s to a voice turn's first token behind two 18k-token agent requests, [the KV case](docs/BENCHMARKS.md#the-kv-case-make-room)) and measured in E2 |
 | Control host: restricted SSH tunnels, `lh-gateway`, and LiveKit with the voice agent in a network namespace with no route out; SMG for one E2 arm | **Deployed** ([`deploy/cyan`](deploy/cyan)) |
-| `lh-proto`: lifecycle events, headers and sessions, with JSON Schemas | **Built** ([`crates/lh-proto`](crates/lh-proto)); the lease hint and ledger rows it also defines are unused and removed after v0.3 |
+| `lh-proto`: lifecycle events, headers, SLO classes and sessions, with JSON Schemas | **Built** ([`crates/lh-proto`](crates/lh-proto)) |
 | `lh-core`: the tier cost model, KV geometry, the step-time model fitted on the frozen box, and the admission state machine with E2's baseline policies (static cap, token reservation, llm-d flow control emulated, preempt-resubmit) and Leaseholder's own, `leaseholder`: KV headroom for armed voice sessions, a critical-window prefill budget priced by the step model, degrade and aging; the placement policies for several GPU nodes (`dedicated`, `least-loaded`, `leaseholder`) | **Built** ([`crates/lh-core`](crates/lh-core)) |
 | `lh-gateway`: auth, sanitization, sessions and classes, SSE relay with cancellation and backpressure, lifecycle-event ingest with each voice session's turn state, metrics, and an admission point running `lh-core`'s policies, with the class sent upstream as vLLM's priority header, SGLang's body field or SMG's header; with `[nodes]`, sessions placed and kept on several GPU nodes, each with its own readiness probe and admission point (`POST /v1/sessions`) | **Deployed** on cyan ([`crates/lh-gateway`](crates/lh-gateway)) |
 | `lh-sim`: the agent replay through a model of vLLM's two-tier KV cache and its step loop (calibrated within 8% of resume TTFT at 8 and 16 sessions), with stock arms, E1's information-level arms, a clairvoyant reference and the regime map | **Built** ([`crates/lh-sim`](crates/lh-sim)); E1's result is negative |
-| `leaseholder_vllm`: lease-aware CPU-tier `CachePolicy`, connector with per-request hit receipts | **Built, not used** ([`python/leaseholder_vllm`](python/leaseholder_vllm)): CPU-tested against vLLM's real offload manager and live-checked on the GPU; E1 found no regime that needs it, and it is removed after v0.3 |
+| `leaseholder_vllm`: the engine variants' tests, their builds from vLLM's source and `make-room` on vLLM's real scheduler | **Built** ([`python/leaseholder_vllm`](python/leaseholder_vllm)); the lease-aware CPU-tier `CachePolicy` and connector it held, live-checked on the GPU and never used, were removed after v0.3 |
 | `leaseholder_bench`: block-scaled Claude Code traces, AIPerf loader and endpoint plugin, KV lifecycle comparison, tier and voice-turn probes, and `lh-bench e2`, the E2 harness (arm files, campaigns, per-point summaries with exact first bytes, the stage waterfall and the GPU's clocks, the frontier report with repeats, compact records and `make reproduce-e2`), points on two GPU nodes with each node's share | **Built** ([`python/leaseholder_bench`](python/leaseholder_bench), [`benchmarks/e2`](benchmarks/e2)); E2's 129 points on one node are committed ([records](benchmarks/results/2026-10-23-e2)) |
 | `leaseholder_voice`: the voice agent (`lh-voice-worker`) with its lifecycle events and per-turn stage times, measurement callers that read latency from waveforms and can record a call (`lh-voice bots`), LiveKit plugin factory, barge-in test; a call's STT and TTS on its GPU node | **Deployed** on cyan ([`python/leaseholder_voice`](python/leaseholder_voice)); the calls of every E2 point, and voice alone five times as the SLO's reference |
 
@@ -87,14 +87,14 @@ Development needs Rust 1.98, uv and Python 3.12. No GPU is required.
 ```sh
 make check                                         # lint and every test CI runs (below)
 make schema                                        # regenerate crates/lh-proto/schema after changing a wire type
-VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm         # the engine plugin tests against an existing vLLM checkout
+VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm         # the engine variants' tests against an existing vLLM checkout
 make reproduce-e2                                  # E2's report, tables, frontiers and waterfall from the committed records
 make e2-figures                                    # the docs' E2 figures from the same records
 make reproduce-e1 CORPUS=DIR                       # E1's tables with lh-sim, from the 32x corpus in DIR
 make reproduce-calibration EXPORTS=DIR CORPUS=DIR  # lh-sim's calibration, from six measured runs' exports
 ```
 
-`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. `make reproduce-e1` rebuilds E1's tables in about a minute from the 32× corpus, which stays outside the repository ([how to build it](crates/lh-sim/README.md#usage)). `make reproduce-calibration` recomputes the simulator's calibration from the exports of the six runs it was fitted and validated on, an asset of the [v0.3 release](https://github.com/StevenWang-CY/leaseholder/releases/tag/v0.3). Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
+`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine variants' build tests against vLLM's scheduler source (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. `make reproduce-e1` rebuilds E1's tables in about a minute from the 32× corpus, which stays outside the repository ([how to build it](crates/lh-sim/README.md#usage)). `make reproduce-calibration` recomputes the simulator's calibration from the exports of the six runs it was fitted and validated on, an asset of the [v0.3 release](https://github.com/StevenWang-CY/leaseholder/releases/tag/v0.3). Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
 
 ## Repository layout
 
@@ -103,7 +103,7 @@ crates/lh-proto/          wire types and their JSON Schemas
 crates/lh-core/           the cost and step-time models and KV geometry, shared with the simulator; admission and placement policies
 crates/lh-gateway/        the control-plane service in front of vLLM, with its overhead benchmark
 crates/lh-sim/            the KV cache simulator: AIPerf's replay, vLLM's two tiers, policy arms
-python/leaseholder_vllm/  engine-side plugins for vLLM 0.32, with CPU tests and a live GPU check
+python/leaseholder_vllm/  the engine variants' tests: their builds from vLLM's source, make-room on the real scheduler
 python/leaseholder_bench/ trace conversion, AIPerf plugins and configs, latency probes, the E2 harness
 python/leaseholder_voice/ the voice agent, measurement callers, LiveKit integration and its hermetic barge-in test
 benchmarks/               E2's arm files and campaigns, the committed records, and runs against upstream projects

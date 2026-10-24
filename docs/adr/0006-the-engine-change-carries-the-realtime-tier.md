@@ -32,5 +32,5 @@ E2 measured two calls beside 24 coding-agent sessions whose contexts fill the GP
   - ADR-0001's design describes the experiment harness, not the deployment;
   - ADR-0003's decision stands, with the room made in the engine;
   - a window that covers the reply's first sentence makes degrade unnecessary.
-- **The v0 lease and ledger code is removed after v0.3:** `lh-proto`'s lease hint and ledger rows, `X-LH-Synthetic`, and `leaseholder_vllm`'s `LeasePolicy` and `LeaseConnector`.
+- **The v0 lease and ledger code is removed after v0.3:** `lh-proto`'s lease hint and ledger rows, `X-LH-Synthetic`, and `leaseholder_vllm`'s `LeasePolicy` and `LeaseConnector`. Done on 2026-10-24; the v0.3 tree keeps them.
 - **The change's known gaps** ([ARCHITECTURE.md §2](../ARCHITECTURE.md#2-the-engine-change)) are fixed in the variant and in both PRs. E2 measured the change with them.

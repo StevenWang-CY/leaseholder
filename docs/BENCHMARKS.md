@@ -306,6 +306,8 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 
 ## Engine plugins
 
+The lease-aware plugins of v0.3 ([its tree](https://github.com/StevenWang-CY/leaseholder/tree/v0.3/python/leaseholder_vllm)), measured in W1 and never used; they were removed after v0.3 ([ADR-0006](adr/0006-the-engine-change-carries-the-realtime-tier.md)).
+
 `LeasePolicy` at a full-size tier of 18,204 chunks (40 GiB of Qwen3-4B BF16 KV), against vLLM's real offload manager on CPU:
 
 | Operation | LeasePolicy | Stock LRU |
@@ -314,7 +316,7 @@ The method, all five arms, correctness and the history-rehydration runs are in [
 | Finishing a 1,011-chunk session: renewal | 0.39 ms | — |
 | Finishing a 1,011-chunk session: class change | 0.28 ms | — |
 
-**Live check on the frozen box** ([`python/leaseholder_vllm/tests/live`](../python/leaseholder_vllm/tests/live)):
+**Live check on the frozen box** ([`python/leaseholder_vllm/tests/live`](https://github.com/StevenWang-CY/leaseholder/tree/v0.3/python/leaseholder_vllm/tests/live), in v0.3):
 - the lease hint reached both plugins;
 - `X-Session-ID` appeared in GPU-tier KV events and in no CPU-tier one, and `LeaseConnector` mirrored it into the hint;
 - a 7,921-token prompt was written through to the CPU tier. After the GPU prefix cache was reset, the same prompt was restored with 7,920 tokens from the CPU tier, as reported by both the hit receipt and `usage.prompt_tokens_details.cached_tokens`.

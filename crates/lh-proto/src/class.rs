@@ -23,13 +23,13 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SloClass {
-    /// Voice turns. Never rejected: admission makes room, then degrades the reply.
+    /// Voice turns, at engine priority 0. Policy `leaseholder` never holds or refuses them, and may cap a reply.
     Realtime,
-    /// Agent loops with a person waiting. Predicted-TTFT admission; queued with a deadline.
+    /// Agent loops with a person waiting, at engine priority 1. Policy `leaseholder` does not hold them.
     #[default]
     Interactive,
-    /// Batch agents, trace replays, memory consolidation. Best effort with a minimum share; deferred or demoted
-    /// whenever realtime needs room.
+    /// Batch agents and trace replays, at engine priority 2. An admission policy may defer, shed or resubmit them
+    /// while realtime needs room.
     Background,
 }
 

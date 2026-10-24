@@ -83,6 +83,6 @@ When the gateway fronts several GPU nodes, it places each session on one of them
 - **How long it holds.** Until the session has gone `idle_s` (300 s by default) without a request, its node fails readiness, or its `session_closed` event arrives. Its next request is then placed again; KV left on the old node is lost.
 - **Errors.** 401 `invalid_api_key` without a valid key (the voice plane's socket needs none); 403 `untrusted_tenant` from a caller that is not trusted; 400 `invalid_session` for a body without a valid `session_id` or with an unknown class; 503 `no_ready_node` when no ready node serves the class. A gateway with one upstream has no such route (404).
 
-## Unused types
+## Removed after v0.3
 
-`lh-proto` also defines an engine lease hint (`kv_transfer_params.leaseholder`, read by the `leaseholder_vllm` plugins), recompute-ledger rows and the `X-LH-Synthetic` header, built for the lease and ledger design that was dropped ([ADR-0006](adr/0006-the-engine-change-carries-the-realtime-tier.md)). Nothing sends or writes them: the gateway strips `kv_transfer_params` from client requests and adds none. They are removed after v0.3.
+An engine lease hint (`kv_transfer_params.leaseholder`), recompute-ledger rows and the `X-LH-Synthetic` header were built for the lease and ledger design that was dropped ([ADR-0006](adr/0006-the-engine-change-carries-the-realtime-tier.md)). Nothing sent or wrote them, and they were removed after v0.3, whose tree keeps them. The gateway still strips `kv_transfer_params` and every `x-lh-` header from client requests.

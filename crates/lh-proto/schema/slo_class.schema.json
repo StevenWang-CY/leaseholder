@@ -4,17 +4,17 @@
   "description": "The SLO class of a request: which clock it runs on. Classes order from strictest to most lenient.",
   "oneOf": [
     {
-      "description": "Voice turns. Never rejected: admission makes room, then degrades the reply.",
+      "description": "Voice turns, at engine priority 0. Policy `leaseholder` never holds or refuses them, and may cap a reply.",
       "type": "string",
       "const": "realtime"
     },
     {
-      "description": "Agent loops with a person waiting. Predicted-TTFT admission; queued with a deadline.",
+      "description": "Agent loops with a person waiting, at engine priority 1. Policy `leaseholder` does not hold them.",
       "type": "string",
       "const": "interactive"
     },
     {
-      "description": "Batch agents, trace replays, memory consolidation. Best effort with a minimum share; deferred or demoted\nwhenever realtime needs room.",
+      "description": "Batch agents and trace replays, at engine priority 2. An admission policy may defer, shed or resubmit them\nwhile realtime needs room.",
       "type": "string",
       "const": "background"
     }
