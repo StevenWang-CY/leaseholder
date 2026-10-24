@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # campaign.sh [--dry-run] [--pause] CAMPAIGN: measure the E2 points a campaign file lists, from a workstation with SSH
-# to the hosts, like deploy/deploy.sh. CAMPAIGN names arm files, one per line, relative to itself. For each point
-# whose run directory on cyan is not complete, in order, it
+# to the hosts, like deploy/deploy.sh. CAMPAIGN names arm files, one per line, relative to itself; a line
+# `agents-seed N` sets AIPerf's seed for all of its points (lh-bench e2 run --agents-seed), in place of each arm
+# file's [agents] seed. For each point whose run directory on cyan is not complete, in order, it
 #   1. switches each GPU node to the arm's engine (deploy/phastform/variant.sh use, with what lh-bench e2 engine prints),
 #   2. measures the point on cyan (lh-bench e2 run) into ~/leaseholder/runs/e2/CAMPAIGN/POINT, with each GPU node's
 #      deployed revision (its ~/leaseholder/src/DEPLOYED as the point starts) for run.json, sampling each GPU's
@@ -47,13 +48,19 @@ mkdir -p "$results"
 log() { echo "[$(date -u +%FT%TZ)] $*" | tee -a "$results/campaign.log"; }
 die() { log "campaign: $*"; exit 1; }
 
-# The points in order, each named after its arm file.
-arms=() points=()
+# The points in order, each named after its arm file, and the agents' seed the campaign sets, if it sets one.
+arms=() points=() seed=""
 while IFS= read -r line || [[ -n $line ]]; do
   line=${line%%#*}
   line=${line#"${line%%[![:space:]]*}"}
   line=${line%"${line##*[![:space:]]}"}
   [[ -n $line ]] || continue
+  if [[ $line == agents-seed* ]]; then
+    [[ -z $seed && $line =~ ^agents-seed[[:space:]]+([0-9]+)$ ]] ||
+      die "$1: '$line': a campaign sets the agents' seed once, as agents-seed N"
+    seed=${BASH_REMATCH[1]}
+    continue
+  fi
   [[ -f $here/$line ]] || die "$1 names $line, which is not a file"
   point=$(basename "$line" .toml)
   for seen in ${points[@]+"${points[@]}"}; do
@@ -62,7 +69,9 @@ while IFS= read -r line || [[ -n $line ]]; do
   arms+=("$here/$line") points+=("$point")
 done <"$1"
 ((${#points[@]})) || die "$1 names no point"
-log "campaign $name: ${#points[@]} points, arm files at $(git -C "$here" describe --always --dirty 2>/dev/null || echo '?')"
+seeded=""
+if [[ -n $seed ]]; then seeded=", the agents' seed $seed"; fi
+log "campaign $name: ${#points[@]} points, arm files at $(git -C "$here" describe --always --dirty 2>/dev/null || echo '?')$seeded"
 
 # Copy the arm files to cyan, where lh-bench reads them, and check each one there.
 $ssh "$cyan" mkdir -p "$runs/arms"
@@ -134,7 +143,7 @@ for i in "${!points[@]}"; do
   log "$point: measuring"
   sample_gpus "$point"
   status=0
-  $ssh "$cyan" "$bench e2 run $runs/arms/$point.toml --out $runs/$point$sources" 2>&1 |
+  $ssh "$cyan" "$bench e2 run $runs/arms/$point.toml --out $runs/$point${seed:+ --agents-seed $seed}$sources" 2>&1 |
     tee -a "$results/campaign.log" || status=$?
   stop_gpus "$point"
   if ((status == 255)); then

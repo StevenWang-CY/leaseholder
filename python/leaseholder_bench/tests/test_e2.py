@@ -175,12 +175,20 @@ def test_a_wrong_arm_file_says_what_is_wrong(tmp_path: Path, text: str, error: s
         load_arm(write(tmp_path, "a2.toml", text))
 
 
+def campaign_lines(campaign: Path) -> list[str]:
+    """A campaign file's lines as campaign.sh reads them: comments and blank lines left out."""
+    lines = (line.split("#")[0].strip() for line in campaign.read_text().splitlines())
+    return list(filter(None, lines))
+
+
 def test_the_campaigns_name_arm_files_that_load() -> None:
     campaigns = sorted(BENCHMARKS.glob("*.campaign"))
     assert campaigns
     for campaign in campaigns:
-        lines = (line.split("#")[0].strip() for line in campaign.read_text().splitlines())
-        for line in filter(None, lines):
+        lines = campaign_lines(campaign)
+        seeds = [line for line in lines if line.startswith("agents-seed")]
+        assert len(seeds) <= 1 and all(re.fullmatch(r"agents-seed\s+\d+", s) for s in seeds)
+        for line in (line for line in lines if line not in seeds):
             arm = load_arm(campaign.parent / line)
             variant = arm.engine.variant
             assert variant == "frozen" or (PHASTFORM / "variants" / variant).is_dir(), line
@@ -783,6 +791,23 @@ def test_a_point_with_agents_configures_cyan_and_stops_aiperf_after_the_calls(cy
     assert 100 <= background["ttft_ms"]["p50"] <= 109
     window = run_json["window"]
     assert 0.3 <= window["end"] - window["start"] < 5
+
+
+def test_a_campaign_sets_the_agents_seed_and_run_json_keeps_it(cyan: Cyan) -> None:
+    arm_file = write(cyan.arms, "a2-stock-s4.toml", ARM)
+    cyan.scheduler.update(STOCK_SCHEDULER)
+    runs = cyan.host.root / "runs"
+    for out, seed, used in (("own", None, 11), ("campaign", 13, 13)):
+        run_point(arm_file, runs / out, cyan.host, cyan.systemd, agents_seed=seed)
+        run_json = json.loads((runs / out / "run.json").read_text())
+        env = json.loads((runs / out / "aiperf" / "env.json").read_text())
+        assert (env["LH_BENCH_SEED"], run_json["agents_seed"]) == (str(used), used)
+        assert run_json["arm"]["agents"]["seed"] == 11  # the arm as read
+    cyan.scheduler.update(FROZEN_SCHEDULER)
+    run(cyan, "a1-voice", VOICE_ALONE)  # no replay, no seed
+    assert record(cyan, "a1-voice")["agents_seed"] is None
+    with pytest.raises(E2Error, match="the agents' seed cannot be negative"):
+        run_point(arm_file, runs / "negative", cyan.host, cyan.systemd, agents_seed=-1)
 
 
 def test_the_same_arm_again_restarts_nothing(cyan: Cyan) -> None:

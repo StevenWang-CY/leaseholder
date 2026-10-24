@@ -230,7 +230,7 @@ A point runs in this order:
 | `[agents] think_cap` | 120 | Cap on each recorded think time, in seconds |
 | `[agents] warmup` | 60 | Seconds of profiling before the calls start |
 | `[agents] data` | `"weka-x32"` | The corpus, a `scale-traces` directory under `~/leaseholder/data` |
-| `[agents] seed` | 11 | AIPerf's seed |
+| `[agents] seed` | 11 | AIPerf's seed, which a campaign's `agents-seed` line replaces for its points (`lh-bench e2 run --agents-seed`) |
 | `[gateway]` | none | Merged into `gateway.toml` as it is, tables key by key: `upstream`, `upstream_priority`, `[gateway.admission]` and any other key of [`lh-gateway`'s configuration](../../crates/lh-gateway/README.md) |
 | `[gateway.nodes.<name>]`, `[gateway.placement]` | none | A point on several GPU nodes: two or more, each with an `http://` `upstream`, and how the gateway places sessions on them ([placement](../../crates/lh-gateway/README.md#placement)). It takes no `router` |
 | `[engine] variant` | `"frozen"` | A directory of [`deploy/phastform/variants`](../../deploy/phastform/variants/README.md), or `frozen` |
@@ -241,7 +241,7 @@ A point runs in this order:
 | File | Contents |
 |---|---|
 | `arm.toml` | The arm file as run |
-| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; `save_audio`, the run option; versions (cyan's deployed commit from `~/leaseholder/src/DEPLOYED`, each GPU node's beside it as `gpu_source` (by node, from `--gpu-source NODE=REVISION`, which `campaign.sh` reads from the node's own `DEPLOYED` as the point starts; null when nothing named it), `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked; by node on several GPU nodes); what cyan ran (which units restarted, the gateway's configuration without key digests, the worker's nodes); the window; AIPerf's exit status |
+| `run.json` | `status` (`running`, then `complete`, or `failed` with the `error`); the host; start and end; the arm as read; `save_audio`, the run option; `agents_seed`, the seed AIPerf replayed with (the campaign's `--agents-seed`, else the arm file's; null for voice alone); versions (cyan's deployed commit from `~/leaseholder/src/DEPLOYED`, each GPU node's beside it as `gpu_source` (by node, from `--gpu-source NODE=REVISION`, which `campaign.sh` reads from the node's own `DEPLOYED` as the point starts; null when nothing named it), `leaseholder-bench`, AIPerf, `lh-gateway`); the engine (server, version, KV pool, flags checked and unchecked; by node on several GPU nodes); what cyan ran (which units restarted, the gateway's configuration without key digests, the worker's nodes); the window; AIPerf's exit status |
 | `run.log` | Each step, timestamped |
 | `engine.json` | The engine's whole configuration from `/server_info`, without credentials; `engine-NODE.json` for each node on several |
 | `aiperf.log`, `aiperf/` | AIPerf's output and artifacts: `profile_export.jsonl` holds one record per request |

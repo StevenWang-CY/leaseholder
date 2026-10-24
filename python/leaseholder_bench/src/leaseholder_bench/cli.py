@@ -292,7 +292,11 @@ def _e2(args: argparse.Namespace) -> int:
             sources = gpu_sources(args.gpu_source) if args.gpu_source else None
             try:
                 summary = run_point(
-                    args.arm, args.out, save_audio=args.save_audio, gpu_source=sources
+                    args.arm,
+                    args.out,
+                    save_audio=args.save_audio,
+                    gpu_source=sources,
+                    agents_seed=args.agents_seed,
                 )
             except KeyboardInterrupt:
                 print(f"lh-bench e2: {args.arm.stem} interrupted", file=sys.stderr)
@@ -354,6 +358,13 @@ def _add_e2(commands: Commands) -> None:
         action="store_true",
         help="have the callers save each call's audio (lh-voice bots --save-audio), for the demo "
         "video; recorded in run.json",
+    )
+    run.add_argument(
+        "--agents-seed",
+        type=int,
+        metavar="N",
+        help="AIPerf's seed in place of the arm file's [agents] seed, as a campaign file's "
+        "agents-seed line sets it for its points; run.json keeps the seed the replay ran with",
     )
     run.add_argument(
         "--gpu-source",

@@ -117,3 +117,45 @@ def test_a_gpu_node_without_its_revision_runs_the_point_with_none(hosts: Hosts) 
     [run] = runs(hosts)
     assert run.endswith(f" --gpu-source phastform={DEPLOYED} --gpu-source gray=")
     assert "a1: gray has no DEPLOYED" in (hosts.results / "c2" / "campaign.log").read_text()
+
+
+def test_a_campaign_sets_its_points_agents_seed(hosts: Hosts) -> None:
+    hosts.gpu(PHASTFORM)
+    lines = ["# a round", "agents-seed 13  # this round's sample", "arms/a1.toml", "arms/a2.toml"]
+    campaign = hosts.campaign("c3", lines, {"a1": VOICE, "a2": VOICE})
+    done = hosts.run(campaign)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [run.split(" --gpu-source")[0].split()[-2:] for run in runs(hosts)] == [
+        ["--agents-seed", "13"]
+    ] * 2
+    assert (
+        "c3: 2 points, arm files at ?, the agents' seed 13"
+        in (hosts.results / "c3" / "campaign.log").read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    ("lines", "error"),
+    [
+        (
+            ["agents-seed 11", "agents-seed 12"],
+            "'agents-seed 12': a campaign sets the agents' seed once",
+        ),
+        (["agents-seed eleven"], "'agents-seed eleven': a campaign sets the agents' seed once"),
+        (["agents-seed -1"], "'agents-seed -1': a campaign sets the agents' seed once"),
+    ],
+)
+def test_a_campaign_refuses_a_seed_it_cannot_read(
+    hosts: Hosts, lines: list[str], error: str
+) -> None:
+    campaign = hosts.campaign("c4", [*lines, "arms/a1.toml"], {"a1": VOICE})
+    done = hosts.run(campaign, "--dry-run")
+    assert done.returncode == 1 and error in done.stdout
+    assert runs(hosts) == []
+
+
+def test_without_a_seed_line_each_point_keeps_its_arm_files_seed(hosts: Hosts) -> None:
+    hosts.gpu(PHASTFORM)
+    done = hosts.run(hosts.campaign("c5", ["arms/a1.toml"], {"a1": VOICE}))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "--agents-seed" not in runs(hosts)[0]

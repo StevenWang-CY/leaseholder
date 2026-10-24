@@ -723,16 +723,22 @@ def run_point(
     *,
     save_audio: bool = False,
     gpu_source: Mapping[str, str | None] | None = None,
+    agents_seed: int | None = None,
 ) -> dict[str, Any]:
     """Measure the point of ``arm_file`` into the directory ``out``; returns the summary. A
     directory with a complete point is never overwritten, and an earlier attempt that did not
     complete is kept beside it. ``save_audio``, a run option rather than the arm's, has the callers
     save each call's audio (``lh-voice bots --save-audio``). ``gpu_source`` is each GPU node's
     deployed revision (its ~/leaseholder/src/DEPLOYED, None where it has none), which campaign.sh
-    reads over its SSH at the point's start and run.json keeps beside cyan's; None when unknown."""
+    reads over its SSH at the point's start and run.json keeps beside cyan's; None when unknown.
+    ``agents_seed``, a campaign's (``agents-seed`` in its file), replaces the arm file's ``[agents]
+    seed`` for AIPerf; run.json keeps the seed the replay ran with (``agents_seed``)."""
     if not hasattr(os, "waitid"):
         raise E2Error(NEEDS_WAITID)
+    if agents_seed is not None and agents_seed < 0:
+        raise E2Error(f"the agents' seed cannot be negative: {agents_seed}")
     arm = load_arm(arm_file)
+    seed = arm.agents.seed if agents_seed is None else agents_seed
     host = host or Host()
     systemd = systemd or Systemd()
     with _exclusive(host):
@@ -740,6 +746,8 @@ def run_point(
         shutil.copyfile(arm_file, out / "arm.toml")
         record = _Record(out, arm, host, gpu_source)
         record["save_audio"] = save_audio
+        # The seed AIPerf replays with: the campaign's when it set one, else the arm file's.
+        record["agents_seed"] = seed if arm.agents.sessions else None
         # Under the lock no other run's tools are alive: a marked process is left from a run that
         # was killed before it could stop them.
         if leftovers := kill_marked():
@@ -747,7 +755,7 @@ def run_point(
             record.say(f"killed {len(leftovers)} processes left by an earlier run: {leftovers}")
         try:
             with contextlib.ExitStack() as running:
-                summary = _measure(arm, out, host, systemd, record, running, save_audio)
+                summary = _measure(arm, out, host, systemd, record, running, save_audio, seed)
         except BaseException as exc:
             record.fail(exc)
             raise
@@ -763,6 +771,7 @@ def _measure(
     record: _Record,
     running: contextlib.ExitStack,
     save_audio: bool,
+    seed: int,
 ) -> dict[str, Any]:
     nodes = gpu_nodes(arm)
     engines: dict[str | None, str] = dict(nodes) or {None: host.engine_url}
@@ -778,7 +787,7 @@ def _measure(
     )
     for node, url in engines.items():
         reset_prefix_cache(url, servers[node])
-    aiperf = _start_aiperf(arm, host, out, record, running) if arm.agents.sessions else None
+    aiperf = _start_aiperf(arm, host, out, record, running, seed) if arm.agents.sessions else None
     start = _snapshot(host, out, "start", engines)
     end = _call(arm, host, out, record, running, aiperf, save_audio)
     _snapshot(host, out, "end", engines)
@@ -830,12 +839,13 @@ def _check_engines(
 
 
 def _start_aiperf(
-    arm: Arm, host: Host, out: Path, record: _Record, running: contextlib.ExitStack
+    arm: Arm, host: Host, out: Path, record: _Record, running: contextlib.ExitStack, seed: int
 ) -> Process:
-    """Start the replay and return once it has been profiling for the warm-up."""
+    """Start the replay with ``seed`` and return once it has been profiling for the warm-up."""
     agents = arm.agents
-    record.say(f"AIPerf: {agents.sessions} session trees through the gateway")
-    aiperf = Process("AIPerf", host.aiperf(), out / "aiperf.log", _aiperf_env(arm, host, out))
+    record.say(f"AIPerf: {agents.sessions} session trees through the gateway, seed {seed}")
+    env = _aiperf_env(arm, host, out, seed)
+    aiperf = Process("AIPerf", host.aiperf(), out / "aiperf.log", env)
     running.callback(aiperf.stop, AIPERF_STOP_S)
     deadline = time.monotonic() + PROFILING_TIMEOUT_S
     while PROFILING not in aiperf.log.read_text(errors="replace"):
@@ -955,7 +965,7 @@ def _snapshot(host: Host, out: Path, when: str, engines: Mapping[str | None, str
     return time.time()
 
 
-def _aiperf_env(arm: Arm, host: Host, out: Path) -> dict[str, str]:
+def _aiperf_env(arm: Arm, host: Host, out: Path, seed: int) -> dict[str, str]:
     agents = arm.agents
     data = host.root / "data" / agents.data
     if not data.is_dir():
@@ -977,7 +987,7 @@ def _aiperf_env(arm: Arm, host: Host, out: Path) -> dict[str, str]:
         "LH_BENCH_DURATION": str(AIPERF_DURATION_S),
         "LH_BENCH_GRACE": "30",
         "LH_BENCH_THINK_CAP": f"{agents.think_cap:g}",
-        "LH_BENCH_SEED": str(agents.seed),
+        "LH_BENCH_SEED": str(seed),
         "LH_BENCH_CLASS": "background",
         "LH_BENCH_ARTIFACTS": str(out / "aiperf"),
     }
