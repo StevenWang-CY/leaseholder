@@ -34,7 +34,7 @@ use std::rc::Rc;
 use lh_core::PromptSources;
 use serde::Serialize;
 
-use self::cpu::{CpuClairvoyant, CpuLru, CpuPolicy, CpuS3Fifo};
+use self::cpu::{CpuClairvoyant, CpuLru, CpuPolicy};
 use self::gpu::{ClairvoyantFree, GpuPolicy, IdleRanked, LruQueue};
 use self::oracle::Oracle;
 use crate::prefix::{BlockId, IdMap, UNIQUE_BIT};
@@ -57,7 +57,6 @@ pub enum GpuPolicyKind {
 pub enum CpuPolicyKind {
     /// vLLM's `LRUCachePolicy`.
     Lru,
-    S3Fifo,
     /// Belady's MIN over the recorded request sequence.
     Clairvoyant,
 }
@@ -182,7 +181,6 @@ impl Engine {
         let cpu: Option<Box<dyn CpuPolicy>> = match (cfg.cpu_blocks, cfg.cpu_policy) {
             (0, _) => None,
             (n, CpuPolicyKind::Lru) => Some(Box::new(CpuLru::new(n))),
-            (n, CpuPolicyKind::S3Fifo) => Some(Box::new(CpuS3Fifo::new(n))),
             (n, CpuPolicyKind::Clairvoyant) => {
                 Some(Box::new(CpuClairvoyant::new(n, need_oracle())))
             }

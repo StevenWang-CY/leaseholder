@@ -3,7 +3,6 @@
 //! - `gpu-lru`: the GPU pool alone, with vLLM's LRU free queue.
 //! - `lru-cpu`: the pool and the write-through CPU tier, both LRU (vLLM's `LRUCachePolicy`): the
 //!   frozen box.
-//! - `s3fifo-cpu`: S3-FIFO on the CPU tier; the pool stays vLLM's LRU.
 //! - `clairvoyant`: the clairvoyant reference. A first pass runs the reference arm (`lru-cpu` unless
 //!   configured otherwise) and records the order in which the engine admitted and finished requests.
 //!   A second pass replays that fixed order with Belady's MIN in each tier: the pool reuses the free
@@ -48,7 +47,6 @@ use crate::retention::Retention;
 pub enum Arm {
     GpuLru,
     LruCpu,
-    S3FifoCpu,
     Clairvoyant,
     Ttl5,
     Ttl30,
@@ -62,12 +60,7 @@ pub enum Arm {
 
 impl Arm {
     /// The stock arms and the reference, in the order a run reports them by default.
-    pub const STOCK: [Self; 4] = [
-        Self::GpuLru,
-        Self::LruCpu,
-        Self::S3FifoCpu,
-        Self::Clairvoyant,
-    ];
+    pub const STOCK: [Self; 3] = [Self::GpuLru, Self::LruCpu, Self::Clairvoyant];
 
     /// The E1 information ladder: `lru-cpu`, the retention arms, and the reference.
     pub const E1: [Self; 10] = [
@@ -83,10 +76,9 @@ impl Arm {
         Self::Clairvoyant,
     ];
 
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 11] = [
         Self::GpuLru,
         Self::LruCpu,
-        Self::S3FifoCpu,
         Self::Clairvoyant,
         Self::Ttl5,
         Self::Ttl30,
@@ -103,7 +95,6 @@ impl Arm {
         match self {
             Self::GpuLru => "gpu-lru",
             Self::LruCpu => "lru-cpu",
-            Self::S3FifoCpu => "s3fifo-cpu",
             Self::Clairvoyant => "clairvoyant",
             Self::Ttl5 => "ttl-5",
             Self::Ttl30 => "ttl-30",
@@ -119,7 +110,7 @@ impl Arm {
     /// What the arm does with a pausing session's KV.
     pub const fn retention(self) -> Retention {
         match self {
-            Self::GpuLru | Self::LruCpu | Self::S3FifoCpu | Self::Clairvoyant => Retention::None,
+            Self::GpuLru | Self::LruCpu | Self::Clairvoyant => Retention::None,
             Self::Ttl5 => Retention::Ttl(5.0),
             Self::Ttl30 => Retention::Ttl(30.0),
             Self::Ttl120 => Retention::Ttl(120.0),
@@ -193,7 +184,6 @@ impl RunConfig {
     /// The engine of `arm` at `capacity`.
     pub fn engine_config(&self, arm: Arm, capacity: TierCapacity) -> EngineConfig {
         let (gpu_policy, cpu_policy) = match arm {
-            Arm::S3FifoCpu => (GpuPolicyKind::Lru, CpuPolicyKind::S3Fifo),
             Arm::Clairvoyant => (GpuPolicyKind::Clairvoyant, CpuPolicyKind::Clairvoyant),
             Arm::Mori => (GpuPolicyKind::IdleRanked, CpuPolicyKind::Lru),
             _ => (GpuPolicyKind::Lru, CpuPolicyKind::Lru),
@@ -209,7 +199,7 @@ impl RunConfig {
     }
 
     fn check(&self) -> Result<(), String> {
-        if !matches!(self.reference, Arm::GpuLru | Arm::LruCpu | Arm::S3FifoCpu) {
+        if !matches!(self.reference, Arm::GpuLru | Arm::LruCpu) {
             return Err("the clairvoyant reference needs a stock arm as its reference".into());
         }
         if self.geometry.block_tokens != self.replay.block_tokens as u64 {

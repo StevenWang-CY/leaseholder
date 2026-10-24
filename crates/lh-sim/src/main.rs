@@ -246,7 +246,7 @@ struct RunArgs {
     capacity: CapacityArgs,
     #[command(flatten)]
     cost: CostArgs,
-    /// Arms to run, comma separated: gpu-lru, lru-cpu, s3fifo-cpu, clairvoyant, or the E1 arms
+    /// Arms to run, comma separated: gpu-lru, lru-cpu, clairvoyant, or the E1 arms
     /// (ttl-5, ttl-30, ttl-120, history-prefetch, oracle-prefetch, tokencake, mori, infercept).
     /// Default: the stock arms and the clairvoyant reference.
     #[arg(long = "arms", value_delimiter = ',')]
@@ -370,7 +370,7 @@ struct LogArgs {
     log: PathBuf,
     #[command(flatten)]
     capacity: CapacityArgs,
-    /// The engine policy: gpu-lru, lru-cpu or s3fifo-cpu.
+    /// The engine policy: gpu-lru or lru-cpu.
     #[arg(long, default_value_t = Arm::LruCpu)]
     arm: Arm,
     /// Send each request at its measured start and serve it with the step loop, instead of holding

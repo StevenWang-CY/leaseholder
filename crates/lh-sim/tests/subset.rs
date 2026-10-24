@@ -117,7 +117,7 @@ fn run_all(seed: u64) -> Vec<ArmResult> {
 fn every_arm_runs_consistently_on_the_subset() {
     let results = run_all(11);
     let names: Vec<_> = results.iter().map(|r| r.summary.arm.as_str()).collect();
-    assert_eq!(names, ["gpu-lru", "lru-cpu", "s3fifo-cpu", "clairvoyant"]);
+    assert_eq!(names, ["gpu-lru", "lru-cpu", "clairvoyant"]);
     let bytes_per_token = lh_core::KvGeometry::QWEN3_4B_BF16.bytes_per_token;
     for r in &results {
         let s = &r.summary;
@@ -149,14 +149,14 @@ fn every_arm_runs_consistently_on_the_subset() {
         assert!(s.regime.kv_pressure_peak >= s.regime.kv_pressure_mean && s.regime.rho > 0.0);
         assert_eq!(s.replay.lanes, 16);
     }
-    let [gpu_lru, lru_cpu, s3fifo, clairvoyant] = &results[..] else {
+    let [gpu_lru, lru_cpu, clairvoyant] = &results[..] else {
         unreachable!()
     };
     assert_eq!(
         (gpu_lru.summary.cpu_blocks, gpu_lru.summary.cpu_tokens),
         (0, 0)
     );
-    assert!(lru_cpu.summary.cpu_tokens > 0 && s3fifo.summary.cpu_tokens > 0);
+    assert!(lru_cpu.summary.cpu_tokens > 0);
     // The clairvoyant reference re-prices the requests of the lru-cpu run, on its timeline.
     let c = &clairvoyant.summary;
     assert_eq!(c.reference.as_deref(), Some("lru-cpu"));
