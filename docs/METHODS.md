@@ -146,5 +146,5 @@ Three configurations of two GPU nodes: a voice node and an agent node (dedicate)
 - vLLM counts a preemption when the victim next produces output, so per-point preemption counts are lower bounds.
 - Every run replays the same workload sample (agent seed 11, caller seed 0): the ranges are timing noise, not workload variation.
 - The vLLM PRs' configurations ran in a session of their own, after the rounds and with no control (10-23 23:16Z – 10-24 01:25Z).
-- vLLM 0.32's prompt-token counters see only a request's first scheduling: what a preempted request reloads or recomputes when it resumes is not in them.
+- vLLM 0.32's prompt-token counters see only a request's first scheduling: what a preempted request reloads or recomputes when it resumes is not in them. The records also keep the CPU tier's own load counter, which sees a resume's loads; what a resume recomputes is not measured.
 - The two-node points are not measured yet.

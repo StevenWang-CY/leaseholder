@@ -7,7 +7,7 @@ How Leaseholder's measurements were made. Every experiment runs on one frozen bo
 | E0 | **The tier cost model** | What does resuming an agent turn cost from the GPU cache, from host RAM and recomputed? | Done ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)); `lh-core` carries the fits |
 | E2 | **Voice under agent load** | How close does each configuration an operator can deploy bring the voice tail to its SLO, at what cost to background agents, and what does each mechanism of Leaseholder's arm 9 contribute? | Done on one GPU node; the two-node points wait for a window on the second |
 | E1 | **Parking** | How much of the gap between LRU plus CPU offload and a clairvoyant reference does each level of lifecycle information close, on resume latency? | Done in the simulator: negative at the median, and for the information a deployment has |
-| E3 | **The background tier's cost of make-room** | How much of a preempted agent's prompt is restored from the CPU tier, and how much recomputed? | Planned. vLLM 0.32's prompt-token counters see only a request's first scheduling, so they miss a victim's resume; E3 needs the CPU tier's own load counter, which the records keep from W5 on, and a new instrument for what is recomputed |
+| E3 | **The background tier's cost of make-room** | How much of a preempted agent's prompt is restored from the CPU tier, and how much recomputed? | Planned. vLLM 0.32's prompt-token counters see only a request's first scheduling, so they miss a victim's resume; E3 needs the CPU tier's own load counter, which every record now keeps (BENCHMARKS.md gives what it shows), and a new instrument for what is recomputed |
 
 The original E3, a recompute ledger validated by injected causes with cache contracts as an SLI, was dropped with leases ([ADR-0006](adr/0006-the-engine-change-carries-the-realtime-tier.md)).
 
@@ -64,7 +64,7 @@ Audio gaps, abort latency, wasted tokens and cost per token were in the plan and
 - **Builds.** W2's first two campaigns (`w2`, `w2b`) ran the W2 gateway and voice worker; everything else ran the W3 build, with lifecycle events, and later versions of the variant where noted.
 - **The SLO's reference** is the median of five runs of voice alone, 1,767 ms, so the SLO is 2,017 ms. One of those runs is from the W2 build; the four on the W3 build give 1,768.5 ms.
 - **Every turn counts,** the first of each call included. Under load the first turn is slower than the rest, which raises the standard scenario's p95 and leaves the discriminating scenario's where it is; [BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2) gives both with and without it.
-- **Goodput windows differ.** Background goodput is counted over the calls, whose duration differs by configuration (about 280 s for arm 9, about 430 s for the frozen box), against agent requests of about 75 s.
+- **Goodput windows differ.** Background goodput is counted over the calls, whose duration differs by configuration (about 280 s for arm 9, about 430 s for the frozen box), against agent requests of about 75 s. The report also gives it over the calls' first 240 s, a window of the same length for every point.
 - **Load generator health.** The callers record how late they play their lines: at most 116 ms, at six callers, and under 60 ms elsewhere. The report does not use it to reject points.
 
 **Results.** [BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2) holds E2's numbers; in short:
