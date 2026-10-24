@@ -26,11 +26,7 @@ pub(crate) static RESOLVED_SESSION_ID: HeaderName =
     HeaderName::from_static(headers::RESOLVED_SESSION_ID);
 
 /// The `x-lh-` headers counted under their own name when removed.
-const NAMED_LH_HEADERS: [&str; 3] = [
-    headers::CLASS,
-    headers::SYNTHETIC,
-    headers::RESOLVED_SESSION_ID,
-];
+const NAMED_LH_HEADERS: [&str; 2] = [headers::CLASS, headers::RESOLVED_SESSION_ID];
 
 /// Metric label for removed `x-lh-` headers that `lh_proto` does not name, which keeps the label bounded.
 const OTHER_LH_HEADER: &str = "x-lh-*";
@@ -648,7 +644,6 @@ mod tests {
             ("x-session-id", "s-1"),
             ("x-request-id", "theirs"),
             ("x-lh-class", "realtime"),
-            ("x-lh-synthetic", "1"),
             ("x-lh-anything", "1"),
             ("x-claude-code-session-id", "cc-1"),
             ("authorization", "Bearer k"),
@@ -684,7 +679,6 @@ mod tests {
             "x-session-id",
             "x-request-id",
             "x-lh-class",
-            "x-lh-synthetic",
             OTHER_LH_HEADER,
         ] {
             assert_eq!(untrusted.sanitized_count(field), 1, "{field}");

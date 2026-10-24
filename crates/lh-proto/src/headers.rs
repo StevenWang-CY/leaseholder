@@ -16,10 +16,6 @@ pub const LH_PREFIX: &str = "x-lh-";
 /// SLO class requested by a trusted caller: `realtime`, `interactive` or `background`.
 pub const CLASS: &str = "x-lh-class";
 
-/// Marks requests the control plane generates itself (prefetch warm-ups). They are excluded from SLIs, usage and
-/// the ledger.
-pub const SYNTHETIC: &str = "x-lh-synthetic";
-
 /// Set on every response: the session id the control plane resolved or minted.
 pub const RESOLVED_SESSION_ID: &str = "x-lh-session-id";
 

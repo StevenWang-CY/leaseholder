@@ -21,7 +21,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
         ("x-data-parallel-rank", "3"),
         ("x-request-id", "theirs"),
         ("x-lh-class", "realtime"),
-        ("x-lh-synthetic", "1"),
+        ("x-lh-anything", "1"),
         ("connection", "x-hop"),
         ("x-hop", "1"),
         ("x-trace", "kept"),
@@ -48,7 +48,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
         "x-smg-priority",
         "x-data-parallel-rank",
         "x-lh-class",
-        "x-lh-synthetic",
+        "x-lh-anything",
         "x-hop",
     ] {
         assert_eq!(seen.header(removed), None, "{removed}");
@@ -66,7 +66,7 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
         "x-data-parallel-rank",
         "x-request-id",
         "x-lh-class",
-        "x-lh-synthetic",
+        "x-lh-*",
         "priority",
         "session_id",
         "kv_transfer_params",
