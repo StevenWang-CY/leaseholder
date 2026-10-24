@@ -357,6 +357,15 @@ def gateway_counts(
     }
 
 
+CPU_TIER = {
+    "kv_offload_load_bytes": "vllm:kv_offload_load_bytes_total",
+    "kv_offload_store_bytes": "vllm:kv_offload_store_bytes_total",
+}
+"""The CPU tier's own counts (vLLM's OffloadingConnector): the bytes of every load into the GPU pool and
+of every store from it, a preempted request's resume included, which the prompt-token sources leave
+out."""
+
+
 def added_engine_counts(counts: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Several engines' :func:`engine_counts` added up; a count that no engine keeps stays None."""
     counts = list(counts)
@@ -375,11 +384,15 @@ def added_engine_counts(counts: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "preemptions": measured_sum(*(c["preemptions"] for c in counts)),
         "prompt_tokens_by_source": added("prompt_tokens_by_source"),
         "refused": added("refused"),
+        **{key: measured_sum(*(c.get(key) for c in counts)) for key in CPU_TIER},
     }
 
 
 def engine_counts(before: str, after: str) -> dict[str, Any]:
-    """vLLM's preemptions, prompt tokens by source and refused requests over the window."""
+    """vLLM's preemptions, prompt tokens by source, refused requests and the CPU tier's loads and
+    stores in bytes over the window. vLLM 0.32 counts a request's prompt tokens by source only at its
+    first scheduling, so a preempted request's resume is in none of them; the CPU tier's counts have
+    every load and store."""
 
     def by(label: str, name: str) -> dict[str, int] | None:
         series = deltas(before, after, name, "engine")
@@ -391,11 +404,15 @@ def engine_counts(before: str, after: str) -> dict[str, Any]:
             totals[key] = totals.get(key, 0) + round(value)
         return totals
 
-    preemptions = deltas(before, after, "vllm:num_preemptions_total", "engine")
+    def total(name: str) -> int | None:
+        series = deltas(before, after, name, "engine")
+        return None if series is None else round(sum(series.values()))
+
     return {
-        "preemptions": None if preemptions is None else round(sum(preemptions.values())),
+        "preemptions": total("vllm:num_preemptions_total"),
         "prompt_tokens_by_source": by("source", "vllm:prompt_tokens_by_source_total"),
         "refused": by("reason", "vllm:admission_rejections_total"),
+        **{key: total(name) for key, name in CPU_TIER.items()},
     }
 
 
@@ -629,7 +646,46 @@ def compact(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     for node, share in nodes.items():
         if (run_dir / f"gpu-{node}.csv").exists():
             share["gpu"] = clocks([f"gpu-{node}.csv"])
+    # The CPU tier's loads and stores, from the engines' /metrics snapshots: points measured before
+    # the summary kept them gain them, and the summary's other counts stay as they are.
+    snapshots = {node: f"engine-{node}" for node in nodes} or {None: "engine"}
+    metrics = run_dir / "metrics"
+    if all(
+        (metrics / f"{name}-{when}.prom").exists()
+        for name in snapshots.values()
+        for when in ("start", "end")
+    ):
+        counts = {
+            node: engine_counts(*_snapshots(metrics, name)) for node, name in snapshots.items()
+        }
+        for node, share in nodes.items():
+            share["engine"] |= {key: counts[node][key] for key in CPU_TIER}
+        totals = added_engine_counts(counts.values()) if nodes else counts[None]
+        summary["engine"] |= {key: totals[key] for key in CPU_TIER}
     return run, summary
+
+
+def point_engines(run_dir: Path, nodes: Sequence[str]) -> dict[str | None, dict[str, Any] | None]:
+    """The engine of a point (by node on several GPU nodes, else under None) as its record keeps it
+    (:func:`engine_settings`), from a run directory's engine.json or a record's; None without one."""
+    engines: dict[str | None, dict[str, Any] | None] = {}
+    for node in [*nodes] or [None]:
+        path = run_dir / (f"engine-{node}.json" if node else "engine.json")
+        engines[node] = engine_settings(orjson.loads(path.read_bytes())) if path.exists() else None
+    return engines
+
+
+def kv_token_bytes(engine: Mapping[str, Any] | None) -> float | None:
+    """The bytes of KV a token takes in an engine's pool, which the CPU tier moves as they are: its KV
+    cache's bytes over its tokens, from vLLM's cache_config (``kv_cache_memory_bytes`` over
+    ``num_gpu_blocks`` times ``block_size``). The bytes left over by the whole blocks that fit, less
+    than one block's, make it high by under one part in ``num_gpu_blocks`` (0.02% on the frozen box:
+    147,492 bytes against Qwen3-4B's 147,456). None without them (SGLang)."""
+    cache = (engine or {}).get("cache_config") or {}
+    try:
+        return cache["kv_cache_memory_bytes"] / (cache["num_gpu_blocks"] * cache["block_size"])
+    except (KeyError, TypeError, ZeroDivisionError):
+        return None
 
 
 def export_point(run_dir: Path, out: Path) -> Path | None:

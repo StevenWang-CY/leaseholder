@@ -29,7 +29,9 @@ from leaseholder_bench.e2.record import (
     REPLY_TIMEOUT_MS,
     WATERFALL,
     compact,
+    kv_token_bytes,
     measured_sum,
+    point_engines,
     turn_samples,
 )
 from leaseholder_bench.load import summarize
@@ -112,11 +114,26 @@ ADMISSION_COLUMNS = (
     "realtime_replies",
     "degraded_share",
 )
+FIRST_SCHEDULE = {
+    "local_compute": "first_schedule_computed_tokens",
+    "local_cache_hit": "first_schedule_gpu_hit_tokens",
+    "external_kv_transfer": "first_schedule_cpu_hit_tokens",
+}
+"""vLLM's prompt-token sources (``vllm:prompt_tokens_by_source_total``), which it counts at a request's
+first scheduling only, and their columns."""
+CPU_TIER_COLUMNS = (
+    *FIRST_SCHEDULE.values(),
+    "cpu_tier_loaded_tokens",
+    "cpu_tier_stored_tokens",
+    "kv_bytes_per_token",
+)
 """Columns that only some points have, each group shown when one of them has it: the GPU nodes of a
 point on several, which every other column then totals; the voice worker's stage times and lifecycle
 events; the GPU's median SM clock and highest temperature during the calls (over every node's GPU on
-several); and under the gateway's policy ``leaseholder``, the background requests it deferred by
-what held them back and the realtime replies it capped, with their share of its realtime requests."""
+several); under the gateway's policy ``leaseholder``, the background requests it deferred by what held
+them back and the realtime replies it capped, with their share of its realtime requests; and on vLLM
+its prompt tokens by source at their first scheduling and the CPU tier's loads and stores of every
+scheduling, in tokens at the bytes of KV a token takes in the engine's pool."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -219,7 +236,42 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     nodes = summary.get("nodes") or {}
     row["nodes"] = " ".join(nodes) or None
     row["by_node"] = [_node_row(node, share) for node, share in nodes.items()]
+    row |= cpu_tier(engine, nodes, point_engines(run_dir, list(nodes)))
     return row | _gpu(summary)
+
+
+def cpu_tier(
+    engine: Mapping[str, Any],
+    nodes: Mapping[str, Mapping[str, Any]],
+    engines: Mapping[str | None, Mapping[str, Any] | None],
+) -> dict[str, int | float | None]:
+    """A point's prompt tokens by source at their first scheduling, and the tokens its CPU tier loaded
+    and stored (``engine``'s counts in bytes, at each engine's bytes of KV a token: every node's own on
+    several, from ``nodes``' shares), with those bytes (None where the engines differ)."""
+    sources = engine.get("prompt_tokens_by_source")
+    row: dict[str, int | float | None] = {
+        column: None if sources is None else sources.get(source)
+        for source, column in FIRST_SCHEDULE.items()
+    }
+    per_token = {node: kv_token_bytes(settings) for node, settings in engines.items()}
+
+    def tokens(key: str) -> int | None:
+        counted = (
+            [(share["engine"].get(key), per_token.get(node)) for node, share in nodes.items()]
+            if nodes
+            else [(engine.get(key), per_token.get(None))]
+        )
+        if any(count is None or each is None for count, each in counted):
+            return None
+        return round(sum(count / each for count, each in counted))
+
+    row["cpu_tier_loaded_tokens"] = tokens("kv_offload_load_bytes")
+    row["cpu_tier_stored_tokens"] = tokens("kv_offload_store_bytes")
+    factors = set(per_token.values())
+    row["kv_bytes_per_token"] = (
+        round(next(iter(factors)), 1) if len(factors) == 1 and None not in factors else None
+    )
+    return row
 
 
 def leaseholder_counts(counters: Mapping[str, int]) -> dict[str, int | float | None]:
@@ -479,7 +531,7 @@ def figure_name(data: str, callers: int) -> str:
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
     """The optional column groups that some point has."""
-    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS, ADMISSION_COLUMNS)
+    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS, ADMISSION_COLUMNS, CPU_TIER_COLUMNS)
     return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
 
 
@@ -536,6 +588,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         lines += _stages(rows)
     if ADMISSION_COLUMNS in measured:
         lines += _admission(rows)
+    if CPU_TIER_COLUMNS in measured:
+        lines += _cpu_tier(rows)
     if cells := stage_waterfall(rows):
         lines += _waterfall_table(cells)
     return "\n".join(lines) + "\n"
@@ -728,6 +782,45 @@ def _admission(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             f"| {name} | {_cell(r['deferred_headroom'])} | {_cell(r['deferred_critical'])} "
             f"| {degraded} |"
         )
+    return lines
+
+
+def _cpu_tier(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Each vLLM point's prompt tokens by source at their first scheduling, and its CPU tier's loads
+    and stores of every scheduling."""
+    lines = [
+        "",
+        "## The engine's prompt tokens and its CPU tier",
+        "",
+        "vLLM's own counts over the calls, in tokens. vLLM 0.32 counts a request's prompt tokens by "
+        "where they came from only at its first scheduling: computed, hit in the GPU pool, or loaded "
+        "from the CPU tier; a preempted request's resume is in none of them. The CPU tier counts "
+        "every load into the GPU pool and every store from it, resumes included, in bytes, given "
+        "here in tokens at the bytes of KV a token takes in the engine's pool (its KV cache's bytes "
+        "over its tokens; `kv_bytes_per_token` in frontier.csv). Loaded beyond first scheduling is "
+        "the CPU tier's loads less its hits at first scheduling: the loads of requests resumed after "
+        "a preemption. How much of a resumed request's prompt was computed again, no counter shows.",
+        "",
+        "| Point | Preemptions | Computed at first scheduling | GPU-pool hits at first scheduling "
+        "| CPU-tier hits at first scheduling | Loaded from the CPU tier "
+        "| Loaded beyond first scheduling | Stored to the CPU tier |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    runs = Counter(map(_configuration, rows))
+    for r in rows:
+        if all(r[column] is None for column in CPU_TIER_COLUMNS):
+            continue
+        name = f"{r['point']} ({r['campaign']})" if runs[_configuration(r)] > 1 else r["point"]
+        loaded, hits = r["cpu_tier_loaded_tokens"], r["first_schedule_cpu_hit_tokens"]
+        beyond = None if loaded is None or hits is None else loaded - hits
+        counts = (
+            r["engine_preemptions"],
+            *(r[column] for column in FIRST_SCHEDULE.values()),
+            loaded,
+            beyond,
+            r["cpu_tier_stored_tokens"],
+        )
+        lines.append(f"| {name} | {' | '.join(_cell(count) for count in counts)} |")
     return lines
 
 
