@@ -1,6 +1,6 @@
 [package]
 name = "lh-proto"
-description = "Leaseholder wire types: lifecycle events, headers, engine lease hints and ledger rows"
+description = "Leaseholder wire types: lifecycle events, headers, SLO classes and session ids"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

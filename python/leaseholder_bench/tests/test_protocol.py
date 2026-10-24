@@ -21,8 +21,8 @@ def test_wire_names_match_lh_proto():
     headers = dict(re.findall(r'pub const (\w+): &str = "([^"]*)";', _source("headers.rs")))
     assert SESSION_HEADER.lower() == headers["SESSION_ID"]
     assert CLASS_HEADER.lower() == headers["CLASS"]
-    schema = json.loads((LH_PROTO / "schema/engine_lease_hint.schema.json").read_text())
-    classes = [variant["const"] for variant in schema["$defs"]["SloClass"]["oneOf"]]
+    schema = json.loads((LH_PROTO / "schema/slo_class.schema.json").read_text())
+    classes = [variant["const"] for variant in schema["oneOf"]]
     assert [c.value for c in SloClass] == classes
 
 

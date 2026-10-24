@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SloClass",
+  "description": "The SLO class of a request: which clock it runs on. Classes order from strictest to most lenient.",
+  "oneOf": [
+    {
+      "description": "Voice turns. Never rejected: admission makes room, then degrades the reply.",
+      "type": "string",
+      "const": "realtime"
+    },
+    {
+      "description": "Agent loops with a person waiting. Predicted-TTFT admission; queued with a deadline.",
+      "type": "string",
+      "const": "interactive"
+    },
+    {
+      "description": "Batch agents, trace replays, memory consolidation. Best effort with a minimum share; deferred or demoted\nwhenever realtime needs room.",
+      "type": "string",
+      "const": "background"
+    }
+  ]
+}

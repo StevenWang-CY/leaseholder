@@ -20,8 +20,8 @@ def test_header_names_match_lh_proto() -> None:
     headers = dict(re.findall(r'pub const (\w+): &str = "([^"]*)";', source))
     assert SESSION_ID_HEADER.lower() == headers["SESSION_ID"]
     assert CLASS_HEADER.lower() == headers["CLASS"]
-    schema = json.loads((LH_PROTO / "schema/engine_lease_hint.schema.json").read_text())
-    assert REALTIME_CLASS in [variant["const"] for variant in schema["$defs"]["SloClass"]["oneOf"]]
+    schema = json.loads((LH_PROTO / "schema/slo_class.schema.json").read_text())
+    assert REALTIME_CLASS in [variant["const"] for variant in schema["oneOf"]]
 
 
 def test_room_session_id_is_scoped_to_the_room_instance() -> None:
