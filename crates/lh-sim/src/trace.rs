@@ -79,6 +79,7 @@ enum SourceKind {
         path: PathBuf,
         lines: Vec<(u64, usize)>,
     },
+    #[cfg(test)]
     Memory(Vec<Trace>),
 }
 
@@ -129,6 +130,7 @@ impl TraceSource {
     }
 
     /// Traces already in memory, in the given order.
+    #[cfg(test)]
     pub fn from_traces(traces: Vec<Trace>) -> Self {
         Self {
             kind: SourceKind::Memory(traces),
@@ -141,7 +143,9 @@ impl TraceSource {
             SourceKind::Dir(files) => files
                 .iter()
                 .position(|p| p.file_stem().is_some_and(|s| s == id)),
-            SourceKind::Jsonl { .. } | SourceKind::Memory(_) => None,
+            SourceKind::Jsonl { .. } => None,
+            #[cfg(test)]
+            SourceKind::Memory(_) => None,
         }
     }
 
@@ -149,6 +153,7 @@ impl TraceSource {
         match &self.kind {
             SourceKind::Dir(files) => files.len(),
             SourceKind::Jsonl { lines, .. } => lines.len(),
+            #[cfg(test)]
             SourceKind::Memory(traces) => traces.len(),
         }
     }
@@ -186,6 +191,7 @@ impl TraceSource {
                 Trace::from_json(&bytes)
                     .map_err(|e| err(ErrorKind::Parse(format!("line {}: {e}", index + 1))))
             }
+            #[cfg(test)]
             SourceKind::Memory(traces) => Ok(traces[index].clone()),
         }
     }

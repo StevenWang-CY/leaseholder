@@ -71,6 +71,7 @@ impl ToolPauses {
     }
 
     /// The name of tool `tool`.
+    #[cfg(test)]
     pub fn name(&self, tool: u16) -> &str {
         &self.tools[tool as usize].1
     }
