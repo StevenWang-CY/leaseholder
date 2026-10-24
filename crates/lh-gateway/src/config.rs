@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -31,6 +32,8 @@ pub struct Config {
     pub admission: Option<Admission>,
     pub listeners: Vec<Listen>,
     pub tenants: Vec<Tenant>,
+    /// The key of every tenant's `cache_salt`, from `cache_salt_secret_file`.
+    pub cache_salt_secret: CacheSaltSecret,
     /// Largest accepted request body; larger requests get 413.
     pub max_body_bytes: usize,
     /// Frames buffered between the upstream and a client before backpressure reaches the upstream.
@@ -75,6 +78,16 @@ pub struct Tenant {
     pub default_class: SloClass,
     /// The strictest class the tenant may use; a stricter request is clamped to it.
     pub max_class: SloClass,
+}
+
+/// The secret the tenants' cache salts are derived from: 32 bytes, which its `Debug` does not show.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CacheSaltSecret(pub(crate) [u8; 32]);
+
+impl fmt::Debug for CacheSaltSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CacheSaltSecret(..)")
+    }
 }
 
 /// `upstream_priority`: where the class's priority goes in each upstream request. Engines and routers read it
@@ -201,6 +214,7 @@ struct RawConfig {
     admission: RawAdmission,
     listen: Vec<RawListen>,
     tenants: BTreeMap<String, RawTenant>,
+    cache_salt_secret_file: Option<PathBuf>,
     max_body_bytes: usize,
     stream_buffer_frames: usize,
     stall_timeout_s: f64,
@@ -224,6 +238,7 @@ impl Default for RawConfig {
             admission: RawAdmission::default(),
             listen: Vec::new(),
             tenants: BTreeMap::new(),
+            cache_salt_secret_file: None,
             max_body_bytes: 32 << 20,
             stream_buffer_frames: 64,
             stall_timeout_s: 30.0,
@@ -452,6 +467,7 @@ impl RawConfig {
                 ));
             }
         }
+        let cache_salt_secret = cache_salt_secret(self.cache_salt_secret_file)?;
 
         if self.max_body_bytes == 0 {
             return Err("max_body_bytes must be positive".into());
@@ -473,6 +489,7 @@ impl RawConfig {
             admission,
             listeners,
             tenants,
+            cache_salt_secret,
             max_body_bytes: self.max_body_bytes,
             stream_buffer_frames: self.stream_buffer_frames,
             stall_timeout: seconds("stall_timeout_s", self.stall_timeout_s)?,
@@ -908,6 +925,34 @@ fn priority_signals(listed: &[PrioritySignal]) -> Result<PrioritySignals, String
     Ok(signals)
 }
 
+/// Reads `cache_salt_secret_file`: 32 random bytes in hex, in a file only its owner may open. A salt anyone could
+/// compute from the tenant's name would let a client that reaches the engine directly probe another tenant's
+/// prefix cache.
+fn cache_salt_secret(path: Option<PathBuf>) -> Result<CacheSaltSecret, String> {
+    let path = path.ok_or(
+        "no cache_salt_secret_file: name a file of 32 random bytes in hex, mode 600, from which the tenants' \
+         cache salts are derived",
+    )?;
+    let fail = |cause: String| format!("cache_salt_secret_file {}: {cause}", path.display());
+    if !path.is_absolute() {
+        return Err(fail("not an absolute path".into()));
+    }
+    let mode = std::fs::metadata(&path)
+        .map_err(|e| fail(e.to_string()))?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        return Err(fail(format!(
+            "mode {:o} lets other users open it; make it 600",
+            mode & 0o777
+        )));
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| fail(e.to_string()))?;
+    parse_digest(text.trim())
+        .map(CacheSaltSecret)
+        .ok_or_else(|| fail("expected 64 hex characters, 32 random bytes".into()))
+}
+
 fn parse_digest(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -928,15 +973,37 @@ fn seconds(key: &str, value: f64) -> Result<Duration, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
 
     /// SHA-256 of "foo".
     const KEY: &str = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
 
+    /// The bytes 0 to 31, in hex.
+    const SECRET: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+    /// The cache-salt secret of the configurations below: `SECRET` in a file of mode 600, which each test process
+    /// writes anew.
+    static SECRET_FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+        let path = std::env::temp_dir().join("lh-gw-config-test-cache-salt-secret");
+        let staged = path.with_extension(std::process::id().to_string());
+        std::fs::write(&staged, format!("{SECRET}\n")).unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&staged, &path).unwrap();
+        path
+    });
+
+    /// The configuration line that names a cache-salt secret file.
+    fn secret_file(path: &Path) -> String {
+        format!("cache_salt_secret_file = \"{}\"", path.display())
+    }
+
     /// A configuration with one TCP listener, plus top-level keys and tables.
     fn config(top: &str, tables: &str) -> Result<Config, String> {
         Config::from_toml(&format!(
-            "upstream = \"http://127.0.0.1:18000\"\n{top}\n[[listen]]\ntcp = \"127.0.0.1:0\"\n{tables}"
+            "upstream = \"http://127.0.0.1:18000\"\n{}\n{top}\n[[listen]]\ntcp = \"127.0.0.1:0\"\n{tables}",
+            secret_file(&SECRET_FILE)
         ))
         .map_err(|e| e.to_string())
     }
@@ -1023,6 +1090,62 @@ mod tests {
         );
         let err = Config::from_toml(&https).unwrap_err().to_string();
         assert!(err.contains("http://host:port"), "{err}");
+    }
+
+    #[test]
+    fn the_cache_salt_secret_is_a_private_file_of_32_bytes() {
+        let dir = std::env::temp_dir().join(format!("lh-gw-secret-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, text: &str, mode: u32| {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            path
+        };
+        let with = |secret: &str| {
+            Config::from_toml(&format!(
+                "upstream = \"http://127.0.0.1:18000\"\n{secret}\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
+                 [tenants.a]\nkeys_sha256 = [\"{KEY}\"]"
+            ))
+            .map_err(|e| e.to_string())
+        };
+        let private = file("private", &format!("{SECRET}\n"), 0o600);
+        let config = with(&secret_file(&private)).unwrap();
+        let bytes = CacheSaltSecret(std::array::from_fn(|i| i as u8));
+        assert_eq!(config.cache_salt_secret, bytes);
+        assert_eq!(
+            format!("{bytes:?}"),
+            "CacheSaltSecret(..)",
+            "it is never printed"
+        );
+
+        let unreadable = dir.join("a directory");
+        std::fs::create_dir(&unreadable).unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for (path, cause) in [
+            (
+                file("readable", SECRET, 0o644),
+                "mode 644 lets other users open it; make it 600",
+            ),
+            (file("group", SECRET, 0o640), "mode 640 lets other users"),
+            (
+                file("short", &SECRET[2..], 0o600),
+                "expected 64 hex characters",
+            ),
+            (dir.join("missing"), "No such file or directory"),
+            (unreadable, "Is a directory"),
+            (PathBuf::from("relative/secret"), "not an absolute path"),
+        ] {
+            let err = with(&secret_file(&path)).unwrap_err();
+            assert!(
+                err.starts_with(&format!("cache_salt_secret_file {}: ", path.display()))
+                    && err.contains(cause),
+                "{err}"
+            );
+        }
+        let err = with("").unwrap_err();
+        assert!(err.starts_with("no cache_salt_secret_file"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1320,9 +1443,10 @@ mod tests {
     /// A configuration with two GPU nodes, one TCP listener, a tenant, and more tables.
     fn nodes(tables: &str) -> Result<Config, String> {
         Config::from_toml(&format!(
-            "[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\n\
+            "{}\n[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\n\
              [nodes.gray]\nupstream = \"http://127.0.0.1:28000\"\n\
-             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n{tables}"
+             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n{tables}",
+            secret_file(&SECRET_FILE)
         ))
         .map_err(|e| e.to_string())
     }
@@ -1358,10 +1482,11 @@ mod tests {
         assert_eq!(pool.upstream.as_str(), "127.0.0.1:28000");
 
         let dedicated = Config::from_toml(&format!(
-            "[nodes.voice]\nupstream = \"http://127.0.0.1:18000\"\nclasses = [\"realtime\"]\n\
+            "{}\n[nodes.voice]\nupstream = \"http://127.0.0.1:18000\"\nclasses = [\"realtime\"]\n\
              [nodes.agents]\nupstream = \"http://127.0.0.1:28000\"\nclasses = [\"background\", \"interactive\"]\n\
              [placement]\npolicy = \"dedicated\"\nidle_s = 60\nprobe_interval_s = 0.25\n\
-             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n"
+             [[listen]]\ntcp = \"127.0.0.1:0\"\n[tenants.a]\nkeys_sha256 = [\"{KEY}\"]\n",
+            secret_file(&SECRET_FILE)
         ))
         .unwrap()
         .placement
@@ -1463,8 +1588,9 @@ mod tests {
         }
         let classes = |gray: &str, phastform: &str| {
             Config::from_toml(&format!(
-                "[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\nclasses = {phastform}\n\
-                 [nodes.gray]\nupstream = \"http://127.0.0.1:28000\"\nclasses = {gray}\n{dedicated}\n{a}"
+                "{}\n[nodes.phastform]\nupstream = \"http://127.0.0.1:18000\"\nclasses = {phastform}\n\
+                 [nodes.gray]\nupstream = \"http://127.0.0.1:28000\"\nclasses = {gray}\n{dedicated}\n{a}",
+                secret_file(&SECRET_FILE)
             ))
             .map_err(|e| e.to_string())
         };
@@ -1493,7 +1619,7 @@ mod tests {
     }
 
     #[test]
-    fn the_deploy_example_is_valid_once_its_digests_are_filled_in() {
+    fn the_deploy_example_is_valid_once_its_placeholders_are_filled_in() {
         let example = include_str!("../../../deploy/cyan/gateway.example.toml");
         let err = Config::from_toml(example).unwrap_err().to_string();
         assert!(err.contains("64 hex"), "placeholders are refused: {err}");
@@ -1502,7 +1628,11 @@ mod tests {
         let other = "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9";
         let filled = example
             .replace("<sha256 of the agents key>", KEY)
-            .replace("<sha256 of the bench key>", other);
+            .replace("<sha256 of the bench key>", other)
+            .replace(
+                "<home>/.config/leaseholder/cache-salt-secret",
+                &SECRET_FILE.display().to_string(),
+            );
         let config = Config::from_toml(&filled).unwrap();
         let unix = ListenAddr::Unix("/run/user/1007/lh/gateway.sock".into());
         assert_eq!(config.listeners[1].addr, unix);

@@ -2,9 +2,10 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::Router;
@@ -300,6 +301,21 @@ pub fn socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("lh-gw-{}-{n}.sock", std::process::id()))
 }
 
+/// The cache-salt secret of every test gateway: the bytes 0 to 31, in hex, in a file of mode 600 that each test
+/// process writes anew.
+pub fn cache_salt_secret_file() -> &'static Path {
+    static FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("cache-salt-secret");
+        let staged = path.with_extension(std::process::id().to_string());
+        let secret: String = (0..32u8).map(|b| format!("{b:02x}")).collect();
+        std::fs::write(&staged, format!("{secret}\n")).unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&staged, &path).unwrap();
+        path
+    });
+    &FILE
+}
+
 pub fn key_digest(key: &str) -> String {
     Sha256::digest(key)
         .iter()
@@ -326,6 +342,7 @@ pub fn nodes_toml(socket: &std::path::Path, tables: &str) -> String {
 fn harness_toml(socket: &std::path::Path, top: &str) -> String {
     format!(
         r#"log_level = "debug"
+cache_salt_secret_file = "{secret}"
 {top}
 
 [[listen]]
@@ -350,6 +367,7 @@ keys_sha256 = ["{bench}"]
 default_class = "interactive"
 "#,
         socket = socket.display(),
+        secret = cache_salt_secret_file().display(),
         agents = key_digest(AGENTS_KEY),
         bench = key_digest(BENCH_KEY),
     )
@@ -556,10 +574,11 @@ where
 pub const AGENTS_AUTH: (&str, &str) = ("authorization", "Bearer agents-key");
 pub const BENCH_AUTH: (&str, &str) = ("authorization", "Bearer bench-key");
 
-/// Cache salts, `printf 'leaseholder-cache-salt\0<tenant>' | shasum -a 256 | cut -c1-32`.
-pub const AGENTS_SALT: &str = "5aba4e96998029ea96716cc693e1703e";
-pub const BENCH_SALT: &str = "c3ecbad17b0b9e1a8d1761a3759441da";
-pub const VOICE_SALT: &str = "32e853135c92a8afaf0bf4b3a2afd65c";
+/// Cache salts under [`cache_salt_secret_file`]: the first 32 hex digits of
+/// `printf <tenant> | openssl dgst -sha256 -mac HMAC -macopt hexkey:000102...1f`.
+pub const AGENTS_SALT: &str = "3c112a3140ece6fbba30769936c5f17f";
+pub const BENCH_SALT: &str = "770212abeff38f7d5eb73f9c614f45e6";
+pub const VOICE_SALT: &str = "b9d705094e95b446146e3c5671bc3c6d";
 
 /// Records accepted lifecycle events.
 #[derive(Debug, Default)]

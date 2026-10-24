@@ -36,6 +36,8 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -201,6 +203,19 @@ fn main() {
         ),
     ];
     client_rt.block_on(price_placement(&pairs));
+    let _ = std::fs::remove_file(salt_secret());
+}
+
+/// The gateways' cache-salt secret, a file of mode 600 that `main` removes at the end.
+fn salt_secret() -> &'static Path {
+    static FILE: OnceLock<PathBuf> = OnceLock::new();
+    FILE.get_or_init(|| {
+        let name = format!("lh-gw-overhead-{}-cache-salt-secret", std::process::id());
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, format!("{}\n", "ab".repeat(32))).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    })
 }
 
 /// A gateway of the policy table: its policy, and whether lifecycle events flow while its requests run.
@@ -298,9 +313,10 @@ async fn start_gateway(engines: &[SocketAddr], extra: &str) -> SocketAddr {
         ),
     };
     let config = Config::from_toml(&format!(
-        "{upstream}\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
+        "{upstream}\ncache_salt_secret_file = \"{}\"\n[[listen]]\ntcp = \"127.0.0.1:0\"\n\
          [tenants.agents]\nkeys_sha256 = [\"{}\"]\ntrusted = true\ndefault_class = \"background\"\n\
          max_class = \"interactive\"\n{nodes}{extra}",
+        salt_secret().display(),
         digest(KEY)
     ))
     .unwrap();

@@ -93,7 +93,7 @@ impl Server {
     /// Binds every configured listener; nothing is served until [`Server::run`]. Accepted lifecycle events go
     /// to `sink`.
     pub async fn bind(config: Config, sink: Arc<dyn EventSink>) -> io::Result<Self> {
-        let tenants = Tenants::new(&config.tenants);
+        let tenants = Tenants::new(&config.tenants, &config.cache_salt_secret);
         let mut listeners = Vec::with_capacity(config.listeners.len());
         let mut sockets = Vec::new();
         for listen in &config.listeners {

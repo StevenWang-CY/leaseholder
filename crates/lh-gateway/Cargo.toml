@@ -12,6 +12,7 @@ axum.workspace = true
 bytes.workspace = true
 clap.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true

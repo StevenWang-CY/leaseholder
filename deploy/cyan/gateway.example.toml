@@ -1,5 +1,6 @@
-# lh-gateway on cyan. Copy to ~/.config/leaseholder/gateway.toml (mode 600) and replace each placeholder with
-# the SHA-256 of a new key; the file holds digests only. To make a key and its digest:
+# lh-gateway on cyan. Copy to ~/.config/leaseholder/gateway.toml (mode 600), replace <home> with the deploy user's
+# home directory and each other placeholder with the SHA-256 of a new key; the file holds digests only. To make a
+# key and its digest:
 #   key=$(head -c 32 /dev/urandom | base64 | tr -d '/+=\n'); printf '%s' "$key" | sha256sum
 # Every key is described in crates/lh-gateway/README.md.
 
@@ -13,6 +14,9 @@ log_format = "json"
 # the body's `priority` (SGLang) or X-SMG-Priority (SMG). vLLM's FCFS scheduling ignores priorities; E2's arm 2
 # sends none (the empty list).
 # upstream_priority = ["vllm-header"]
+# The secret each tenant's cache_salt is derived from, so that a tenant's name does not give its salt away: 32
+# random bytes in hex, mode 600, which deploy/cyan/install.sh writes once.
+cache_salt_secret_file = "<home>/.config/leaseholder/cache-salt-secret"
 
 # The host network. Other users of cyan can reach loopback, so requests here need a key.
 [[listen]]

@@ -15,6 +15,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false }
 getrandom = "0.4"
+hmac = "0.13"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"

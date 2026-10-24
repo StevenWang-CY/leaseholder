@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
+use hmac::{Hmac, KeyInit, Mac};
 use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use lh_proto::SloClass;
 use sha2::{Digest, Sha256};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
-use crate::config;
+use crate::config::{self, CacheSaltSecret};
 use crate::sanitize::hex;
 
 /// A tenant as the request path sees it.
@@ -30,7 +31,7 @@ pub(crate) struct Tenants {
 }
 
 impl Tenants {
-    pub fn new(config: &[config::Tenant]) -> Self {
+    pub fn new(config: &[config::Tenant], secret: &CacheSaltSecret) -> Self {
         let tenants = config
             .iter()
             .map(|t| Tenant {
@@ -38,7 +39,7 @@ impl Tenants {
                 trusted: t.trusted,
                 default_class: t.default_class,
                 max_class: t.max_class,
-                cache_salt: cache_salt(&t.name),
+                cache_salt: cache_salt(secret, &t.name),
             })
             .collect();
         let keys = config
@@ -86,20 +87,25 @@ fn bearer_token(headers: &HeaderMap) -> Option<&[u8]> {
     scheme.eq_ignore_ascii_case(b"bearer ").then_some(token)
 }
 
-/// The first 32 hex digits of SHA-256("leaseholder-cache-salt", NUL, tenant). It depends only on the tenant, so
-/// rotating a key keeps the tenant's cache, and a keyless tenant gets one too.
-pub(crate) fn cache_salt(tenant: &str) -> String {
-    let digest = Sha256::new()
-        .chain_update(b"leaseholder-cache-salt\0")
-        .chain_update(tenant)
-        .finalize();
-    hex(&digest[..16])
+/// The first 32 hex digits of HMAC-SHA-256 of the tenant's name, keyed by the configuration's secret. It depends
+/// only on the tenant, so rotating a key keeps the tenant's cache, and a keyless tenant gets one too; without the
+/// secret, the name does not give it away.
+pub(crate) fn cache_salt(secret: &CacheSaltSecret, tenant: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&secret.0).expect("HMAC takes a key of any length");
+    mac.update(tenant.as_bytes());
+    hex(&mac.finalize().into_bytes()[..16])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use http::HeaderValue;
+
+    /// The secret of the bytes `first` to `first + 31`.
+    fn secret(first: u8) -> CacheSaltSecret {
+        CacheSaltSecret(std::array::from_fn(|i| first + i as u8))
+    }
 
     fn tenants() -> Tenants {
         let tenant = |name: &str, keys: &[&str]| config::Tenant {
@@ -109,11 +115,14 @@ mod tests {
             default_class: SloClass::Interactive,
             max_class: SloClass::Interactive,
         };
-        Tenants::new(&[
-            tenant("voice", &[]),
-            tenant("agents", &["agents-1", "agents-2"]),
-            tenant("bench", &["bench-1"]),
-        ])
+        Tenants::new(
+            &[
+                tenant("voice", &[]),
+                tenant("agents", &["agents-1", "agents-2"]),
+                tenant("bench", &["bench-1"]),
+            ],
+            &secret(0),
+        )
     }
 
     fn bearer(value: &str) -> HeaderMap {
@@ -174,10 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn cache_salts_are_pinned_per_tenant() {
-        // `printf 'leaseholder-cache-salt\0agents' | shasum -a 256 | cut -c1-32`: a change would orphan every
-        // tenant's prefix cache, so the values are pinned.
-        assert_eq!(cache_salt("agents"), "5aba4e96998029ea96716cc693e1703e");
-        assert_eq!(cache_salt("voice"), "32e853135c92a8afaf0bf4b3a2afd65c");
+    fn cache_salts_are_pinned_per_tenant_and_secret() {
+        // `printf agents | openssl dgst -sha256 -mac HMAC -macopt hexkey:000102...1f`, its first 32 hex digits: a
+        // change would orphan every tenant's prefix cache, so the values are pinned.
+        assert_eq!(
+            cache_salt(&secret(0), "agents"),
+            "3c112a3140ece6fbba30769936c5f17f"
+        );
+        assert_eq!(
+            cache_salt(&secret(0), "voice"),
+            "b9d705094e95b446146e3c5671bc3c6d"
+        );
+        // Another secret, other salts: without the secret, a tenant's name does not give its salt away.
+        assert_eq!(
+            cache_salt(&secret(1), "agents"),
+            "34f06bd8e6338e453d4466724a323b0d"
+        );
+        assert_ne!(
+            cache_salt(&secret(1), "voice"),
+            cache_salt(&secret(0), "voice")
+        );
     }
 }

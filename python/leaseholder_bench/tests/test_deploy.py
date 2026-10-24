@@ -1,10 +1,11 @@
-"""The deployment: what the GPU nodes serve and the tunnels reach, and the script that authorizes cyan's
-tunnel key on a GPU node, run against a stand-in for ssh."""
+"""The deployment: what the GPU nodes serve and the tunnels reach, cyan's install, and the script that
+authorizes cyan's tunnel key on a GPU node, run against stand-ins for ssh and systemd."""
 
 from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -97,3 +98,25 @@ def test_the_tunnel_key_may_forward_to_the_services_and_listen_nowhere(tmp_path:
     done, authorized = authorize(tmp_path / "empty", "", f"{LOGIN}\n")
     assert done.returncode == 2 and "no public key" in done.stderr
     assert authorized == f"{LOGIN}\n"
+
+
+def test_cyans_install_makes_the_gateways_cache_salt_secret_once(tmp_path: Path) -> None:
+    home, bin_dir = tmp_path / "home", tmp_path / "bin"
+    home.mkdir()
+    bin_dir.mkdir()
+    for tool in ("systemctl", "loginctl"):  # cyan's user manager, which the test leaves alone
+        (bin_dir / tool).write_text("#!/bin/sh\n")
+        (bin_dir / tool).chmod(0o755)
+    env = os.environ | {"HOME": str(home), "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    install = ["bash", str(DEPLOY / "cyan" / "install.sh")]
+    subprocess.run(install, env=env, check=True, capture_output=True)
+    secret = home / ".config" / "leaseholder" / "cache-salt-secret"
+    made = secret.read_text()
+    assert re.fullmatch(r"[0-9a-f]{64}\n", made)
+    assert (
+        stat.S_IMODE(secret.stat().st_mode) == 0o600
+    )  # the gateway refuses any other user's access
+    # A new secret would change every tenant's cache salt: the next install keeps it.
+    subprocess.run(install, env=env, check=True, capture_output=True)
+    assert secret.read_text() == made
+    assert [p.name for p in secret.parent.iterdir()] == ["cache-salt-secret"]
