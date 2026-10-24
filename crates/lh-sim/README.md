@@ -345,18 +345,20 @@ Rows whose resume TTFT runs to seconds are saturated, and there the running shar
 
 ## Runtime
 
-Release builds on the full corpus (393 traces, 98,827 requests, 1.7 GB of JSON), one core unless noted, on an Apple M5 Max. The full-corpus runs use `--duration 100000000 --grace 0 --max-sessions 393 --start-max 0`, so every trace plays once from its start.
+Release builds on the full corpus (393 traces, 98,827 requests, 1.7 GB of JSON), on an Apple M5 Max. Times are the whole process's CPU time (user and system), with the wall time on 18 threads and the peak memory for the runs that use every core; each time is the lower of two runs, each peak the higher. Other work loaded the machine while they were measured (load average 15 to 49), and that moved even CPU time by up to a quarter between two runs. The full-corpus runs use `--duration 100000000 --grace 0 --max-sessions 393 --start-max 0`, so every trace plays once from its start.
 
 | Run | Contention | Idle |
 |---|---|---|
-| The W0 configuration, the four stock arms | 0.23 s | 0.20 s |
-| The W0 configuration, `lru-cpu`, the E1 arms and the reference | 0.29 s | — |
-| Every trace through 16 recycling lanes, the four stock arms | 11.5 s | 10.5 s |
-| `regime`, 42 cells × 10 arms | 10.6 s (2.1 s on 18 cores) | — |
-| `hardware`, the 32× replay on three GPUs, 84 cells × 10 arms | 15–20 s on 18 cores, 4.0 GB | — |
-| `hardware --fit`, 66 cells × 10 arms | 15–17 s on 18 cores, 2.1 GB | — |
+| The W0 configuration, the three stock arms | 0.22 s | 0.22 s |
+| The W0 configuration, `lru-cpu`, the E1 arms and the reference | 0.33 s | — |
+| Every trace through 16 recycling lanes, the three stock arms | 13.2 s | 13.5 s |
+| `regime` at one seed on one thread, 42 cells × 10 arms | 13.6 s | — |
+| `regime`, 42 cells × 3 seeds × 10 arms | 89 s (9.7 s on 18 threads, 2.2 GB) | — |
+| The realistic regime, 4 cells × 20 seeds × 10 arms | 41 s (4.0 s on 18 threads, 2.2 GB) | — |
+| `hardware`, the 32× replay on three GPUs, 84 cells × 10 arms | 165 s (19 s on 18 threads, 3.7 GB) | — |
+| `hardware --fit`, 66 cells × 10 arms | 107 s (14 s on 18 threads, 2.2 GB) | — |
 
-W1 measured the idle runs on cyan (Xeon Silver 4310 at 2.1 GHz, Linux) too, with identical results: 0.53 s for the W0 configuration and 29.7 s through 16 recycling lanes.
+`make reproduce-e1` runs the last four in about a minute. W1 measured the idle runs on cyan (Xeon Silver 4310 at 2.1 GHz, Linux) too, with identical results: 0.53 s for the W0 configuration and 29.7 s through 16 recycling lanes, then with four stock arms.
 
 ## Tests
 
