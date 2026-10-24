@@ -1026,32 +1026,51 @@ def loading(module, model, make_room, max_num_seqs: int = 16):
     return sched, voice
 
 
-def test_a_load_holds_nothing_while_it_lasts(module, model):
-    """The budget cap holds nothing back for a request while its connector loads its KV: lower-priority prefill
-    runs during a PCIe-bound load, and a load that never completes holds nothing, ever. Here, in 8 steps of a load
-    that never completes, the priority-2 prefill keeps its chunk and a new priority-2 request is admitted."""
-    sched, voice = loading(module, model, {"budget_cap": True})
+@pytest.mark.parametrize("make_room", [{"budget_cap": True, "budget_cap_tokens": 4}, {}])
+def test_a_load_holds_lower_priority_prefill_back_for_its_first_steps(module, model, make_room):
+    """While its connector loads a request's KV, lower-priority prefill sits out the load's first budget_cap_tokens
+    steps, here 4: the priority-2 prefill gets no chunk and a new priority-2 request is not admitted. Stock vLLM (the
+    control) runs the prefill throughout."""
+    sched, voice = loading(module, model, make_room)
     sched.add_request(request("late", 300, priority=2, arrival=3))
-    steps = [step(sched).num_scheduled_tokens for _ in range(8)]
-    assert all(tokens["prefill"] == 256 for tokens in steps)
-    assert any("late" in tokens for tokens in steps)
+    steps = [step(sched).num_scheduled_tokens for _ in range(4)]
+
+    if make_room:
+        assert steps == [{"decode": 1}] * 4
+    else:
+        assert all(tokens["prefill"] == 256 for tokens in steps)
     assert voice.status == RequestStatus.WAITING_FOR_REMOTE_KVS
 
 
-@pytest.mark.parametrize("make_room", [{"budget_cap": True}, {}])
-def test_the_hold_starts_in_the_step_a_load_completes(module, model, make_room):
-    """Once the connector reports the load done, the waiting loop promotes the request in the next step, on budget
-    the running loop leaves: from that step the priority-2 prefill sits out, until the request's first 16 tokens.
-    Before it, the prefill ran. Stock vLLM (the control) runs the prefill's chunk beside the request's."""
+def test_a_stuck_load_holds_nothing_after_its_first_steps(module, model):
+    """A load that never completes holds lower-priority prefill back for its first budget_cap_tokens steps only, here
+    4: then the priority-2 prefill keeps its chunk and a new priority-2 request is admitted, as on stock vLLM."""
+    sched, voice = loading(module, model, {"budget_cap": True, "budget_cap_tokens": 4})
+    sched.add_request(request("late", 300, priority=2, arrival=3))
+    steps = [step(sched).num_scheduled_tokens for _ in range(12)]
+    assert steps[:4] == [{"decode": 1}] * 4
+    assert all(tokens["prefill"] == 256 for tokens in steps[4:])
+    assert any("late" in tokens for tokens in steps[4:])
+    assert voice.status == RequestStatus.WAITING_FOR_REMOTE_KVS
+
+
+@pytest.mark.parametrize("make_room", [{"budget_cap": True, "budget_cap_tokens": 4}, {}])
+def test_a_load_holds_again_from_the_step_it_completes(module, model, make_room):
+    """A load past its first 4 steps holds nothing, but once the connector reports it done, the waiting loop
+    promotes the request in the next step, on budget the running loop leaves: from that step the priority-2 prefill
+    sits out again, until the request's first 4 tokens. Stock vLLM (the control) runs the prefill's chunk beside the
+    request's."""
     sched, _ = loading(module, model, make_room)
+    for _ in range(4):
+        step(sched)  # the load's first steps
     assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 256}
     step(sched, finished_recving={"voice"})  # the step in which the load is reported done
     tokens = step(sched).num_scheduled_tokens
 
     if make_room:
         assert tokens == {"decode": 1, "voice": 44}  # the 44 tokens it did not load
-        steps = [step(sched).num_scheduled_tokens for _ in range(15)]
-        assert steps == [{"decode": 1, "voice": 1}] * 15
+        steps = [step(sched).num_scheduled_tokens for _ in range(3)]
+        assert steps == [{"decode": 1, "voice": 1}] * 3
         assert step(sched).num_scheduled_tokens["prefill"] == 256
     else:
         assert tokens == {"decode": 1, "prefill": 256, "voice": 44}
@@ -1060,7 +1079,8 @@ def test_the_hold_starts_in_the_step_a_load_completes(module, model, make_room):
 def test_a_completed_load_holds_prefill_back_while_a_request_that_does_not_fit_waits(module, model):
     """A request whose load is done holds lower-priority prefill back from the step the waiting loop promotes it,
     whichever waiting request make-room serves: here a priority-0 request of 38 blocks, with fewer free, waits ahead
-    of the priority-1 one whose load is done, and the priority-2 prefill still sits out the promotion's step."""
+    of the priority-1 one whose load is done, past its first 4 steps, and the priority-2 prefill sits out the
+    promotion's step again."""
     sched = scheduler(
         module.Scheduler,
         model,
@@ -1079,7 +1099,8 @@ def test_a_completed_load_holds_prefill_back_while_a_request_that_does_not_fit_w
     assert load.status == RequestStatus.WAITING_FOR_REMOTE_KVS
     big = request("big", 38 * BLOCK, priority=0, arrival=3)
     sched.add_request(big)
-    assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 4 * BLOCK}
+    steps = [step(sched).num_scheduled_tokens for _ in range(5)]
+    assert steps == [{"decode": 1}] * 4 + [{"decode": 1, "prefill": 4 * BLOCK}]
     step(sched, finished_recving={"load"})  # the step in which the load is reported done
 
     assert step(sched).num_scheduled_tokens == {"decode": 1, "load": 44}
@@ -1088,13 +1109,13 @@ def test_a_completed_load_holds_prefill_back_while_a_request_that_does_not_fit_w
 
 def test_with_every_running_slot_taken_a_completed_load_holds_nothing_back(module, model):
     """A request whose load is done needs a running slot to be promoted. With both slots taken by priority-2
-    requests, admitted while it loaded, it holds nothing back: otherwise the running prefill would sit out every step
-    until the decode finished, and with no decode running, forever."""
+    requests, admitted while it loaded (past the load's first 4 steps), it holds nothing back: otherwise the running
+    prefill would sit out every step until the decode finished, and with no decode running, forever."""
     sched = scheduler(
         module.Scheduler,
         model,
         400,
-        {"budget_cap": True},
+        {"budget_cap": True, "budget_cap_tokens": 4},
         long_prefill_token_threshold=256,
         max_model_len=4096,
         max_num_seqs=2,
@@ -1106,6 +1127,8 @@ def test_with_every_running_slot_taken_a_completed_load_holds_nothing_back(modul
     step(sched)
     assert voice.status == RequestStatus.WAITING_FOR_REMOTE_KVS
     sched.add_request(request("prefill", 3000, priority=2, arrival=2))
+    for _ in range(4):
+        step(sched)  # the load's first steps: the prefill waits
     step(sched, finished_recving={"voice"})
     assert len(sched.running) == 2
     assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 256}

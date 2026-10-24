@@ -32,9 +32,10 @@ request's adapter, as the waiting loop counts the scheduled ones'). Each part is
    others wait), sit out the steps of a request's first tokens: from the step in which the waiting request fits
    (deferred frees counted), or, for a request loading its KV from a connector, in which its load is done, while it
    prefills, until it has its first ``budget_cap_tokens`` output tokens (16 by default). Those steps carry its tokens
-   and the decodes alone; decodes are never cut. A load holds nothing while it lasts, and a waiting request that does
-   not fit holds nothing, so prefills that will free its blocks go on; nor does either while every running slot is
-   taken, since it could not be promoted. The scheduler counts the steps it holds, the prefill tokens and admissions
+   and the decodes alone; decodes are never cut. A load in flight holds too, but only for its first
+   ``budget_cap_tokens`` steps, so a stuck load costs lower-priority prefill no more than that. A waiting request that
+   does not fit holds nothing, so prefills that will free its blocks go on; nor does any request while every running
+   slot is taken, since it could not be promoted. The scheduler counts the steps it holds, the prefill tokens and admissions
    it holds back in them (a request held back in several steps counts in each) and make-room's preemptions, and logs
    them at most every 10 seconds.
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
@@ -97,6 +98,9 @@ SWITCHES = """        # Make room for waiting requests of a higher priority: pre
         # Requests make-room preempted for whose allocation the waiting loop has
         # not tried since: no room is made for them again until it has.
         self._make_room_untried: set[Request] = set()
+        # The step in which make-room first saw each KV load in flight: a load
+        # holds lower-priority prefill back for its first budget_cap_tokens steps.
+        self._make_room_load_start: dict[Request, int] = {}
         # What make-room did, for the operator (see _make_room_log).
         self.make_room_held_steps = 0
         self.make_room_held_tokens = 0
@@ -340,10 +344,19 @@ HELPERS = '''
         if the budget cap is on: the running ones with fewer than
         `budget_cap_tokens` output tokens and, while a running slot is free, the
         ones whose KV load is done, which the waiting loop promotes in this step
-        but only on budget the running loop leaves. A load holds nothing while
-        it lasts, nor a stuck one ever."""
+        but only on budget the running loop leaves, and the ones whose load is
+        in flight, for its first `budget_cap_tokens` steps: a stuck load holds
+        nothing after those."""
         if not self.prefill_budget_cap:
             return None
+        # Each load in flight and the step make-room first saw it in; the loads
+        # that are done or gone drop out.
+        self._make_room_load_start = {
+            req: self._make_room_load_start.get(req, self.current_step)
+            for req in self._inflight_prefills
+            if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS
+            and req.request_id not in self.finished_recving_kv_req_ids
+        }
         priorities = [
             req.priority
             for req in self.running
@@ -354,6 +367,11 @@ HELPERS = '''
                 self.requests[req_id].priority
                 for req_id in self.finished_recving_kv_req_ids
                 if req_id in self.requests
+            )
+            priorities.extend(
+                req.priority
+                for req, start in self._make_room_load_start.items()
+                if self.current_step - start < self.prefill_budget_cap_tokens
             )
         return min(priorities, default=None)
 
