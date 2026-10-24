@@ -27,4 +27,4 @@ Idle sessions must park somewhere cheaper than the 36,400-token GPU pool. Restor
 
 ## Later
 
-Gate G-sim took its negative branch: even the oracle level of lifecycle information gains under 7% of resume TTFT p50 over LRU plus the CPU tier ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)). CPU-tier eviction stays LRU; `LeasePolicy` and `LeaseConnector` stay off and are removed after v0.3 ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)). The frozen box runs the native `OffloadingConnector`, written through, as decided.
+Gate G-sim took its negative branch: even the oracle level of lifecycle information gains under 9% of resume TTFT p50 over LRU plus the CPU tier, and session history nothing ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)). CPU-tier eviction stays LRU; `LeasePolicy` and `LeaseConnector` stay off and are removed after v0.3 ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)). The frozen box runs the native `OffloadingConnector`, written through, as decided.

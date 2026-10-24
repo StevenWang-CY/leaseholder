@@ -2,7 +2,7 @@
 
 *Checked against primary sources (papers, issue and PR threads, release notes, documentation, code) on 2026-10-22. Status is as of that date, except for Leaseholder's own upstream work, as of 2026-10-23: vLLM #63350 and #63351, opened that day, and a comment with Leaseholder's data on #40004. Dates are UTC.*
 
-This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and tool waits for agents. In E2's discriminating scenario that protection could not act from a control plane in front, while an engine change takes the voice tail from 10.1 s to within 0.2 s of the SLO; in the simulator (E1), knowing when agents return bought under 7% of resume latency.
+This page is for engineers asking "how is this different from X?". Leaseholder serves a realtime tier that is never shed (voice turns) beside a best-effort tier that is harvested (background agents), on one vLLM replica. It was built to time the protection from lifecycle events: speech onset, end of turn and barge-in for voice, and tool waits for agents. In E2's discriminating scenario that protection could not act from a control plane in front, while an engine change takes the voice tail from 10.1 s to within 0.2 s of the SLO; in the simulator (E1), knowing when agents return bought under 9% of the median resume latency, and session history bought nothing even at the tail.
 
 ## Positioning
 

@@ -10,7 +10,7 @@ E2 measured two calls beside 24 coding-agent sessions whose contexts fill the GP
 - **Nothing deployable today fixes it.** Tuned stock vLLM leaves the voice tail at 10.1 s at p95. Every gateway baseline and both engines' priority preemption leave it at 8.8–12.1 s. Aborting background work before its first byte and resubmitting it reaches 2.6 s, at the cost of the agents' tail.
 - **The engine change does.** With the two vLLM PRs and a 48-token window the tail is 2.19 s, against an SLO of 2.02 s, at 94% of stock's background throughput. Leaseholder's arm 9 reaches 2.06 s with every reply capped at 16 tokens.
 - **The control plane could not make room.** Leaseholder's admission policy holds KV headroom from speech onset and throttles background prefill while a turn is answered. In front of stock vLLM it left the tail where stock does (10,993 ms). Beside the engine change its mechanisms could not act. Running agent requests held the pool, and a control plane can only defer new ones, so the headroom was never there: degrade capped 60 of 60 replies in every run. The throttle, checked after the headroom, deferred nothing.
-- **E1 measured the agent side the same way.** In the simulator, even an oracle that knows when each agent returns closes under 7% of resume TTFT at p50 ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)).
+- **E1 measured the agent side.** In the simulator, even an oracle that knows when each agent returns closes under 9% of resume TTFT at p50; at p90 it closes 28% at low pressure, but session history, the information a deployment has, closes nothing ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)).
 
 ## Decision
 
@@ -23,7 +23,7 @@ E2 measured two calls beside 24 coding-agent sessions whose contexts fill the GP
 - **No admission policy in front.** `lh-gateway` stays the experiment harness: its baselines and the `leaseholder` policy remain E2's arms, and the measured configuration ran without either.
 - **Not pursued:**
   - leases, prefetch, the per-node sidecar (`lh-node`), cache contracts and the recompute ledger;
-  - they would be reopened for a regime where knowing an agent's return closes more than 10% of resume TTFT, or for an engine whose running KV a control plane can reclaim.
+  - they would be reopened by a source of tool-return times ahead of the return, which the oracle's tail gain needs, or by an engine whose running KV a control plane can reclaim.
 
 ## Consequences
 
