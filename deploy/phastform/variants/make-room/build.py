@@ -1,10 +1,12 @@
 """Build vLLM 0.32.0's scheduler with Leaseholder's "make room" change, as an importable module for
 ``--scheduler-cls``.
 
-``python build.py OUT_DIR`` reads the installed vLLM's ``vllm/v1/core/sched/scheduler.py`` and ``async_scheduler.py``,
-applies the change, and writes ``OUT_DIR/lh_make_room_scheduler.py``. The engine then runs with ``PYTHONPATH=OUT_DIR``
-and ``--scheduler-cls lh_make_room_scheduler.AsyncScheduler``; the installed vLLM is never modified. The variant's
-lh-engine.conf runs this at every engine start.
+``python build.py [--source-tree] OUT_DIR`` reads the installed vLLM's ``vllm/v1/core/sched/scheduler.py`` and
+``async_scheduler.py``, applies the change, and writes ``OUT_DIR/lh_make_room_scheduler.py``. The engine then runs with
+``PYTHONPATH=OUT_DIR`` and ``--scheduler-cls lh_make_room_scheduler.AsyncScheduler``; the installed vLLM is never
+modified. The variant's lh-engine.conf runs this at every engine start. The edits match 0.32.0's source, so the build
+refuses any other installed version; ``--source-tree`` lets the tests build from a v0.32.0 source checkout, which has
+no package metadata to check.
 
 The change is the KV case of vLLM issue #40004, which PR #54530 leaves open: under priority scheduling, vLLM 0.32
 preempts only when a running request cannot grow, so a waiting request of a higher priority waits behind running
@@ -41,9 +43,10 @@ Each part is a switch:
    cached, would otherwise take them back between the chunks of the request it made room for. Neither check holds
    back a request that holds its KV.
 
-The switches are keys of ``--additional-config``'s ``make_room`` table, read once at scheduler init and ignored unless
-the policy is priority; with none set, the module schedules exactly as stock. The edits match anchors in 0.32.0's
-source, each required to occur exactly once, so a vLLM upgrade that moves one fails here, loudly.
+The switches are keys of ``--additional-config``'s ``make_room`` table, read once at scheduler init. An unknown key, a
+bad value, a switch under a policy other than priority or for an encoder-decoder model (whose cross-attention blocks
+the room would leave out) fails the engine start, naming it. With none on, the module schedules exactly as stock. The
+edits match anchors in 0.32.0's source, each required to occur exactly once.
 
 The change targets ``Scheduler.schedule``, which vLLM's ``AsyncScheduler`` inherits, and the frozen box schedules
 asynchronously (vLLM's default for this configuration). So the module also defines ``AsyncScheduler``, the stock
@@ -56,9 +59,12 @@ kept) with the change; this script, like the rest of the repository, is Apache-2
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import sys
 from pathlib import Path
+
+VLLM_VERSION = "0.32.0"
 
 # The generated module's own name is not one vLLM's logging config covers.
 LOGGER = """# Log as vLLM's scheduler does: vLLM's logging covers its loggers only.
@@ -70,15 +76,13 @@ SWITCHES = """        # Make room for waiting requests of a higher priority: pre
         # requests of a lower priority for their KV, hold lower-priority prefill
         # back for a request's first tokens, and keep a KV reserve that requests
         # of a positive priority value leave free.
-        make_room = (
+        make_room = self._make_room_switches(
             vllm_config.additional_config.get("make_room", {})
-            if self.policy == SchedulingPolicy.PRIORITY
-            else {}
         )
-        self.max_preemptions_per_step = make_room.get("max_preemptions_per_step", 0)
-        self.prefill_budget_cap = make_room.get("budget_cap", False)
-        self.prefill_budget_cap_tokens = make_room.get("budget_cap_tokens", 16)
-        self.reserve_blocks = cdiv(make_room.get("reserve_tokens", 0), block_size)
+        self.max_preemptions_per_step = make_room["max_preemptions_per_step"]
+        self.prefill_budget_cap = make_room["budget_cap"]
+        self.prefill_budget_cap_tokens = make_room["budget_cap_tokens"]
+        self.reserve_blocks = cdiv(make_room["reserve_tokens"], block_size)
         num_max_len_blocks = cdiv(self.max_model_len, block_size)
         if self.reserve_blocks and (
             self.reserve_blocks + num_max_len_blocks >= num_gpu_blocks
@@ -172,6 +176,56 @@ TRIED = """                # The waiting loop tries the request's allocation: ma
 """
 
 HELPERS = '''
+    def _make_room_switches(self, make_room: Any) -> dict[str, Any]:
+        """make_room's switches, from --additional-config's make_room table,
+        validated at engine start: a bad key or value fails it, named."""
+        switches: dict[str, Any] = {
+            "max_preemptions_per_step": 0,
+            "budget_cap": False,
+            "budget_cap_tokens": 16,
+            "reserve_tokens": 0,
+        }
+        if not isinstance(make_room, dict):
+            raise ValueError(f"make_room must be a table, not {make_room!r}")
+        for key, value in make_room.items():
+            if key == "budget_cap":
+                flag = {"true": True, "1": True, "false": False, "0": False}.get(
+                    str(value).lower()
+                )
+                if flag is None:
+                    raise ValueError(
+                        f"make_room.budget_cap must be true or false, not {value!r}"
+                    )
+                switches[key] = flag
+            elif key in switches:
+                least = 1 if key == "budget_cap_tokens" else 0
+                if isinstance(value, bool) or not isinstance(value, int) or (
+                    value < least
+                ):
+                    raise ValueError(
+                        f"make_room.{key} must be an integer of at least {least}, "
+                        f"not {value!r}"
+                    )
+                switches[key] = value
+            else:
+                raise ValueError(
+                    f"make_room has no key {key!r}; its keys are "
+                    + ", ".join(switches)
+                )
+        if (
+            switches["max_preemptions_per_step"]
+            or switches["budget_cap"]
+            or switches["reserve_tokens"]
+        ):
+            if self.policy != SchedulingPolicy.PRIORITY:
+                raise ValueError("make_room needs --scheduling-policy priority")
+            if self.is_encoder_decoder:
+                raise ValueError(
+                    "make_room does not support encoder-decoder models: its room "
+                    "would leave out their cross-attention blocks"
+                )
+        return switches
+
     def _make_room_log(self) -> None:
         """Log make-room's totals, at most every 10 s and when they moved: the
         steps in which the budget cap held lower-priority prefill back, the
@@ -549,11 +603,24 @@ SCHEDULER_EDITS = [
 ASYNC_EDITS = [("from vllm.v1.core.sched.scheduler import Scheduler\n", "")]
 
 
-def sched_dir() -> Path:
-    """The installed vLLM's scheduler package, found without importing vLLM (which needs a GPU stack)."""
+def sched_dir(source_tree: bool) -> Path:
+    """The scheduler package of the vLLM this interpreter finds, without importing vLLM (which needs a GPU stack): an
+    installed vLLM 0.32.0, or with ``source_tree``, a source checkout, which has no package metadata to check."""
     spec = importlib.util.find_spec("vllm")
     if spec is None or not spec.submodule_search_locations:
         sys.exit("build.py: vllm is not installed in this interpreter")
+    try:
+        version = importlib.metadata.version("vllm")
+    except importlib.metadata.PackageNotFoundError:
+        if not source_tree:
+            sys.exit(
+                "build.py: vllm has no package metadata; --source-tree builds from a source checkout"
+            )
+    else:
+        if version != VLLM_VERSION:
+            sys.exit(
+                f"build.py: the change is written against vLLM {VLLM_VERSION}, and vLLM {version} is installed"
+            )
     return Path(next(iter(spec.submodule_search_locations))) / "v1" / "core" / "sched"
 
 
@@ -567,8 +634,8 @@ def patched(path: Path, edits: list[tuple[str, str]]) -> str:
     return source
 
 
-def build(out_dir: Path) -> Path:
-    sched = sched_dir()
+def build(out_dir: Path, source_tree: bool = False) -> Path:
+    sched = sched_dir(source_tree)
     header = (
         '"""vLLM v1 Scheduler and AsyncScheduler with Leaseholder\'s make-room change, generated by '
         'deploy/phastform/variants/make-room/build.py. Do not edit."""\n'
@@ -587,4 +654,9 @@ def build(out_dir: Path) -> Path:
 
 
 if __name__ == "__main__":
-    print(build(Path(sys.argv[1])))
+    args = sys.argv[1:]
+    source_tree = "--source-tree" in args
+    paths = [arg for arg in args if arg != "--source-tree"]
+    if len(paths) != 1:
+        sys.exit("usage: build.py [--source-tree] OUT_DIR")
+    print(build(Path(paths[0]), source_tree))

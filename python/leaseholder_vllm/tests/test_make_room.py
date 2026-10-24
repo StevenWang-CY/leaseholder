@@ -23,6 +23,7 @@ from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
 from vllm.utils.hashing import sha256
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
+from vllm.v1.core.sched.request_queue import SchedulingPolicy
 from vllm.v1.core.sched.scheduler import Scheduler as StockScheduler
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
@@ -44,7 +45,9 @@ init_none_hash(sha256)
 def module(tmp_path_factory):
     """The generated lh_make_room_scheduler module."""
     out = tmp_path_factory.mktemp("make-room")
-    subprocess.run([sys.executable, str(BUILD), str(out)], check=True, capture_output=True)
+    subprocess.run(
+        [sys.executable, str(BUILD), "--source-tree", str(out)], check=True, capture_output=True
+    )
     sys.path.insert(0, str(out))
     try:
         import lh_make_room_scheduler
@@ -1085,6 +1088,68 @@ def test_the_reserve_must_leave_room_for_a_full_length_request(module, model):
         scheduler(module.Scheduler, model, 33, {"reserve_tokens": 9 * BLOCK})
 
 
+# The switches
+
+
+@pytest.mark.parametrize(
+    "make_room, message",
+    [
+        ({"max_preemptions": 2}, "make_room has no key 'max_preemptions'"),
+        ({"budget_cap": "off"}, "make_room.budget_cap must be true or false, not 'off'"),
+        ({"budget_cap": 2}, "make_room.budget_cap must be true or false, not 2"),
+        (
+            {"max_preemptions_per_step": 2.5},
+            "make_room.max_preemptions_per_step must be an integer",
+        ),
+        ({"max_preemptions_per_step": -1}, "of at least 0, not -1"),
+        ({"max_preemptions_per_step": "2"}, "not '2'"),
+        ({"max_preemptions_per_step": True}, "not True"),
+        (
+            {"budget_cap_tokens": 0},
+            "make_room.budget_cap_tokens must be an integer of at least 1, not 0",
+        ),
+        (
+            {"reserve_tokens": -16},
+            "make_room.reserve_tokens must be an integer of at least 0, not -16",
+        ),
+    ],
+)
+def test_a_bad_switch_fails_the_engine_start_naming_it(module, model, make_room, message):
+    with pytest.raises(ValueError, match=message.replace(".", r"\.")):
+        scheduler(module.Scheduler, model, 33, make_room)
+
+
+@pytest.mark.parametrize(
+    "value, on", [(True, True), ("TRUE", True), (1, True), ("False", False), (0, False)]
+)
+def test_budget_cap_takes_true_or_false_in_any_case(module, model, value, on):
+    """As vLLM's CLI parses --additional-config.make_room.budget_cap: false and true become booleans, 0 and 1 integers,
+    and other spellings stay strings."""
+    assert scheduler(module.Scheduler, model, 33, {"budget_cap": value}).prefill_budget_cap is on
+
+
+def test_the_switches_need_priority_scheduling(module, model):
+    """Under FCFS, which would ignore them, a switch that is on fails the start; switches that are off are fine."""
+    with pytest.raises(ValueError, match="make_room needs --scheduling-policy priority"):
+        scheduler(module.Scheduler, model, 33, {"budget_cap": True}, policy="fcfs")
+    scheduler(
+        module.Scheduler, model, 33, {"budget_cap": False, "reserve_tokens": 0}, policy="fcfs"
+    )
+
+
+def test_encoder_decoder_models_are_refused(module):
+    """The room would leave out an encoder-decoder model's cross-attention blocks. (A scheduler for one needs the
+    model's multimodal processor, so this checks the switches' validation on its own.)"""
+    for is_encoder_decoder, switches in ((True, {}), (False, {"max_preemptions_per_step": 2})):
+        state = SimpleNamespace(
+            policy=SchedulingPolicy.PRIORITY, is_encoder_decoder=is_encoder_decoder
+        )
+        module.Scheduler._make_room_switches(state, switches)
+    state = SimpleNamespace(policy=SchedulingPolicy.PRIORITY, is_encoder_decoder=True)
+    with pytest.raises(ValueError, match="does not support encoder-decoder models"):
+        module.Scheduler._make_room_switches(state, {"max_preemptions_per_step": 2})
+
+
 # Stock behavior
 
 
@@ -1132,14 +1197,13 @@ def trace(sched, steps: int = 160) -> list[tuple]:
     [
         ("priority", None),
         ("priority", {"max_preemptions_per_step": 0, "budget_cap": False, "reserve_tokens": 0}),
-        ("fcfs", {"max_preemptions_per_step": 4, "budget_cap": True, "reserve_tokens": 8 * BLOCK}),
+        ("fcfs", None),
+        ("fcfs", {"max_preemptions_per_step": 0, "budget_cap": False, "budget_cap_tokens": 48}),
     ],
 )
-def test_switched_off_or_under_fcfs_it_schedules_as_stock(
-    module, model, policy, make_room, prefix_caching
-):
-    """With every switch off, or under FCFS (which ignores them), the module schedules exactly as stock vLLM, here
-    through running-loop preemptions, chunked prefills and, with prefix caching, shared prefixes."""
+def test_switched_off_it_schedules_as_stock(module, model, policy, make_room, prefix_caching):
+    """With every switch off, the module schedules exactly as stock vLLM, here through running-loop preemptions,
+    chunked prefills and, with prefix caching, shared prefixes."""
     options = {
         "policy": policy,
         "max_num_batched_tokens": 128,
