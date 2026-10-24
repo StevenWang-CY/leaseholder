@@ -200,6 +200,7 @@ pub struct ReplayStats {
     pub cut_off_requests: u64,
     /// Turns held by replay barriers at some point.
     pub barrier_holds: u64,
+    /// The idle cap's jumps, and the idle time they skipped, until sending closes.
     pub idle_cap_jumps: u64,
     pub idle_cap_skipped_s: f64,
     /// Time-weighted mean and peak of the tokens in the latest prompt of every live stream (distinct
@@ -1705,8 +1706,11 @@ impl<'a> Replay<'a> {
             if earliest > limit {
                 let jump = earliest - limit;
                 self.shift += jump;
-                self.stats.idle_cap_jumps += 1;
-                self.stats.idle_cap_skipped_s += jump as f64 / 1e9;
+                // The grace period sends nothing, so what the cap skips then is not counted.
+                if self.now < self.profiling_end {
+                    self.stats.idle_cap_jumps += 1;
+                    self.stats.idle_cap_skipped_s += jump as f64 / 1e9;
+                }
             }
         }
     }
@@ -1840,6 +1844,39 @@ mod tests {
         assert_eq!(t2.issued_ns - t1.done_ns, 10 * S);
         assert_eq!(out.stats.idle_cap_jumps, 2);
         assert!((out.stats.idle_cap_skipped_s - 130.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_idle_cap_counters_stop_when_sending_closes() {
+        const LONG: &str = r#"{"id": "long", "block_size": 2, "requests": [
+            {"t": 0, "type": "n", "model": "m", "in": 2, "out": 2000, "hash_ids": [7], "api_time": 1.0}
+        ]}"#;
+        let capped = ReplayConfig {
+            system_idle_cap_s: Some(10.0),
+            ..from_start(2)
+        };
+        let all = run(&[PAUSES, LONG], capped.clone());
+        let long = all
+            .records
+            .iter()
+            .find(|r| r.trace == 1)
+            .expect("the long request");
+        // Sending closes while the long request runs and `pauses` thinks before its turn 1. When the
+        // long request returns, in the grace period, the cap still pulls turn 1's dispatch forward,
+        // but turn 1 is never sent: that jump is not counted.
+        let close_s = long.done_ns as f64 / 2e9 - all.stats.profiling_start_s;
+        let out = run(
+            &[PAUSES, LONG],
+            ReplayConfig {
+                duration_s: close_s,
+                ..capped
+            },
+        );
+        assert_eq!(out.records.len(), 2);
+        assert_eq!(
+            (out.stats.idle_cap_jumps, out.stats.idle_cap_skipped_s),
+            (0, 0.0)
+        );
     }
 
     #[test]
