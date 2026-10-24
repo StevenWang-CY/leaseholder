@@ -1,8 +1,9 @@
 //! Lifecycle events: what tells the control plane when a session will next need its KV.
 //!
-//! One schema serves every workload. A tool return and a user's speech onset are two triggers of the same
-//! prefetch-and-headroom mechanism. Events arrive at `POST /v1/events`, idempotent by `(source, event_id)`,
-//! or the control plane infers them from the traffic it proxies.
+//! One schema serves every workload (ADR-0002). Policy `leaseholder` follows the voice sessions' turns by their
+//! events, which time its KV headroom and its critical window; the agents' events are recorded, and nothing acts
+//! on them. Events arrive at `POST /v1/events`, idempotent by `(source, event_id)`, or the control plane infers
+//! them from the traffic it proxies.
 //!
 //! On the wire an event is one flat JSON object; `type` selects the variant and its fields:
 //!
@@ -67,7 +68,7 @@ impl EventSource {
 pub enum EventKind {
     /// A request for the session reached the control plane.
     TurnStarted,
-    /// A response finished. A `tool_calls` stop moves the lease to tool wait, with an ETA from session history.
+    /// A response finished: why it stopped, and its tokens.
     TurnFinished {
         stop_reason: StopReason,
         #[serde(default)]
@@ -75,7 +76,7 @@ pub enum EventKind {
         #[serde(default)]
         completion_tokens: u32,
     },
-    /// A server-side tool started. `eta_ms`, when known, lets prefetch be timed exactly.
+    /// A server-side tool started; `eta_ms` is when it is expected to return, when known.
     ToolWaitStarted {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
@@ -87,7 +88,7 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool: Option<String>,
     },
-    /// Voice activity onset. Speech-onset prefetch and turn-imminent headroom start now.
+    /// Voice activity onset: a turn is coming, and policy `leaseholder` (`trigger = "onset"`) arms its KV headroom.
     UserSpeechStarted,
     /// The end-of-turn detector decided the user has finished; the realtime request follows within
     /// milliseconds.

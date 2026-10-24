@@ -22,7 +22,7 @@ It is a harness, not a general-purpose router: one upstream or a few nodes, loop
 
 ## What it does not do
 
-- Leases, prefetch or the ledger, which are to come from `lh-core`; nor admission for interactive requests by predicted time to first token. Policy `leaseholder` does not hold interactive requests.
+- Leases, prefetch or a recompute ledger: the lease design was not pursued ([ADR-0006](../../docs/adr/0006-the-engine-change-carries-the-realtime-tier.md)). Nor admission for interactive requests by predicted time to first token: policy `leaseholder` does not hold interactive requests.
 - Retries, or balancing single requests: with `[nodes]` a session is placed once and lives on the node that holds its KV. KV never moves between nodes.
 - TLS. Every listener binds loopback or a private socket, and the upstream is the loopback end of an SSH tunnel.
 - The Anthropic Messages API: agentic-api translates it and calls the gateway.

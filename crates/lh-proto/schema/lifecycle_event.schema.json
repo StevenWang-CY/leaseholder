@@ -36,7 +36,7 @@
       ]
     },
     {
-      "description": "A response finished. A `tool_calls` stop moves the lease to tool wait, with an ETA from session history.",
+      "description": "A response finished: why it stopped, and its tokens.",
       "type": "object",
       "properties": {
         "completion_tokens": {
@@ -65,7 +65,7 @@
       ]
     },
     {
-      "description": "A server-side tool started. `eta_ms`, when known, lets prefetch be timed exactly.",
+      "description": "A server-side tool started; `eta_ms` is when it is expected to return, when known.",
       "type": "object",
       "properties": {
         "eta_ms": {
@@ -111,7 +111,7 @@
       ]
     },
     {
-      "description": "Voice activity onset. Speech-onset prefetch and turn-imminent headroom start now.",
+      "description": "Voice activity onset: a turn is coming, and policy `leaseholder` (`trigger = \"onset\"`) arms its KV headroom.",
       "type": "object",
       "properties": {
         "type": {
