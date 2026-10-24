@@ -521,7 +521,7 @@ fn requests_csv(corpus: &mut Corpus, results: &[ArmResult]) -> Result<String, St
 
 fn header() -> String {
     format!(
-        "{:<12} {:>6} {:>6} {:>5} {:>10} {:>6} {:>6} {:>6} {:>18} {:>18} {:>7} {:>6} {:>7} {:>7}",
+        "{:<12} {:>6} {:>6} {:>5} {:>10} {:>6} {:>6} {:>6} {:>18} {:>18} {:>10} {:>11} {:>6} {:>7} {:>7}",
         "arm",
         "gpu",
         "cpu",
@@ -532,7 +532,8 @@ fn header() -> String {
         "comp%",
         "ttft p50/p90/p99",
         "resume p50/p90/p99",
-        "pcie GB",
+        "restore GB",
+        "prefetch GB",
         "stalls",
         "lanes",
         "wall s"
@@ -546,7 +547,7 @@ fn row(r: &ArmResult) -> String {
     let mut out = String::new();
     write!(
         out,
-        "{:<12} {:>6} {:>6} {:>5} {:>10} {:>6} {:>6} {:>6} {:>18} {:>18} {:>7.2} {:>6} {:>7} {:>7.1}",
+        "{:<12} {:>6} {:>6} {:>5} {:>10} {:>6} {:>6} {:>6} {:>18} {:>18} {:>10.2} {:>11.2} {:>6} {:>7} {:>7.1}",
         s.arm,
         s.gpu_blocks,
         s.cpu_blocks,
@@ -557,7 +558,8 @@ fn row(r: &ArmResult) -> String {
         pct(s.shares.computed),
         ms(&s.ttft_ms),
         ms(&s.resume_ttft_ms),
-        (s.pcie_restored_bytes + s.pcie_prefetched_bytes) as f64 / 1e9,
+        s.pcie_restored_bytes as f64 / 1e9,
+        s.pcie_prefetched_bytes as f64 / 1e9,
         s.stalls,
         s.replay.lanes,
         r.wall_s
