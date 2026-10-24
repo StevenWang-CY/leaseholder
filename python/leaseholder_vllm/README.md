@@ -21,4 +21,4 @@ cd ~/leaseholder/src/python/leaseholder_vllm
 VLLM_TARGET_DEVICE=cpu PYTHONPATH=$tools ~/leaseholder/venvs/engine/bin/python -m pytest -q -p no:cacheprovider tests/test_make_room.py
 ```
 
-Elsewhere, an environment with CPU torch 2.13 and vLLM 0.32.0's Python dependencies runs them on the source checkout instead: `VLLM_TARGET_DEVICE=cpu PYTHONPATH=~/.cache/leaseholder/vllm-v0.32.0 python -m pytest tests/test_make_room.py`.
+Elsewhere, an environment with CPU torch 2.13 and vLLM 0.32.0's Python dependencies runs them on the source checkout instead, from the repository's root: `make test-make-room TORCH_PYTHON=<its python>`.
