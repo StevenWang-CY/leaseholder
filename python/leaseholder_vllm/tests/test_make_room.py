@@ -274,10 +274,15 @@ class Pipelined:
         self.in_flight = []
 
     def step(self):
-        scheduler_output = self.sched.schedule()
-        self.in_flight.append((scheduler_output, output(self.sched, scheduler_output)))
+        scheduler_output = self.schedule()
         if len(self.in_flight) > 1:
             self.process()
+        return scheduler_output
+
+    def schedule(self):
+        """Schedule a step and leave it in flight, processing none."""
+        scheduler_output = self.sched.schedule()
+        self.in_flight.append((scheduler_output, output(self.sched, scheduler_output)))
         return scheduler_output
 
     def process(self):
@@ -1011,6 +1016,58 @@ def test_lower_priority_prefill_sits_out_a_requests_first_tokens(module, model, 
     else:
         assert all(tokens["prefill"] == 256 for tokens in steps)
     assert all(tokens["decode"] == tokens["voice"] == 1 for tokens in steps)
+
+
+def test_the_budget_cap_counts_deferred_frees(module, model):
+    """With deferred frees, the blocks of the runner preempted to make room, the latest arrival, are free once the
+    step in flight is processed, and the priority-0 request runs after that. It fits meanwhile, as the deferred
+    blocks count as free, so the priority-2 prefill sits out these steps too."""
+    sched = scheduler(
+        module.AsyncScheduler,
+        model,
+        33,
+        {"max_preemptions_per_step": 2, "budget_cap": True},
+        long_prefill_token_threshold=64,
+    )
+    engine = Pipelined(sched)
+    sched.add_request(request("bg", blocks(16), priority=2, arrival=1))
+    for _ in range(4):
+        engine.step()
+    sched.add_request(request("prefill", 12 * BLOCK, priority=2, arrival=0))
+    engine.step()
+    assert free_blocks(sched) == 12
+
+    # 13 blocks and the 8 the prefill still needs: 9 more than are free.
+    sched.add_request(request("voice", blocks(13), priority=0, arrival=2))
+    out = engine.schedule()
+    assert out.preempted_req_ids == {"bg"} and not out.num_scheduled_tokens
+    assert not engine.schedule().num_scheduled_tokens  # before the step in flight is processed
+    engine.process()
+    engine.process()
+    assert engine.schedule().num_scheduled_tokens == {"voice": 64}
+
+
+def test_no_room_while_the_budget_cap_holds_the_request_back(module, model):
+    """While the first 4 tokens of a priority-0 request are due, the budget cap holds back the waiting priority-1
+    request, which lacks 2 blocks: make-room makes no room for it meanwhile, as it would not be admitted. Then the
+    priority-2 runner is preempted for it, and it runs."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        33,
+        {"max_preemptions_per_step": 2, "budget_cap": True, "budget_cap_tokens": 4},
+    )
+    run(sched, request("bg", blocks(20), priority=2, arrival=0))
+    rt = request("rt", blocks(4), priority=0, arrival=1)
+    sched.add_request(rt)
+    sched.add_request(request("mid", blocks(10), priority=1, arrival=2))
+    outs = [step(sched) for _ in range(4)]
+    assert not any(out.preempted_req_ids for out in outs)
+    assert not any("mid" in scheduled(out) for out in outs)
+    assert rt.num_output_tokens == 4
+
+    out = step(sched)
+    assert out.preempted_req_ids == {"bg"} and "mid" in scheduled(out)
 
 
 @pytest.mark.parametrize("make_room", [{"budget_cap": True}, {}])
