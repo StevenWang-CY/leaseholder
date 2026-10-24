@@ -745,6 +745,28 @@ def test_a_paused_streaming_session_does_not_mask_the_requests_behind_it(module,
     assert "voice" in scheduled(out)
 
 
+def test_no_room_for_a_request_awaiting_output_from_before_its_preemption(module, model):
+    """Under pipeline parallelism, a preempted request's output can be in flight for steps after its preemption, and
+    the waiting loop skips it until that output is delivered: make-room makes no room for it meanwhile. (Only
+    several steps in flight leave that output pending, so this sets it as the scheduler's preemption does.)"""
+    sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2})
+    run(
+        sched,
+        request("rt", blocks(22), priority=0, arrival=0),
+        request("bg", blocks(8), priority=2, arrival=1),
+    )
+    voice = request("voice", 100, priority=0, arrival=2)
+    voice.num_stale_output_tokens, voice.drop_stale_output = 1, False
+    sched.add_request(voice)
+    for _ in range(2):
+        out = step(sched)
+        assert not out.preempted_req_ids and "voice" not in scheduled(out)
+
+    voice.num_stale_output_tokens = 0  # delivered
+    out = step(sched)
+    assert out.preempted_req_ids == {"bg"} and "voice" in scheduled(out)
+
+
 def test_no_second_round_for_a_request_the_waiting_loop_skipped(module, model):
     """Make-room preempts a runner for the priority-0 request, and the waiting loop then skips the request: here its
     connector needs more time, as the CPU tier's does while the request's earlier transfers are in flight. The victim
@@ -1027,7 +1049,7 @@ def test_make_room_counts_and_logs_what_it_holds_back(module, model, monkeypatch
     step(sched)  # the totals have not moved
     assert lines == [
         "make-room: budget cap held lower-priority prefill back in 4 steps (1024 prefill "
-        "tokens, 3 admissions); 0 preemptions to make room"
+        "tokens and 3 admissions, summed over the steps); 0 preemptions to make room"
     ]
 
 

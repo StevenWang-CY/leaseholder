@@ -12,8 +12,9 @@ The change is the KV case of vLLM issue #40004, which PR #54530 leaves open: und
 preempts only when a running request cannot grow, so a waiting request of a higher priority waits behind running
 requests of a lower priority for KV and for step budget. It acts for the waiting request of the highest priority
 that the waiting loop can schedule in the step: not one loading its KV (until the load is done), compiling its
-grammar or paused for streaming input, nor one whose LoRA adapter could not join the running requests' (max_loras).
-Each part is a switch:
+grammar, paused for streaming input or awaiting output from before its preemption (in flight under pipeline
+parallelism), nor one whose LoRA adapter could not join the running requests' (max_loras; it counts every running
+request's adapter, as the waiting loop counts the scheduled ones'). Each part is a switch:
 
 1. ``max_preemptions_per_step``: before the running requests are scheduled in a step, if that request lacks free KV
    blocks for its whole remaining sequence (net of its prefix-cache hit), it preempts running requests of a strictly
@@ -34,7 +35,8 @@ Each part is a switch:
    and the decodes alone; decodes are never cut. A load holds nothing while it lasts, and a waiting request that does
    not fit holds nothing, so prefills that will free its blocks go on; nor does either while every running slot is
    taken, since it could not be promoted. The scheduler counts the steps it holds, the prefill tokens and admissions
-   it holds back and make-room's preemptions, and logs them at most every 10 seconds.
+   it holds back in them (a request held back in several steps counts in each) and make-room's preemptions, and logs
+   them at most every 10 seconds.
 3. ``reserve_tokens``: a waiting request of a positive priority value is admitted only if its whole remaining
    sequence (net of its prefix-cache hit), the blocks in-flight prefills still need and this reserve all fit in the
    free blocks, so a request of priority 0 (Leaseholder's realtime class) usually finds room without preempting
@@ -223,8 +225,9 @@ HELPERS = '''
     def _make_room_log(self) -> None:
         """Log make-room's totals, at most every 10 s and when they moved: the
         steps in which the budget cap held lower-priority prefill back, the
-        prefill tokens and admissions it held back, and the requests make-room
-        preempted, apart from the running loop's preemptions."""
+        prefill tokens and admissions it held back in them, summed over the
+        steps, and the requests make-room preempted, apart from the running
+        loop's preemptions."""
         now = time.monotonic()
         if now - self._make_room_log_time < 10:
             return
@@ -239,14 +242,15 @@ HELPERS = '''
             self._make_room_logged = totals
             logger.info(
                 "make-room: budget cap held lower-priority prefill back in %d "
-                "steps (%d prefill tokens, %d admissions); %d preemptions to "
-                "make room",
+                "steps (%d prefill tokens and %d admissions, summed over the "
+                "steps); %d preemptions to make room",
                 *totals,
             )
 
     def _make_room_count_hold(self, num_tokens: int, num_admissions: int) -> None:
         """Count a hold of the budget cap: the step, and the lower-priority
-        prefill tokens and admissions it holds back."""
+        prefill tokens and admissions it holds back in it. A request held back
+        in several steps counts in each."""
         if not (num_tokens or num_admissions):
             return
         if self._make_room_held_step != self.current_step:
@@ -258,8 +262,12 @@ HELPERS = '''
     def _make_room_waiting_req(self) -> Request | None:
         """The waiting request of the highest priority that the waiting loop can
         schedule in this step: not one loading its KV (until the load is done),
-        compiling its grammar or paused for streaming input, nor one whose LoRA
-        adapter could not join the running requests' (max_loras)."""
+        compiling its grammar, paused for streaming input or awaiting output from
+        before its preemption, nor one whose LoRA adapter could not join the
+        running requests' (max_loras). It counts every running request's
+        adapter, where the waiting loop counts the scheduled ones': one the budget
+        cap holds back is not scheduled, so this may make no room for a request
+        the loop would admit."""
         if self._pause_state != PauseState.UNPAUSED:
             return None
         if self._make_room_untried:
@@ -296,6 +304,10 @@ HELPERS = '''
             if isinstance(struct_output_req.grammar, Exception):
                 return False
         elif request.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
+            return False
+        if request.num_stale_output_tokens and not request.drop_stale_output:
+            # Output from before its preemption is still in flight (pipeline
+            # parallelism): it resumes once that is delivered.
             return False
         return not (
             self.lora_config
