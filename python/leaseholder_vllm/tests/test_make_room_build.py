@@ -45,7 +45,11 @@ def test_build_adds_the_change_and_nothing_else(tmp_path: Path) -> None:
     diff = list(difflib.ndiff(stock.splitlines(), module.splitlines()))
     removed = [line[2:].strip() for line in diff if line.startswith("- ")]
     added = "\n".join(line[2:] for line in diff if line.startswith("+ "))
-    assert removed == ["from vllm.v1.core.sched.scheduler import Scheduler"]
+    # async_scheduler.py's import of the stock Scheduler, and its logger, which would rebind the module's.
+    assert sorted(removed) == [
+        "from vllm.v1.core.sched.scheduler import Scheduler",
+        "logger = init_logger(__name__)",
+    ]
     for line in (
         'logger = init_logger("vllm.v1.core.sched.scheduler")',
         "make_room = self._make_room_switches(",

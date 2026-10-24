@@ -1112,6 +1112,12 @@ def test_with_every_running_slot_taken_a_completed_load_holds_nothing_back(modul
     assert voice.status == RequestStatus.WAITING_FOR_REMOTE_KVS
 
 
+def test_the_module_logs_as_vllms_scheduler(module):
+    """vLLM's logging config covers its own loggers only: under the generated module's name, the scheduler's info
+    lines, make-room's among them, would be dropped."""
+    assert module.logger.name == "vllm.v1.core.sched.scheduler"
+
+
 def test_make_room_counts_and_logs_what_it_holds_back(module, model, monkeypatch):
     """The scheduler counts the steps in which the budget cap holds lower-priority prefill back, the prefill tokens
     and admissions it holds back, and the requests make-room preempts, and logs the totals at most every 10 s, when

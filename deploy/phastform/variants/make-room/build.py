@@ -68,7 +68,8 @@ from pathlib import Path
 
 VLLM_VERSION = "0.32.0"
 
-# The generated module's own name is not one vLLM's logging config covers.
+# The generated module's own name is not one vLLM's logging config covers, so the module logs under the name of
+# vLLM's scheduler; ASYNC_EDITS drops async_scheduler.py's own logger, which would rebind the module's after it.
 LOGGER = """# Log as vLLM's scheduler does: vLLM's logging covers its loggers only.
 logger = init_logger("vllm.v1.core.sched.scheduler")
 """
@@ -613,7 +614,10 @@ SCHEDULER_EDITS = [
     ),
 ]
 # The stock AsyncScheduler, appended after the patched Scheduler, extends it instead of importing the stock one.
-ASYNC_EDITS = [("from vllm.v1.core.sched.scheduler import Scheduler\n", "")]
+ASYNC_EDITS = [
+    ("from vllm.v1.core.sched.scheduler import Scheduler\n", ""),
+    ("logger = init_logger(__name__)\n", ""),
+]
 
 
 def sched_dir(source_tree: bool) -> Path:
