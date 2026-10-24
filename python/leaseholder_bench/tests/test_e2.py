@@ -236,6 +236,7 @@ FROZEN_SCHEDULER = {
     "policy": "priority",
     "max_num_batched_tokens": 512,
     "long_prefill_token_threshold": 256,
+    "scheduler_cls": None,  # vLLM's own
 }
 STOCK_SCHEDULER = {
     "policy": "fcfs",
@@ -244,12 +245,16 @@ STOCK_SCHEDULER = {
 }
 
 
-def vllm(**scheduler: Any) -> EngineInfo:
+def vllm(additional_config: dict[str, Any] | None = None, **scheduler: Any) -> EngineInfo:
+    """A vLLM engine as its /server_info reports it: the frozen box, with ``scheduler`` settings and
+    ``additional_config`` changed."""
     settings = FROZEN_SCHEDULER | {"watermark": 0.0} | scheduler
-    return EngineInfo("vllm", "0.32.0", 36400, settings, {})
+    return EngineInfo(
+        "vllm", "0.32.0", 36400, settings, {"additional_config": additional_config or {}}
+    )
 
 
-def test_the_engine_check_compares_each_flag_with_the_engines_setting() -> None:
+def test_the_engine_check_compares_each_flag_with_the_engines_setting(tmp_path: Path) -> None:
     engine = Engine("frozen", ("--max-num-batched-tokens", "1024", "--watermark", "0", "--kv-x"))
     frozen = ["--scheduling-policy", "--max-num-batched-tokens", "--long-prefill-token-threshold"]
     assert check_engine(engine, vllm(max_num_batched_tokens=1024)) == {
@@ -260,17 +265,171 @@ def test_the_engine_check_compares_each_flag_with_the_engines_setting() -> None:
         check_engine(engine, vllm())
     with pytest.raises(E2Error, match="the engine is vllm, the arm file needs sglang"):
         check_engine(Engine("sglang", ()), vllm())
+    variants = write_variant(tmp_path, "sglang", "python -m sglang.launch_server --page-size 16")
     sglang = EngineInfo("sglang", "0.5.22", 36400, {"chunked_prefill_size": 512}, {})
-    assert check_engine(Engine("sglang", ("--chunked-prefill-size", "512")), sglang) == {
+    flags = ("--chunked-prefill-size", "512")
+    assert check_engine(Engine("sglang", flags), sglang, variants) == {
         "checked": ["--chunked-prefill-size"],
-        "unchecked": [],
+        "unchecked": ["--page-size"],  # the variant's own flag, which this engine does not report
     }
 
 
-def test_a_vllm_point_needs_the_frozen_settings_its_flags_keep() -> None:
+def write_variant(variants: Path, name: str, command: str) -> Path:
+    """An engine variant whose lh-engine.conf starts ``command`` as the frozen box's does, before the
+    arm's flags; returns the variants directory."""
+    (variants / name).mkdir(parents=True)
+    (variants / name / "lh-engine.conf").write_text(
+        f"# Variant {name}\n[Service]\nExecStart=\nExecStart={command} $LH_ENGINE_FLAGS\n"
+    )
+    return variants
+
+
+VLLM_SERVE = "%h/leaseholder/venvs/engine/bin/vllm serve --config %h/leaseholder/src/engine.yaml"
+MAKE_ROOM = {"max_preemptions_per_step": 2, "budget_cap": True, "reserve_tokens": 2048}
+MAKE_ROOM_CLS = "lh_make_room_scheduler.AsyncScheduler"
+
+
+def variants_of_the_box(tmp_path: Path) -> Path:
+    """make-room and pr54530 as the frozen box's variants start the engine, and mps, which leaves its
+    command line alone."""
+    write_variant(
+        tmp_path,
+        "make-room",
+        f"{VLLM_SERVE} --scheduler-cls {MAKE_ROOM_CLS} "
+        "--additional-config.make_room.max_preemptions_per_step 2 \\\n"
+        "  --additional-config.make_room.budget_cap true "
+        "--additional-config.make_room.reserve_tokens 2048",
+    )
+    write_variant(
+        tmp_path,
+        "pr54530",
+        f"{VLLM_SERVE} --scheduler-cls lh_pr54530_scheduler.AsyncScheduler --max-num-seqs 12",
+    )
+    (tmp_path / "mps").mkdir()
+    (tmp_path / "mps" / "lh-stt.conf").write_text("[Service]\nEnvironment=X=1\n")
+    return tmp_path
+
+
+def test_a_variants_flags_are_those_of_the_engine_command_it_starts(tmp_path: Path) -> None:
+    variants = variants_of_the_box(tmp_path)
+    assert e2.variant_flags("make-room", variants) == (
+        "--scheduler-cls", MAKE_ROOM_CLS,
+        "--additional-config.make_room.max_preemptions_per_step", "2",
+        "--additional-config.make_room.budget_cap", "true",
+        "--additional-config.make_room.reserve_tokens", "2048",
+    )  # fmt: skip
+    assert e2.variant_flags("frozen", variants) == e2.variant_flags("mps", variants) == ()
+    with pytest.raises(E2Error, match="no engine variant nope in"):
+        e2.variant_flags("nope", variants)
+    # The repository's variants: each names its scheduler class, and its flags pair up.
+    for variant in (PHASTFORM / "variants").iterdir():
+        if variant.is_dir():
+            flag_values(e2.variant_flags(variant.name))
+    assert dict(pairs(e2.variant_flags("make-room")))["--scheduler-cls"] == MAKE_ROOM_CLS
+    assert dict(pairs(e2.variant_flags("pr54530"))) == {
+        "--scheduler-cls": "lh_pr54530_scheduler.AsyncScheduler",
+        "--max-num-seqs": "12",
+    }
+
+
+def pairs(flags: tuple[str, ...]) -> list[tuple[str, str]]:
+    return list(flag_values(flags).items())
+
+
+def test_the_engine_check_tells_the_variants_apart(tmp_path: Path) -> None:
+    variants = variants_of_the_box(tmp_path)
+    frozen = vllm()
+    make_room = vllm({"make_room": MAKE_ROOM}, scheduler_cls=MAKE_ROOM_CLS)
+    pr54530 = vllm(scheduler_cls="lh_pr54530_scheduler.AsyncScheduler", max_num_seqs=12)
+    engines = {"frozen": frozen, "make-room": make_room, "pr54530": pr54530}
+    for variant, info in engines.items():
+        check_engine(Engine(variant, ()), info, variants)  # each passes for itself
+    assert check_engine(Engine("make-room", ()), make_room, variants)["checked"] == [
+        "--scheduling-policy",
+        "--max-num-batched-tokens",
+        "--long-prefill-token-threshold",
+        "--scheduler-cls",
+        "--additional-config.make_room.max_preemptions_per_step",
+        "--additional-config.make_room.budget_cap",
+        "--additional-config.make_room.reserve_tokens",
+    ]
+    for variant in engines:
+        for other, info in engines.items():
+            if other != variant:  # and none for another
+                with pytest.raises(E2Error, match=f"use {variant}$"):
+                    check_engine(Engine(variant, ()), info, variants)
+    with pytest.raises(
+        E2Error, match=f"scheduler_cls = None, the point needs --scheduler-cls {MAKE_ROOM_CLS}"
+    ):
+        check_engine(Engine("make-room", ()), frozen, variants)
+    with pytest.raises(
+        E2Error, match=f"scheduler_cls = '{MAKE_ROOM_CLS}', the point needs vLLM's own"
+    ):
+        check_engine(Engine("frozen", ()), make_room, variants)
+
+
+def test_the_engine_runs_exactly_the_switches_its_flags_set(tmp_path: Path) -> None:
+    variants = variants_of_the_box(tmp_path)
+    no_reserve = Engine("make-room", ("--additional-config.make_room.reserve_tokens", "0"))
+    reserve0 = vllm({"make_room": MAKE_ROOM | {"reserve_tokens": 0}}, scheduler_cls=MAKE_ROOM_CLS)
+    assert (
+        "--additional-config.make_room.reserve_tokens"
+        in (check_engine(no_reserve, reserve0, variants)["checked"])
+    )
+    reserve = vllm({"make_room": MAKE_ROOM}, scheduler_cls=MAKE_ROOM_CLS)
+    window = vllm({"make_room": MAKE_ROOM | {"budget_cap_tokens": 48}}, scheduler_cls=MAKE_ROOM_CLS)
+    unset = vllm({"make_room": {"budget_cap": True}}, scheduler_cls=MAKE_ROOM_CLS)
+    for engine, info, error in (
+        # an ablation on an engine that still runs the switch it turns off
+        (no_reserve, reserve, "runs additional_config make_room.reserve_tokens = 2048, the point "
+         "needs --additional-config.make_room.reserve_tokens 0"),
+        # arm 9 on an engine left with a 48-token window
+        (Engine("make-room", ()), window, "runs additional_config make_room.budget_cap_tokens = 48, "
+         "which the point's flags do not set"),
+        (Engine("make-room", ()), unset, "additional_config has no "
+         "make_room.max_preemptions_per_step, the point needs "
+         "--additional-config.make_room.max_preemptions_per_step 2"),
+        # the frozen box's scheduler, with make-room's switches left over: they would act on nothing,
+        # but the engine is not the one the arm file names
+        (Engine("frozen", ()), vllm({"make_room": MAKE_ROOM}), "runs additional_config make_room = "
+         "{'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 2048}, which the "
+         "point's flags do not set"),
+        # flags that set a table and a value in the same place
+        (Engine("make-room", ("--additional-config.make_room", "0")), reserve,
+         "--additional-config.make_room sets a value where other flags set keys"),
+        (Engine("make-room", ("--additional-config.make_room.budget_cap.x", "0")), reserve,
+         "--additional-config.make_room.budget_cap.x sets a key inside a value of another flag"),
+        # a value where the point sets a table
+        (Engine("make-room", ()), vllm({"make_room": 0}, scheduler_cls=MAKE_ROOM_CLS), "runs "
+         "additional_config make_room = 0, the point needs "
+         "--additional-config.make_room.max_preemptions_per_step 2 "
+         "--additional-config.make_room.budget_cap true "
+         "--additional-config.make_room.reserve_tokens 2048"),
+    ):  # fmt: skip
+        with pytest.raises(E2Error, match=re.escape(error)):
+            check_engine(engine, info, variants)
+    # An engine that reports neither leaves them unchecked.
+    bare = EngineInfo(
+        "vllm",
+        "0.32.0",
+        36400,
+        {k: v for k, v in reserve.settings.items() if k != "scheduler_cls"},
+        {},
+    )
+    assert check_engine(no_reserve, bare, variants)["unchecked"] == [
+        "--scheduler-cls",
+        "--additional-config.make_room.max_preemptions_per_step",
+        "--additional-config.make_room.budget_cap",
+        "--additional-config.make_room.reserve_tokens",
+    ]
+
+
+def test_a_vllm_point_needs_the_frozen_settings_its_flags_keep(tmp_path: Path) -> None:
     with pytest.raises(E2Error, match="policy = 'fcfs', the point needs --scheduling-policy prio"):
         check_engine(Engine("frozen", ()), vllm(**STOCK_SCHEDULER))  # left over from arm 2
-    assert check_engine(Engine("pr54530", ()), vllm())["unchecked"] == []
+    variants = variants_of_the_box(tmp_path)
+    pr54530 = vllm(scheduler_cls="lh_pr54530_scheduler.AsyncScheduler", max_num_seqs=12)
+    assert check_engine(Engine("pr54530", ()), pr54530, variants)["unchecked"] == []
     engine_yaml = (PHASTFORM / "engine.yaml").read_text()
     for flag, value in flag_values(e2.FROZEN).items():
         assert re.search(rf"^{flag.removeprefix('--')}: {value}$", engine_yaml, re.M), flag
@@ -398,7 +557,11 @@ def engine_metrics(n: int) -> tuple[int, str]:
 def fake_engine(scheduler: dict[str, Any]) -> Service:
     """vLLM on a GPU node: ``scheduler`` is what its /server_info reports, as variant.sh use would
     leave it."""
-    vllm_config = {"scheduler_config": scheduler, "model_config": {"hf_token": "hf_secret"}}
+    vllm_config = {
+        "scheduler_config": scheduler,
+        "model_config": {"hf_token": "hf_secret"},
+        "additional_config": {},
+    }
     return Service(
         {
             "/health": lambda n: (200, ""),
@@ -885,6 +1048,16 @@ def test_a_wrong_engine_fails_before_anything_starts(cyan: Cyan) -> None:
     run_json = record(cyan, "a4")
     assert run_json["status"] == "failed" and run_json["engine"]["server"] == "vllm"
     assert (out / "engine.json").exists()
+
+
+def test_a_point_on_make_room_fails_on_the_frozen_box(cyan: Cyan) -> None:
+    error = (
+        f"the engine runs scheduler_cls = None, the point needs --scheduler-cls {MAKE_ROOM_CLS}: "
+        "switch it with deploy/phastform/variant.sh use make-room"
+    )
+    with pytest.raises(E2Error, match=re.escape(error)):
+        run(cyan, "a9", 'arm = 9\nlabel = "x"\n[engine]\nvariant = "make-room"\n')
+    assert cyan.systemd.calls == [] and record(cyan, "a9")["status"] == "failed"
 
 
 def test_a_gateway_that_refuses_its_configuration_says_why(cyan: Cyan) -> None:

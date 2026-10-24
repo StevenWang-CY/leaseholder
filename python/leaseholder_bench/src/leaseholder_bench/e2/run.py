@@ -58,6 +58,9 @@ from leaseholder_bench.tiers import pool_tokens
 
 CONFIGS = Path(__file__).resolve().parents[3] / "configs"
 """The AIPerf configuration, from the source tree (``uv sync`` installs the package editable)."""
+VARIANTS = Path(__file__).resolve().parents[5] / "deploy" / "phastform" / "variants"
+"""The GPU node's engine variants, from the same source tree: what each adds to the engine's command
+line, which the engine check expects."""
 
 PROFILING = "Credit phase start: profiling"
 """AIPerf's log line when its measured phase begins, after the dataset is built and warmed up."""
@@ -446,19 +449,60 @@ def describe_engine(url: str) -> EngineInfo:
     raise E2Error(f"{url}/server_info is neither vLLM's nor SGLang's")
 
 
-def check_engine(engine: Engine, info: EngineInfo) -> dict[str, list[str]]:
-    """Check the arm's engine against what the engine reports: its flags and, on vLLM, the frozen
-    box's scheduler settings it keeps. A flag whose setting the engine does not report is listed as
-    unchecked."""
+SCHEDULER = "--scheduler-cls"
+ADDITIONAL = "--additional-config."
+"""vLLM's flags that name the scheduler class and set one key of ``additional_config`` (make-room's
+switches, ``--additional-config.make_room.reserve_tokens 0``)."""
+
+
+def variant_flags(variant: str, variants: Path = VARIANTS) -> tuple[str, ...]:
+    """The engine flags a variant gives its engine (frozen: none): those of the command its
+    lh-engine.conf starts (the last ``ExecStart=``), from its first flag on, without ``--config`` (the
+    frozen box's engine.yaml, whose settings FROZEN has) and without ``$LH_ENGINE_FLAGS``, where
+    ``variant.sh use`` puts the arm's flags, after the variant's."""
+    if variant == "frozen":
+        return ()
+    if not (variants / variant).is_dir():
+        raise E2Error(f"no engine variant {variant} in {variants}")
+    conf = variants / variant / "lh-engine.conf"
+    if not conf.exists():
+        return ()  # a variant that leaves the engine's command line alone (mps)
+    # systemd joins a line that ends in a backslash with the next one.
+    lines = conf.read_text().replace("\\\n", " ").splitlines()
+    starts = [line.partition("=")[2] for line in lines if line.startswith("ExecStart=")]
+    words = shlex.split(starts[-1]) if starts else []
+    first = next((i for i, word in enumerate(words) if word.startswith("--")), len(words))
+    flags: list[str] = []
+    for word in words[first:]:
+        if flags and flags[-1] == "--config":
+            flags.pop()
+        elif not word.startswith("$"):
+            flags.append(word)
+    return tuple(flags)
+
+
+def check_engine(
+    engine: Engine, info: EngineInfo, variants: Path = VARIANTS
+) -> dict[str, list[str]]:
+    """Check the arm's engine against what the engine reports. The point expects the engine's command
+    line as ``variant.sh use`` makes it: on vLLM the frozen box's scheduler settings, then the
+    variant's flags (:func:`variant_flags`), then the arm's, the last of a repeated flag winning. Each
+    flag's setting must match; on vLLM the scheduler class (``scheduler_cls``) must be the one
+    ``--scheduler-cls`` names, vLLM's own without it, and ``additional_config`` must be exactly what the
+    ``--additional-config.KEY`` flags build, so that frozen, make-room and pr54530 engines, and
+    make-room with another switch, cannot pass for one another. A flag whose setting the engine does
+    not report is listed as unchecked."""
     expected = SGLANG if engine.variant == SGLANG else "vllm"
     switch = f"switch it with deploy/phastform/variant.sh use {engine}"
     if info.server != expected:
         raise E2Error(f"the engine is {info.server}, the arm file needs {expected}: {switch}")
-    wanted = flag_values(engine.flags)
+    wanted = flag_values(variant_flags(engine.variant, variants)) | flag_values(engine.flags)
     if expected == "vllm":
         wanted = flag_values(FROZEN) | wanted
     checked, unchecked = [], []
     for flag, value in wanted.items():
+        if expected == "vllm" and (flag == SCHEDULER or flag.startswith(ADDITIONAL)):
+            continue  # checked as a whole below
         key = SETTING_NAMES.get(flag, flag.removeprefix("--").replace("-", "_"))
         if key not in info.settings:
             unchecked.append(flag)
@@ -469,7 +513,70 @@ def check_engine(engine: Engine, info: EngineInfo) -> dict[str, list[str]]:
             raise E2Error(
                 f"the engine runs {key} = {reported!r}, the point needs {flag} {value}: {switch}"
             )
+    if expected == "vllm":
+        scheduler = [SCHEDULER] if SCHEDULER in wanted else []
+        if "scheduler_cls" not in info.settings:
+            unchecked += scheduler
+        elif info.settings["scheduler_cls"] != wanted.get(SCHEDULER):
+            needs = f"{SCHEDULER} {wanted[SCHEDULER]}" if scheduler else "vLLM's own scheduler"
+            raise E2Error(
+                f"the engine runs scheduler_cls = {info.settings['scheduler_cls']!r}, the point "
+                f"needs {needs}: {switch}"
+            )
+        else:
+            checked += scheduler
+        additional = [flag for flag in wanted if flag.startswith(ADDITIONAL)]
+        if not isinstance(info.config.get("additional_config"), Mapping):
+            unchecked += additional
+        else:
+            built = _additional_config({flag: wanted[flag] for flag in additional})
+            if problem := _differs(info.config["additional_config"], built, ()):
+                raise E2Error(f"{problem}: {switch}")
+            checked += additional
     return {"checked": checked, "unchecked": unchecked}
+
+
+def _additional_config(flags: Mapping[str, str]) -> dict[str, Any]:
+    """The ``additional_config`` that ``--additional-config.KEY`` flags build: KEY's dots nest tables,
+    and each value stays the flag's text."""
+    config: dict[str, Any] = {}
+    for flag, value in flags.items():
+        *tables, key = flag.removeprefix(ADDITIONAL).split(".")
+        table = config
+        for name in tables:
+            table = table.setdefault(name, {})
+            if not isinstance(table, dict):
+                raise E2Error(f"{flag} sets a key inside a value of another flag")
+        if isinstance(table.get(key), dict):
+            raise E2Error(f"{flag} sets a value where other flags set keys")
+        table[key] = value
+    return config
+
+
+def _differs(reported: Mapping[str, Any], built: Mapping[str, Any], path: tuple[str, ...]) -> str:
+    """Where the engine's ``additional_config`` (``reported``) is not the one the point's flags build,
+    said for ``e2 run``'s error; empty when it is."""
+    for key in [*built, *(key for key in reported if key not in built)]:
+        name, flag = ".".join((*path, key)), ADDITIONAL + ".".join((*path, key))
+        if key not in reported:
+            needs = _flag_line(flag, built[key])
+            return f"the engine's additional_config has no {name}, the point needs {needs}"
+        runs = f"the engine runs additional_config {name} = {reported[key]!r}"
+        if key not in built:
+            return f"{runs}, which the point's flags do not set"
+        if isinstance(built[key], dict) and isinstance(reported[key], Mapping):
+            if problem := _differs(reported[key], built[key], (*path, key)):
+                return problem
+        elif isinstance(built[key], dict) or not _same(reported[key], built[key]):
+            return f"{runs}, the point needs {_flag_line(flag, built[key])}"
+    return ""
+
+
+def _flag_line(flag: str, value: Any) -> str:
+    """A built ``additional_config`` value as the flags that set it."""
+    if not isinstance(value, dict):
+        return f"{flag} {value}"
+    return " ".join(_flag_line(f"{flag}.{key}", item) for key, item in value.items())
 
 
 def _same(reported: Any, text: str) -> bool:
