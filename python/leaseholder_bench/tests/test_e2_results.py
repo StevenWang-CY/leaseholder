@@ -45,6 +45,7 @@ from leaseholder_bench.e2.report import (
     NODE_COLUMNS,
     STACKED,
     STANDARD_WORKLOAD,
+    WINDOW_COLUMNS,
     WORKER_COLUMNS,
     configurations,
     figure_name,
@@ -95,6 +96,36 @@ def test_background_goodput_counts_the_requests_completed_during_the_calls(tmp_p
         background(path, T0 + 200, T0 + 300)
     with pytest.raises(ValueError, match="no per-request records"):
         background(tmp_path / "missing.jsonl", T0, T0 + 100)
+
+
+def test_the_fixed_window_counts_the_requests_completed_in_the_calls_first_240_s(
+    tmp_path: Path,
+) -> None:
+    # 300 s of calls, a request a second: 2,020 tokens each for the first 100 s, 1,020 after.
+    lines = [
+        record(T0 + i).replace('"value": 1000}', '"value": 2000}' if i <= 100 else '"value": 1000}')
+        for i in range(1, 301)
+    ]
+    lines += [record(T0 + 120, error={"code": 500}), record(T0 + 250, meta={"was_cancelled": True})]
+    path = tmp_path / "profile_export.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    cell = background(path, T0, T0 + 300)
+    assert (cell["requests"], cell["errors"], cell["tokens_per_s"]) == (300, 2, 1353.3)
+    # The first 240 s: 100 requests of 2,020 tokens and 140 of 1,020; the failed one is lost.
+    assert cell["fixed_window"] == {
+        "seconds": 240.0,
+        "requests": 240,
+        "requests_per_s": 1.0,
+        "tokens_per_s": 1436.7,
+    }
+    # Calls that lasted less than the window give their whole goodput, over their own seconds.
+    short = background(path, T0, T0 + 200.0004)
+    assert short["fixed_window"] == {
+        "seconds": 200.0,
+        "requests": 200,
+        "requests_per_s": 1.0,
+        "tokens_per_s": 1520.0,
+    }
 
 
 GATEWAY_BEFORE = """\
@@ -446,6 +477,43 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
     assert "| 0 of 50 | 140 / 8,000 | ~120 | 4 | — / 3 / — |" in table
     assert "Voice turn stages" not in table and "SM clock" not in table
     assert main(["e2", "report", str(dirs[2]), "--out", str(out)]) == 1
+
+
+def test_the_report_gives_the_fixed_window_beside_the_whole_calls(tmp_path: Path) -> None:
+    def windowed(run_dir: Path, tokens_per_s: float, seconds: float) -> Path:
+        window = {
+            "seconds": seconds,
+            "requests": 1,
+            "requests_per_s": 1.0,
+            "tokens_per_s": tokens_per_s,
+        }
+        rewrite(run_dir, lambda s: s["background"].update(fixed_window=window))
+        return run_dir
+
+    dirs = [
+        windowed(point(tmp_path / "r1", "disc-frozen", "4", 3710, 10000), 3580, 240.0),
+        windowed(point(tmp_path / "r2", "disc-frozen", "4", 3726, 9000), 3600, 240.0),
+        windowed(point(tmp_path / "r1", "disc-pr", "9-pr-ab48", 3430, 2200), 3400, 230.0),
+        point(tmp_path / "r1", "a1-voice", "1", None, 1767),
+    ]
+    rows, _ = load_points(dirs)
+    table = write_report(rows, tmp_path / "report")[1].read_text()
+    assert "goodput over their first 240 s, the same span for every point; † marks one" in table
+    assert "| Background tokens/s | First 240 s | Requests/s |" in table
+    assert "| disc-frozen (r1) |  | 16 | 3,710 | 3,580 | 3.71 |" in table
+    assert "| disc-pr: disc-pr label | • | 16 | 3,430 | 3,400 † | 3.43 |" in table
+    assert "| a1-voice: a1-voice label | • | 0 | 0 | — | 0.00 |" in table
+    medians = f"| {spread('3,718', '3,710', '3,726')} | {spread('3,590', '3,580', '3,600')} | |"
+    assert medians in table
+    with (tmp_path / "report" / "frontier.csv").open() as f:
+        written = {r["point"]: r for r in csv.DictReader(f)}
+    assert (
+        written["disc-pr"]["fixed_window_tokens_per_s"],
+        written["disc-pr"]["fixed_window_s"],
+    ) == (
+        "3400",
+        "230.0",
+    )
 
 
 def test_the_report_takes_a_request_log_fetched_after_the_run(tmp_path: Path) -> None:
@@ -825,9 +893,13 @@ def whole(run_dir: Path) -> Path:
     (run_dir / "bots" / "summary.json").write_text(json.dumps({"turns": 2, "errors": 0}))
     callers = {"config": {"api_key": "lh2a17802e4561", "api_secret": "<redacted>"}}
     (run_dir / "bots" / "run.json").write_text(json.dumps(callers))
-    for name in ("aiperf/profile_export.jsonl", "metrics/gateway-end.prom", "bots.log"):
+    for name in ("metrics/gateway-end.prom", "bots.log"):
         (run_dir / name).parent.mkdir(exist_ok=True)
         (run_dir / name).write_text("raw\n")
+    # AIPerf's records: 50 agent requests of 1,020 tokens over the calls' 100 s, and one after them.
+    (run_dir / "aiperf").mkdir()
+    lines = [record(T0 + 2 * n) for n in range(1, 51)] + [record(T0 + 101)]
+    (run_dir / "aiperf" / "profile_export.jsonl").write_text("\n".join(lines) + "\n")
     return run_dir
 
 
@@ -871,6 +943,13 @@ def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, 
     assert summary["gateway"]["realtime_first_byte_ms"]["p95"] == 955.0  # exact, from the log
     assert summary["gateway"]["background_first_byte_ms"]["source"] == "log"
     assert summary["gpu"] == {"sm_clock_p50_mhz": 2775, "temperature_max_c": 71}
+    # From AIPerf's records, over the calls' 100 s, which are shorter than the fixed window.
+    assert summary["background"]["fixed_window"] == {
+        "seconds": 100.0,
+        "requests": 50,
+        "requests_per_s": 0.5,
+        "tokens_per_s": 510.0,
+    }
     full, _ = load_points(dirs[:3])
     compact, _ = load_points(records)
     assert compact == full
@@ -914,7 +993,12 @@ def test_the_report_gives_the_cpu_tiers_loads_and_stores_in_tokens(tmp_path: Pat
     out = tmp_path / "report"
     write_report(rows, out)
     with (out / "frontier.csv").open() as f:
-        assert list(next(csv.DictReader(f))) == [*COLUMNS, *GPU_COLUMNS, *CPU_TIER_COLUMNS]
+        assert list(next(csv.DictReader(f))) == [
+            *COLUMNS,
+            *GPU_COLUMNS,
+            *CPU_TIER_COLUMNS,
+            *WINDOW_COLUMNS,
+        ]
     section = (
         (out / "frontier.md").read_text().split("## The engine's prompt tokens and its CPU tier")[1]
     )

@@ -59,6 +59,11 @@ WATERFALL = (
 """The stage times of the worker's turn lines, in the order of a turn (its ``STAGES``)."""
 GPU_TIME = "%Y/%m/%d %H:%M:%S.%f"
 """nvidia-smi's timestamp, which campaign.sh has it write in UTC."""
+GOODPUT_WINDOW_S = 240.0
+"""The background goodput's fixed window, beside the one over the whole calls: their first 240 s, the
+same span for every point, where the calls' own length differs by configuration (276 to 435 s for
+the discriminating scenario's headline configurations) and the agents' rate drifts over a run. A
+point whose calls lasted less gives its goodput over its whole calls instead."""
 REPLY_TIMEOUT_MS = 30_000.0
 """How long ``lh-voice bots`` waits for a reply (its ``reply_timeout``), after which the turn fails: a
 reply that never came counts as a sample censored at this value, in every V2V percentile."""
@@ -297,17 +302,9 @@ def _request(line: str) -> tuple[float, dict[str, Any]] | None:
 
 def background(records: Path, start: float, end: float) -> dict[str, Any]:
     """The agent requests AIPerf completed during the window: the background goodput, which counts
-    failed and cancelled requests as lost, and their time to first token."""
-    if not records.exists():
-        raise ValueError(f"AIPerf wrote no per-request records ({records})")
-    ended = []
-    for line in records.read_bytes().splitlines():
-        record = orjson.loads(line)
-        meta = record["metadata"]
-        if meta.get("benchmark_phase") != "profiling":
-            continue
-        if start <= meta["request_end_ns"] / 1e9 <= end:
-            ended.append(record)
+    failed and cancelled requests as lost, and their time to first token; and the goodput over the
+    window's first GOODPUT_WINDOW_S (``fixed_window``)."""
+    ended = profiling_requests(records, start, end)
     ok = [r for r in ended if not r.get("error") and not r["metadata"].get("was_cancelled")]
     if not ok:
         raise ValueError(f"AIPerf completed no request during the calls ({len(ended)} failed)")
@@ -329,6 +326,51 @@ def background(records: Path, start: float, end: float) -> dict[str, Any]:
         "completion_tokens_per_s": round(completion / seconds, 1),
         "tokens_per_s": round((prompt + completion) / seconds, 1),
         "ttft_ms": summarize(ttft),
+        "fixed_window": fixed_window(ended, start, end),
+    }
+
+
+def profiling_requests(records: Path, start: float, end: float) -> list[dict[str, Any]]:
+    """AIPerf's records (profile_export.jsonl) of the agent requests of its profiling phase that
+    ended within ``start``..``end``."""
+    if not records.exists():
+        raise ValueError(f"AIPerf wrote no per-request records ({records})")
+    ended = []
+    for line in records.read_bytes().splitlines():
+        record = orjson.loads(line)
+        meta = record["metadata"]
+        if meta.get("benchmark_phase") != "profiling":
+            continue
+        if start <= meta["request_end_ns"] / 1e9 <= end:
+            ended.append(record)
+    return ended
+
+
+def fixed_window(
+    ended: Iterable[Mapping[str, Any]], start: float, end: float
+) -> dict[str, float | int]:
+    """The background goodput over the first GOODPUT_WINDOW_S of the calls, counted as
+    :func:`background` counts it over all of them, from the records of the requests that ended
+    during the calls: its ``seconds``, less than GOODPUT_WINDOW_S only for calls that lasted less, the
+    requests that completed in it, and their rate and tokens a second."""
+    seconds = min(GOODPUT_WINDOW_S, round(end - start, 3))
+    ok = [
+        r
+        for r in ended
+        if r["metadata"]["request_end_ns"] / 1e9 <= start + seconds
+        and not r.get("error")
+        and not r["metadata"].get("was_cancelled")
+    ]
+    tokens = sum(
+        r["metrics"].get(kind, {}).get("value", 0)
+        for r in ok
+        for kind in ("usage_prompt_tokens", "usage_completion_tokens")
+    )
+    return {
+        "seconds": seconds,
+        "requests": len(ok),
+        "requests_per_s": round(len(ok) / seconds, 3),
+        "tokens_per_s": round(tokens / seconds, 1),
     }
 
 
@@ -633,10 +675,12 @@ def compact(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     directory or a record (whose own it returns); None for a point that did not complete. The
     run.json is the run's, its ``versions`` naming the GPU nodes' deployed revisions as null where
     the run did not record them (``gpu_source``). The summary takes the first bytes of both classes
-    exactly from the request log, and the GPU's median SM clock and highest temperature from gpu.csv
-    (``gpu``; on several GPU nodes over all of their gpu-NODE.csv, and each node's in its share): what
-    a record keeps of the files it leaves out. The report reads every point through it, so a run
-    directory and its record give the same tables."""
+    exactly from the request log, the GPU's median SM clock and highest temperature from gpu.csv
+    (``gpu``; on several GPU nodes over all of their gpu-NODE.csv, and each node's in its share), the
+    background goodput over the calls' first GOODPUT_WINDOW_S from AIPerf's records, and the CPU
+    tier's loads and stores from the engines' metric snapshots: what a record keeps of the files it
+    leaves out. The report reads every point through it, so a run directory and its record give the
+    same tables."""
     run_file = run_dir / "run.json"
     run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
     if run.get("status") != "complete":
@@ -665,8 +709,13 @@ def compact(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     for node, share in nodes.items():
         if (run_dir / f"gpu-{node}.csv").exists():
             share["gpu"] = clocks([f"gpu-{node}.csv"])
-    # The CPU tier's loads and stores, from the engines' /metrics snapshots: points measured before
-    # the summary kept them gain them, and the summary's other counts stay as they are.
+    # The goodput over the calls' first GOODPUT_WINDOW_S, from AIPerf's records, and the CPU tier's
+    # loads and stores, from the engines' /metrics snapshots: points measured before the summary
+    # kept them gain them, and the summary's other numbers stay as they are.
+    records = run_dir / "aiperf" / "profile_export.jsonl"
+    if summary.get("background") and window and records.exists():
+        ended = profiling_requests(records, window["start"], window["end"])
+        summary["background"]["fixed_window"] = fixed_window(ended, window["start"], window["end"])
     snapshots = {node: f"engine-{node}" for node in nodes} or {None: "engine"}
     metrics = run_dir / "metrics"
     if all(

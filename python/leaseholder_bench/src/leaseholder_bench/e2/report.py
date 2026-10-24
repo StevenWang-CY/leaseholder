@@ -26,6 +26,7 @@ from typing import Any
 import orjson
 
 from leaseholder_bench.e2.record import (
+    GOODPUT_WINDOW_S,
     REPLY_TIMEOUT_MS,
     WATERFALL,
     compact,
@@ -114,6 +115,9 @@ ADMISSION_COLUMNS = (
     "realtime_replies",
     "degraded_share",
 )
+WINDOW_COLUMNS = ("fixed_window_tokens_per_s", "fixed_window_s")
+"""The background goodput over the calls' first GOODPUT_WINDOW_S, and that window's seconds: fewer for a
+point whose calls lasted less, which frontier.md marks with †."""
 FIRST_SCHEDULE = {
     "local_compute": "first_schedule_computed_tokens",
     "local_cache_hit": "first_schedule_gpu_hit_tokens",
@@ -237,6 +241,11 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     row["nodes"] = " ".join(nodes) or None
     row["by_node"] = [_node_row(node, share) for node, share in nodes.items()]
     row |= cpu_tier(engine, nodes, point_engines(run_dir, list(nodes)))
+    window = background.get("fixed_window") or {}
+    row |= {
+        "fixed_window_tokens_per_s": window.get("tokens_per_s"),
+        "fixed_window_s": window.get("seconds"),
+    }
     return row | _gpu(summary)
 
 
@@ -340,6 +349,7 @@ def _gpu(kept: Mapping[str, Any]) -> dict[str, int | None]:
 
 REPEATED = (
     "background_tokens_per_s",
+    "fixed_window_tokens_per_s",
     "v2v_p50_ms",
     "v2v_p95_ms",
     "v2v_p99_ms",
@@ -531,7 +541,14 @@ def figure_name(data: str, callers: int) -> str:
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
     """The optional column groups that some point has."""
-    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS, ADMISSION_COLUMNS, CPU_TIER_COLUMNS)
+    groups = (
+        NODE_COLUMNS,
+        WORKER_COLUMNS,
+        GPU_COLUMNS,
+        ADMISSION_COLUMNS,
+        CPU_TIER_COLUMNS,
+        WINDOW_COLUMNS,
+    )
     return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
 
 
@@ -541,6 +558,7 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
     and the stage waterfall of the configurations with turn lines."""
     measured = _measured(rows)
     gpu_columns = GPU_COLUMNS in measured
+    window_columns = WINDOW_COLUMNS in measured
     groups = {_configuration(g): g for g in configurations(rows)}
     intro = (
         "Background goodput (prompt and completion tokens per second of the agent requests that "
@@ -559,6 +577,12 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
             " A point measured in several campaigns lists each run by its campaign, then the median "
             "and range (min\N{EN DASH}max) over its runs, where the frontier places it."
         )
+    if window_columns:
+        intro += (
+            f" Beside the goodput over each point's whole calls, whose length differs by "
+            f"configuration, is its goodput over their first {GOODPUT_WINDOW_S:.0f} s, the same span "
+            f"for every point; † marks one over a point's whole calls, which lasted less."
+        )
     if gpu_columns:
         intro += " SM clock (MHz) and temperature (°C) are the GPU's during the calls."
     if NODE_COLUMNS in measured:
@@ -568,12 +592,14 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
             "each node's share."
         )
     lines = ["# E2 frontier", "", intro]
+    window = f" First {GOODPUT_WINDOW_S:.0f} s |" if window_columns else ""
     header = (
-        "| Point | | Sessions | Background tokens/s | Requests/s | V2V p50 | V2V p95 | V2V p99 "
-        "| Failed turns | Agent TTFT p50 / p99 | Realtime first byte p95 | Preemptions "
+        f"| Point | | Sessions | Background tokens/s |{window} Requests/s | V2V p50 | V2V p95 "
+        "| V2V p99 | Failed turns | Agent TTFT p50 / p99 | Realtime first byte p95 | Preemptions "
         "| Shed / refused / resubmitted |"
     )
-    align = "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    align = "|---|---|---:|---:|" + ("---:|" if window_columns else "")
+    align += "---:|---:|---:|---:|---:|---:|---:|---:|---|"
     if gpu_columns:
         header += " SM clock p50 | Max temp |"
         align += "---:|---:|"
@@ -581,7 +607,9 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         lines += ["", f"## Workload: {members[0]['workload']}", "", _slo_line(members[0], groups)]
         for arm in sorted({r["arm"] for r in members}, key=arm_order):
             lines += ["", f"### Arm {arm}", "", header, align]
-            lines += _arm_rows([r for r in members if r["arm"] == arm], groups, gpu_columns)
+            lines += _arm_rows(
+                [r for r in members if r["arm"] == arm], groups, gpu_columns, window_columns
+            )
     if NODE_COLUMNS in measured:
         lines += _nodes(rows, gpu_columns)
     if WORKER_COLUMNS in measured:
@@ -613,10 +641,17 @@ def _slo_line(
     )
 
 
+def _window(row: Mapping[str, Any], value: str) -> str:
+    """A fixed-window goodput cell, † when the point's calls lasted less than the window."""
+    short = row["fixed_window_s"] is not None and row["fixed_window_s"] < GOODPUT_WINDOW_S
+    return f"{value} †" if short and value != "—" else value
+
+
 def _arm_rows(
     rows: Sequence[Mapping[str, Any]],
     groups: Mapping[tuple[str, str, str], Mapping[str, Any]],
     gpu_columns: bool,
+    window_columns: bool = False,
 ) -> list[str]:
     """An arm's table rows in a workload: a line per run, and a repeated configuration's medians."""
     lines = []
@@ -631,9 +666,11 @@ def _arm_rows(
         name, mark = f"{r['point']}: {_label(r)}", "•" if r["frontier"] else ""
         if len(group["runs"]) > 1:
             name, mark = f"{r['point']} ({r['campaign']})", ""
+        window = f" {_window(r, _cell(r['fixed_window_tokens_per_s']))} |" if window_columns else ""
         line = (
             f"| {name} | {mark} | {r['sessions']} "
-            f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
+            f"| {_cell(r['background_tokens_per_s'])} |{window} "
+            f"{_cell(r['background_requests_per_s'], 2)} "
             f"| {_v2v(r['v2v_p50_ms'])} | {_v2v(r['v2v_p95_ms'])} | {_v2v(r['v2v_p99_ms'])} "
             f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
             f"| {_cell(r['engine_preemptions'])} | {counts} |"
@@ -642,11 +679,11 @@ def _arm_rows(
             line += f" {_cell(r['gpu_sm_clock_p50_mhz'])} | {_cell(r['gpu_temperature_max_c'])} |"
         lines.append(line)
         if len(group["runs"]) > 1 and r is group["runs"][-1]:
-            lines.append(_spread(group, gpu_columns))
+            lines.append(_spread(group, gpu_columns, window_columns))
     return lines
 
 
-def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
+def _spread(group: Mapping[str, Any], gpu_columns: bool, window_columns: bool = False) -> str:
     """A repeated configuration's line in its arm's table: the median and range of each REPEATED
     column over its runs, and its frontier mark."""
     runs = group["runs"]
@@ -666,10 +703,15 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
     if any(r["realtime_first_byte_source"] == "histogram" for r in runs) and first_byte != "—":
         first_byte = f"~{first_byte}"
     first = runs[0]
+    window = ""
+    if window_columns:
+        short = [r for r in runs if r["fixed_window_s"] is not None]
+        short = [r for r in short if r["fixed_window_s"] < GOODPUT_WINDOW_S]
+        window = f" {spread('fixed_window_tokens_per_s')}{' †' if short else ''} |"
     line = (
         f"| {first['point']}: {_label(first)}; median (range) of {len(runs)} runs "
         f"| {'•' if group['frontier'] else ''} | {first['sessions']} "
-        f"| {spread('background_tokens_per_s')} | | {spread('v2v_p50_ms')} "
+        f"| {spread('background_tokens_per_s')} |{window} | {spread('v2v_p50_ms')} "
         f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} | "
         f"| {first_byte} | | |"
     )
