@@ -1,0 +1,10 @@
+# E2 arm 7a without vLLM #54530: the frozen box with its running queue capped at 12 requests, beside 16 agent
+# session trees. With the cap full, a voice request waits for a slot.
+arm = "7a"
+label = "priority, max-num-seqs 12, without vLLM #54530"
+
+[agents]
+sessions = 16
+
+[engine]
+flags = ["--max-num-seqs", "12"]

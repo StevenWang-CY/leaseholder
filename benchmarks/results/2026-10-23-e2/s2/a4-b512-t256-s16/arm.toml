@@ -1,0 +1,7 @@
+# E2 arm 4, step cap 512 and long-prefill threshold 256: the frozen box itself (engine.yaml), beside 16 agent
+# session trees. It names no flags, so it shares arm 1's engine and needs no restart after it.
+arm = 4
+label = "priority, step cap 512, long-prefill threshold 256 (frozen box)"
+
+[agents]
+sessions = 16

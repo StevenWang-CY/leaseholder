@@ -1,0 +1,13 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a8b-smg-s16.toml.
+arm = "8b"
+label = "frozen box behind SMG 1.13.0, as shipped, discriminating scenario"
+router = "smg"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway]
+upstream = "http://127.0.0.1:18090"
+upstream_priority = ["smg-header"]

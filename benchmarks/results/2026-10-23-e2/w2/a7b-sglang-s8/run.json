@@ -1,0 +1,110 @@
+{
+  "kind": "e2-point",
+  "name": "a7b-sglang-s8",
+  "status": "complete",
+  "host": "cyan",
+  "started": 1792724183.432147,
+  "arm": {
+    "name": "a7b-sglang-s8",
+    "arm": "7b",
+    "label": "SGLang 0.5.22: priority scheduling with preemption",
+    "voice": {
+      "callers": 2,
+      "turns": 25,
+      "barge_in": 0.25,
+      "seed": 0,
+      "preemptive_generation": true
+    },
+    "agents": {
+      "sessions": 8,
+      "target": "gateway",
+      "think_cap": 120.0,
+      "warmup": 60.0,
+      "data": "weka-x32",
+      "seed": 11,
+      "send_priority": true
+    },
+    "gateway": {
+      "upstream_priority": [
+        "body"
+      ]
+    },
+    "engine": {
+      "variant": "sglang",
+      "flags": []
+    },
+    "router": null
+  },
+  "versions": {
+    "source": "419e181",
+    "leaseholder_bench": "0.1.0",
+    "aiperf": "0.13.0",
+    "lh_gateway": "lh-gateway 0.0.1"
+  },
+  "engine": {
+    "server": "sglang",
+    "version": "0.5.22",
+    "pool_tokens": 33989,
+    "flags": {
+      "checked": [],
+      "unchecked": []
+    }
+  },
+  "cyan": {
+    "router": null,
+    "gateway": {
+      "restarted": false,
+      "config": {
+        "upstream": "http://127.0.0.1:18000",
+        "upstream_idle_timeout_s": 55,
+        "log_format": "json",
+        "listen": [
+          {
+            "tcp": "127.0.0.1:18080"
+          },
+          {
+            "unix": "/run/user/1007/lh/gateway.sock",
+            "tenant": "voice"
+          }
+        ],
+        "tenants": {
+          "voice": {
+            "trusted": true,
+            "default_class": "realtime",
+            "max_class": "realtime"
+          },
+          "agents": {
+            "keys_sha256": [
+              "<redacted>"
+            ],
+            "trusted": true,
+            "default_class": "background",
+            "max_class": "interactive"
+          },
+          "bench": {
+            "keys_sha256": [
+              "<redacted>"
+            ],
+            "default_class": "interactive"
+          }
+        },
+        "upstream_priority": [
+          "body"
+        ]
+      }
+    },
+    "worker": {
+      "restarted": false,
+      "preemptive_generation": true
+    },
+    "llm_path": "/run/user/1007/lh/gateway.sock"
+  },
+  "window": {
+    "start": 1792724472.703427,
+    "end": 1792724780.7341952
+  },
+  "aiperf": {
+    "exit_status": 0
+  },
+  "finished": 1792724781.9244516
+}

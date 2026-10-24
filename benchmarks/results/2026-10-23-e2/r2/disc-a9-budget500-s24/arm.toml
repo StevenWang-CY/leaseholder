@@ -1,0 +1,17 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml).
+# Arm 9 with a critical-window budget of 500 ms of predicted background prefill (arm 9's knob).
+arm = 9
+label = "Leaseholder, critical-window budget 500 ms"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "leaseholder"
+headroom_tokens = 1024
+critical_prefill_budget_ms = 500
+degrade_max_tokens = 16
+
+[engine]
+variant = "make-room"

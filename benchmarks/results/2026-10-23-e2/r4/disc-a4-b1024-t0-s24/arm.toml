@@ -1,0 +1,11 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a4-b1024-t0-s24.toml.
+arm = 4
+label = "priority, step cap 1024, long-prefill threshold 0, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+flags = ["--max-num-batched-tokens", "1024", "--long-prefill-token-threshold", "0"]

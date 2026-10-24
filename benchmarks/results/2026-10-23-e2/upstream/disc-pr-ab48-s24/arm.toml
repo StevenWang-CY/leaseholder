@@ -1,0 +1,12 @@
+# E2 discriminating scenario, the engine as the two vLLM PRs propose it with a 48-token first-tokens window, which
+# holds this voice agent's replies whole, no reserve, behind the gateway without an admission policy.
+arm = 9
+label = "vLLM PRs A and B with a 48-token window, no gateway policy"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+variant = "make-room"
+flags = ["--additional-config.make_room.reserve_tokens", "0", "--additional-config.make_room.budget_cap_tokens", "48"]

@@ -1,0 +1,3 @@
+# E2 arm 1: the frozen box with the calls alone. Every other point's voice-to-voice latency is read against it.
+arm = 1
+label = "frozen box, voice alone"

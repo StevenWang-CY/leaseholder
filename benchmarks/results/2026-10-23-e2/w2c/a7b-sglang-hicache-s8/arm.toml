@@ -1,0 +1,15 @@
+# E2 arm 7b with KV-tier parity: SGLang 0.5.22 with its hierarchical cache (HiCache), a host pool 4x the device pool,
+# written through, as vLLM's 20 GiB CPU tier is on the frozen box. Without it SGLang recomputed about half of the
+# background prompt tokens at 16 sessions, where vLLM recomputed a tenth. Beside 8 agent session trees.
+arm = "7b"
+label = "SGLang 0.5.22 with HiCache 4x (write-through)"
+
+[agents]
+sessions = 8
+
+[gateway]
+upstream_priority = ["body"]
+
+[engine]
+variant = "sglang"
+flags = ["--enable-hierarchical-cache", "--hicache-ratio", "4", "--hicache-write-policy", "write_through"]

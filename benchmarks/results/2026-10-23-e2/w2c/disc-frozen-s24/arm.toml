@@ -1,0 +1,10 @@
+# E2 discriminating scenario: background agents with large contexts fill the KV pool while voice turns keep arriving.
+# The frozen box (the best stock cell) beside 24 session trees replaying the 48 traces with the largest contexts
+# (weka-x32-long: the main agent's median input is 13,326 tokens a request, against 4,784 for the whole corpus), so the 36,400-token pool
+# holds two or three agent contexts.
+arm = 4
+label = "frozen box, discriminating scenario (large contexts)"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"

@@ -1,0 +1,15 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a7b-sglang-hicache-s16.toml.
+arm = "7b"
+label = "SGLang 0.5.22 with HiCache 4x (write-through), discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway]
+upstream_priority = ["body"]
+
+[engine]
+variant = "sglang"
+flags = ["--enable-hierarchical-cache", "--hicache-ratio", "4", "--hicache-write-policy", "write_through"]

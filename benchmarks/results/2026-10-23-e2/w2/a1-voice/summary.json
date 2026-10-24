@@ -1,0 +1,63 @@
+{
+  "name": "a1-voice",
+  "arm": "1",
+  "label": "frozen box, voice alone",
+  "window_s": 336.0,
+  "voice": {
+    "turns": 50,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 59,
+      "p50": 1611.2,
+      "p95": 1743.9,
+      "p99": 1783.5
+    },
+    "barge_in_to_silence_ms": {
+      "n": 8,
+      "p50": 371.1,
+      "p95": 671.2,
+      "p99": 679.7
+    },
+    "barge_ins": 9
+  },
+  "background": null,
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 60,
+      "mean": 58.46,
+      "p50": 54.66,
+      "p95": 95.64,
+      "p99": 136.06,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 0.0,
+    "counters": {
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 60,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 2,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 60,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 1366,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 38749,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"cached\"}": 37168
+    },
+    "background_first_byte_ms": {
+      "n": 0,
+      "source": "log"
+    }
+  },
+  "engine": {
+    "preemptions": 0,
+    "prompt_tokens_by_source": {
+      "local_compute": 1581,
+      "local_cache_hit": 37168,
+      "external_kv_transfer": 0
+    },
+    "refused": {
+      "max_num_queued_reqs": 0,
+      "max_num_queued_tokens": 0
+    }
+  }
+}

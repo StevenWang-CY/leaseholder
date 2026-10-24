@@ -1,0 +1,33 @@
+{
+  "model_config": {
+    "model": "Qwen/Qwen3-4B-Instruct-2507-FP8",
+    "revision": "8591804019c8b22094c3b5b4454e0edc05dffc98",
+    "max_model_len": 32768,
+    "dtype": "torch.bfloat16",
+    "quantization": "fp8"
+  },
+  "cache_config": {
+    "block_size": 16,
+    "enable_prefix_caching": true,
+    "cache_dtype": "auto",
+    "kv_cache_memory_bytes": 5368709120,
+    "num_gpu_blocks": 2275
+  },
+  "scheduler_config": {
+    "policy": "priority",
+    "max_num_batched_tokens": 512,
+    "long_prefill_token_threshold": 256,
+    "max_num_seqs": 12,
+    "async_scheduling": true,
+    "watermark": 0.0,
+    "max_num_queued_tokens": null
+  },
+  "kv_transfer_config": {
+    "kv_connector": "OffloadingConnector",
+    "kv_connector_extra_config": {
+      "cpu_bytes_to_use": 21474836480,
+      "offload_prompt_only": false
+    }
+  },
+  "additional_config": {}
+}

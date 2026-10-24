@@ -1,0 +1,50 @@
+{"caller": 1, "turn": 0, "clip": "turn-08", "v2v_ms": 2364.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 0, "clip": "turn-24", "v2v_ms": 2177.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 1, "clip": "turn-16", "v2v_ms": 1566.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 1, "clip": "turn-04", "v2v_ms": 2594.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 2, "clip": "turn-19", "v2v_ms": 2056.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 2, "clip": "turn-28", "v2v_ms": 2234.3, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 3, "clip": "turn-13", "v2v_ms": 2126.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 3, "clip": "turn-13", "v2v_ms": 1923.7, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-46", "interrupted_speech": true, "barge_in_to_silence_ms": 194.3, "v2v_after_barge_in_ms": 2143.5}
+{"caller": 0, "turn": 4, "clip": "turn-06", "v2v_ms": 2496.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 4, "clip": "turn-00", "v2v_ms": 2253.4, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 5, "clip": "turn-34", "v2v_ms": 3976.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 5, "clip": "turn-14", "v2v_ms": 3263.5, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 6, "clip": "turn-09", "v2v_ms": 2166.6, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 6, "clip": "turn-20", "v2v_ms": 3783.9, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-40", "interrupted_speech": true, "barge_in_to_silence_ms": 673.8, "v2v_after_barge_in_ms": 1803.9}
+{"caller": 0, "turn": 7, "clip": "turn-21", "v2v_ms": 2956.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 7, "clip": "turn-24", "v2v_ms": 2274.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 8, "clip": "turn-27", "v2v_ms": 2226.7, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 8, "clip": "turn-01", "v2v_ms": 2153.8, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 9, "clip": "turn-13", "v2v_ms": 2336.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 9, "clip": "turn-31", "v2v_ms": 2264.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 10, "clip": "turn-33", "v2v_ms": 1886.2, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 10, "clip": "turn-14", "v2v_ms": 2713.8, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 11, "clip": "turn-35", "v2v_ms": 1996.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 11, "clip": "turn-01", "v2v_ms": 2053.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 12, "clip": "turn-25", "v2v_ms": 4826.1, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 12, "clip": "turn-06", "v2v_ms": 2393.5, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-44", "interrupted_speech": true, "barge_in_to_silence_ms": 464.3, "v2v_after_barge_in_ms": 1583.8}
+{"caller": 0, "turn": 13, "clip": "turn-00", "v2v_ms": 1886.5, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 13, "clip": "turn-21", "v2v_ms": 2343.5, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 14, "clip": "turn-21", "v2v_ms": 6156.3, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-41", "interrupted_speech": true, "barge_in_to_silence_ms": 686.8, "v2v_after_barge_in_ms": 1776.9}
+{"caller": 1, "turn": 14, "clip": "turn-32", "v2v_ms": 1923.7, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 15, "clip": "turn-12", "v2v_ms": 1833.7, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 15, "clip": "turn-36", "v2v_ms": 1906.0, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-42", "interrupted_speech": true, "barge_in_to_silence_ms": 726.2, "v2v_after_barge_in_ms": 1956.3}
+{"caller": 1, "turn": 16, "clip": "turn-31", "v2v_ms": 2123.7, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 17, "clip": "turn-37", "v2v_ms": 2063.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 16, "clip": "turn-28", "v2v_ms": 3996.1, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-47", "interrupted_speech": true, "barge_in_to_silence_ms": 677.1, "v2v_after_barge_in_ms": 3916.4}
+{"caller": 1, "turn": 18, "clip": "turn-25", "v2v_ms": 2123.8, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 17, "clip": "turn-35", "v2v_ms": 2037.3, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 19, "clip": "turn-35", "v2v_ms": 1893.8, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 18, "clip": "turn-21", "v2v_ms": 2517.3, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 20, "clip": "turn-23", "v2v_ms": 1783.8, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-41", "interrupted_speech": true, "barge_in_to_silence_ms": 663.8, "v2v_after_barge_in_ms": 1733.8}
+{"caller": 0, "turn": 19, "clip": "turn-38", "v2v_ms": 6496.7, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 21, "clip": "turn-33", "v2v_ms": 2173.6, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 20, "clip": "turn-05", "v2v_ms": 1927.2, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 22, "clip": "turn-01", "v2v_ms": 2023.9, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 23, "clip": "turn-39", "v2v_ms": 1693.4, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 21, "clip": "turn-36", "v2v_ms": 1787.0, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-42", "interrupted_speech": true, "barge_in_to_silence_ms": 666.1, "v2v_after_barge_in_ms": 1957.0}
+{"caller": 0, "turn": 22, "clip": "turn-16", "v2v_ms": 1586.0, "spoke_during_turn": false, "barge_in": false}
+{"caller": 1, "turn": 24, "clip": "turn-10", "v2v_ms": 2283.9, "spoke_during_turn": false, "barge_in": true, "barge_in_clip": "barge_in-40", "interrupted_speech": true, "barge_in_to_silence_ms": 643.7, "v2v_after_barge_in_ms": 1893.8}
+{"caller": 0, "turn": 23, "clip": "turn-08", "v2v_ms": 2596.3, "spoke_during_turn": false, "barge_in": false}
+{"caller": 0, "turn": 24, "clip": "turn-05", "v2v_ms": 1866.6, "spoke_during_turn": false, "barge_in": false}

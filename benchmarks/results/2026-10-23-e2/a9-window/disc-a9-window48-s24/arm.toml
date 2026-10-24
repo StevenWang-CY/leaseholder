@@ -1,0 +1,20 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml),
+# without degrade and with make-room's first-tokens window at 48 tokens (--additional-config.make_room.budget_cap_tokens
+# 48), which holds this voice agent's replies whole: undegraded, they run 20 tokens at the median and 39 at most.
+# Measured after the repeat rounds, to price full replies against degrade's 16-token cap.
+arm = 9
+label = "Leaseholder without degrade, a 48-token first-tokens window"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "leaseholder"
+degrade = false
+headroom_tokens = 1024
+critical_prefill_budget_ms = 150
+
+[engine]
+variant = "make-room"
+flags = ["--additional-config.make_room.budget_cap_tokens", "48"]

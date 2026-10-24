@@ -1,0 +1,149 @@
+{
+  "name": "a1-voice",
+  "arm": "1",
+  "label": "frozen box, voice alone",
+  "window_s": 333.0,
+  "voice": {
+    "turns": 50,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 59,
+      "p50": 1613.6,
+      "p95": 1767.3,
+      "p99": 1861.4
+    },
+    "barge_in_to_silence_ms": {
+      "n": 9,
+      "p50": 585.8,
+      "p95": 643.7,
+      "p99": 643.9
+    },
+    "barge_ins": 9
+  },
+  "worker": {
+    "sessions": 2,
+    "turns": 59,
+    "waterfall": {
+      "transcript_ms": {
+        "n": 58,
+        "mean": 751.17,
+        "p10": 732.85,
+        "p50": 746.5,
+        "p90": 772.4,
+        "p95": 791.16,
+        "p99": 836.21
+      },
+      "end_of_turn_ms": {
+        "n": 58,
+        "mean": 755.54,
+        "p10": 734.81,
+        "p50": 751.15,
+        "p90": 776.92,
+        "p95": 796.55,
+        "p99": 841.14
+      },
+      "llm_ttft_ms": {
+        "n": 59,
+        "mean": 79.56,
+        "p10": 66.6,
+        "p50": 79.4,
+        "p90": 93.18,
+        "p95": 95.91,
+        "p99": 107.33
+      },
+      "llm_first_sentence_ms": {
+        "n": 59,
+        "mean": 283.96,
+        "p10": 209.68,
+        "p50": 273.7,
+        "p90": 378.02,
+        "p95": 399.34,
+        "p99": 414.09
+      },
+      "turn_to_first_sentence_ms": {
+        "n": 58,
+        "mean": 290.98,
+        "p10": 213.05,
+        "p50": 280.1,
+        "p90": 384.39,
+        "p95": 405.41,
+        "p99": 416.74
+      },
+      "tts_first_audio_ms": {
+        "n": 59,
+        "mean": 198.64,
+        "p10": 168.68,
+        "p50": 194.0,
+        "p90": 237.62,
+        "p95": 239.5,
+        "p99": 244.79
+      },
+      "e2e_ms": {
+        "n": 58,
+        "mean": 1245.6,
+        "p10": 1144.71,
+        "p50": 1236.6,
+        "p90": 1350.2,
+        "p95": 1372.57,
+        "p99": 1422.47
+      }
+    },
+    "events": {
+      "sent": 240,
+      "dropped": 0,
+      "failed": 0
+    }
+  },
+  "background": null,
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 60,
+      "mean": 55.5,
+      "p50": 54.86,
+      "p95": 59.5,
+      "p99": 84.23,
+      "source": "log"
+    },
+    "background_first_byte_ms": {
+      "n": 0,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 0.0,
+    "counters": {
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"user_speech_started\"}": 60,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"playback_ended\"}": 50,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"user_turn_ended\"}": 60,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"playback_started\"}": 59,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"session_closed\"}": 1,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"interrupted\"}": 9,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 59,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"cancelled\"}": 1,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 60,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/events\",status=\"202\",tenant=\"voice\"}": 239,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 2,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 36606,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 1218,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"cached\"}": 35072
+    }
+  },
+  "engine": {
+    "preemptions": 0,
+    "prompt_tokens_by_source": {
+      "local_compute": 1553,
+      "local_cache_hit": 35264,
+      "external_kv_transfer": 0
+    },
+    "refused": {
+      "max_num_queued_reqs": 0,
+      "max_num_queued_tokens": 0
+    }
+  },
+  "gpu": {
+    "sm_clock_p50_mhz": 2580,
+    "temperature_max_c": 57
+  }
+}

@@ -1,0 +1,11 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a5-watermark10-s16.toml.
+arm = 5
+label = "frozen box + watermark 0.1, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+flags = ["--watermark", "0.1"]

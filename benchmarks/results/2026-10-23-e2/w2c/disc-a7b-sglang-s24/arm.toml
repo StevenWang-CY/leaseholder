@@ -1,0 +1,14 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a7b-sglang-s16.toml.
+arm = "7b"
+label = "SGLang 0.5.22: priority scheduling with preemption, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway]
+upstream_priority = ["body"]
+
+[engine]
+variant = "sglang"

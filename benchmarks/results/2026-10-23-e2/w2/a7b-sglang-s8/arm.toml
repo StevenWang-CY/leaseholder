@@ -1,0 +1,13 @@
+# E2 arm 7b: SGLang 0.5.22 instead of vLLM (variant sglang: priority scheduling that preempts on any priority gap),
+# beside 8 agent session trees. SGLang reads a request's priority from its body.
+arm = "7b"
+label = "SGLang 0.5.22: priority scheduling with preemption"
+
+[agents]
+sessions = 8
+
+[gateway]
+upstream_priority = ["body"]
+
+[engine]
+variant = "sglang"

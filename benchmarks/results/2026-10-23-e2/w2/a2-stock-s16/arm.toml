@@ -1,0 +1,12 @@
+# E2 arm 2: vLLM out of the box (FCFS, default chunking, nothing signals priority) beside 16 agent session trees.
+arm = 2
+label = "stock vLLM: FCFS, default chunking"
+
+[agents]
+sessions = 16
+
+[gateway]
+upstream_priority = []
+
+[engine]
+flags = ["--scheduling-policy", "fcfs", "--max-num-batched-tokens", "2048", "--long-prefill-token-threshold", "0"]

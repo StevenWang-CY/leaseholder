@@ -1,0 +1,17 @@
+# E2 arm 9, Leaseholder, in the discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml).
+# Arm 9 without degrade.
+arm = 9
+label = "Leaseholder without degrade"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "leaseholder"
+degrade = false
+headroom_tokens = 1024
+critical_prefill_budget_ms = 150
+
+[engine]
+variant = "make-room"

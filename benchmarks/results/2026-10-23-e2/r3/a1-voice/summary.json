@@ -1,0 +1,148 @@
+{
+  "name": "a1-voice",
+  "arm": "1",
+  "label": "frozen box, voice alone",
+  "window_s": 310.0,
+  "voice": {
+    "turns": 50,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 59,
+      "p50": 1622.4,
+      "p95": 1804.6,
+      "p99": 1858.2
+    },
+    "barge_in_to_silence_ms": {
+      "n": 7,
+      "p50": 614.2,
+      "p95": 677.8,
+      "p99": 682.6
+    },
+    "barge_ins": 9
+  },
+  "worker": {
+    "sessions": 2,
+    "turns": 59,
+    "waterfall": {
+      "transcript_ms": {
+        "n": 59,
+        "mean": 751.05,
+        "p10": 729.3,
+        "p50": 743.5,
+        "p90": 786.68,
+        "p95": 805.72,
+        "p99": 844.52
+      },
+      "end_of_turn_ms": {
+        "n": 59,
+        "mean": 755.61,
+        "p10": 731.76,
+        "p50": 748.4,
+        "p90": 791.84,
+        "p95": 810.5,
+        "p99": 848.5
+      },
+      "llm_ttft_ms": {
+        "n": 59,
+        "mean": 80.87,
+        "p10": 63.48,
+        "p50": 78.3,
+        "p90": 98.26,
+        "p95": 111.87,
+        "p99": 140.83
+      },
+      "llm_first_sentence_ms": {
+        "n": 59,
+        "mean": 306.25,
+        "p10": 220.86,
+        "p50": 310.5,
+        "p90": 401.9,
+        "p95": 426.74,
+        "p99": 464.86
+      },
+      "turn_to_first_sentence_ms": {
+        "n": 59,
+        "mean": 311.05,
+        "p10": 224.72,
+        "p50": 312.3,
+        "p90": 404.54,
+        "p95": 429.69,
+        "p99": 467.16
+      },
+      "tts_first_audio_ms": {
+        "n": 59,
+        "mean": 201.49,
+        "p10": 164.72,
+        "p50": 196.5,
+        "p90": 239.08,
+        "p95": 247.87,
+        "p99": 289.94
+      },
+      "e2e_ms": {
+        "n": 59,
+        "mean": 1268.75,
+        "p10": 1141.6,
+        "p50": 1271.8,
+        "p90": 1393.46,
+        "p95": 1441.64,
+        "p99": 1478.24
+      }
+    },
+    "events": {
+      "sent": 241,
+      "dropped": 0,
+      "failed": 0
+    }
+  },
+  "background": null,
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 60,
+      "mean": 55.46,
+      "p50": 54.34,
+      "p95": 65.87,
+      "p99": 84.75,
+      "source": "log"
+    },
+    "background_first_byte_ms": {
+      "n": 0,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 0.0,
+    "counters": {
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"playback_ended\"}": 50,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"session_closed\"}": 1,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"interrupted\"}": 10,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"user_speech_started\"}": 60,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"playback_started\"}": 59,
+      "lh_gateway_events_total{duplicate=\"false\",source=\"voice-worker\",type=\"user_turn_ended\"}": 60,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 60,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/events\",status=\"202\",tenant=\"voice\"}": 240,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 2,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 60,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"cached\"}": 35728,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 1242,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 37343
+    }
+  },
+  "engine": {
+    "preemptions": 0,
+    "prompt_tokens_by_source": {
+      "local_compute": 1615,
+      "local_cache_hit": 35728,
+      "external_kv_transfer": 0
+    },
+    "refused": {
+      "max_num_queued_reqs": 0,
+      "max_num_queued_tokens": 0
+    }
+  },
+  "gpu": {
+    "sm_clock_p50_mhz": 2580,
+    "temperature_max_c": 56
+  }
+}

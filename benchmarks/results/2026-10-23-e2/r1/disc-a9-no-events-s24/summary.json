@@ -1,0 +1,170 @@
+{
+  "name": "disc-a9-no-events-s24",
+  "arm": "9",
+  "label": "Leaseholder without lifecycle events",
+  "window_s": 285.0,
+  "voice": {
+    "turns": 50,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 59,
+      "p50": 1823.4,
+      "p95": 2005.3,
+      "p99": 2104.6
+    },
+    "barge_in_to_silence_ms": {
+      "n": 8,
+      "p50": 428.6,
+      "p95": 682.4,
+      "p99": 687.9
+    },
+    "barge_ins": 9
+  },
+  "worker": {
+    "sessions": 2,
+    "turns": 59,
+    "waterfall": {
+      "transcript_ms": {
+        "n": 58,
+        "mean": 815.4,
+        "p10": 800.72,
+        "p50": 813.65,
+        "p90": 832.92,
+        "p95": 845.83,
+        "p99": 857.61
+      },
+      "end_of_turn_ms": {
+        "n": 58,
+        "mean": 820.07,
+        "p10": 803.19,
+        "p50": 817.4,
+        "p90": 838.18,
+        "p95": 851.38,
+        "p99": 863.94
+      },
+      "llm_ttft_ms": {
+        "n": 59,
+        "mean": 221.93,
+        "p10": 125.42,
+        "p50": 217.4,
+        "p90": 297.72,
+        "p95": 325.36,
+        "p99": 353.78
+      },
+      "llm_first_sentence_ms": {
+        "n": 59,
+        "mean": 425.72,
+        "p10": 313.68,
+        "p50": 415.7,
+        "p90": 534.4,
+        "p95": 575.18,
+        "p99": 618.81
+      },
+      "turn_to_first_sentence_ms": {
+        "n": 58,
+        "mean": 432.37,
+        "p10": 333.79,
+        "p50": 419.9,
+        "p90": 536.51,
+        "p95": 577.75,
+        "p99": 620.92
+      },
+      "tts_first_audio_ms": {
+        "n": 59,
+        "mean": 216.35,
+        "p10": 192.48,
+        "p50": 211.4,
+        "p90": 246.08,
+        "p95": 260.04,
+        "p99": 278.53
+      },
+      "e2e_ms": {
+        "n": 58,
+        "mean": 1469.11,
+        "p10": 1347.84,
+        "p50": 1470.95,
+        "p90": 1595.04,
+        "p95": 1610.75,
+        "p99": 1664.72
+      }
+    },
+    "events": null
+  },
+  "background": {
+    "requests": 78,
+    "errors": 0,
+    "without_usage": 0,
+    "requests_per_s": 0.274,
+    "prompt_tokens_per_s": 3407.9,
+    "completion_tokens_per_s": 15.8,
+    "tokens_per_s": 3423.6,
+    "ttft_ms": {
+      "n": 78,
+      "mean": 77537.67,
+      "p10": 61923.33,
+      "p50": 74603.43,
+      "p90": 99153.22,
+      "p95": 103228.9,
+      "p99": 105803.39
+    }
+  },
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 60,
+      "mean": 196.33,
+      "p50": 203.22,
+      "p95": 294.99,
+      "p99": 334.69,
+      "source": "log"
+    },
+    "background_first_byte_ms": {
+      "n": 78,
+      "mean": 77531.46,
+      "p50": 74602.24,
+      "p95": 103227.54,
+      "p99": 105802.27,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 3423.6,
+    "counters": {
+      "lh_gateway_admission_admitted_total{class=\"realtime\"}": 60,
+      "lh_gateway_admission_admitted_total{class=\"background\"}": 77,
+      "lh_gateway_admission_deferred_total{reason=\"headroom\"}": 6,
+      "lh_gateway_admission_degraded_total": 60,
+      "lh_gateway_request_outcomes_total{class=\"background\",outcome=\"completed\"}": 78,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 59,
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"cancelled\"}": 1,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 2,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 60,
+      "lh_gateway_requests_total{class=\"background\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"agents\"}": 78,
+      "lh_gateway_sanitized_total{field=\"x-request-id\"}": 77,
+      "lh_gateway_sanitized_total{field=\"priority\"}": 77,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"cached\"}": 30944,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 869,
+      "lh_gateway_usage_tokens_total{class=\"background\",kind=\"cached\"}": 31264,
+      "lh_gateway_usage_tokens_total{class=\"background\",kind=\"completion\"}": 4497,
+      "lh_gateway_usage_tokens_total{class=\"background\",kind=\"prompt\"}": 971341,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 32650
+    }
+  },
+  "engine": {
+    "preemptions": 0,
+    "prompt_tokens_by_source": {
+      "local_compute": 941797,
+      "local_cache_hit": 37632,
+      "external_kv_transfer": 24768
+    },
+    "refused": {
+      "max_num_queued_reqs": 0,
+      "max_num_queued_tokens": 0
+    }
+  },
+  "gpu": {
+    "sm_clock_p50_mhz": 2722,
+    "temperature_max_c": 70
+  }
+}

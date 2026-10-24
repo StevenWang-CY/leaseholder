@@ -1,0 +1,13 @@
+# E2's discriminating scenario (24 session trees on weka-x32-long, as disc-frozen-s24.toml) with the arm of
+# a6-reserve2048-s16.toml.
+arm = 6
+label = "frozen box + token reservation, 2,048 tokens, discriminating scenario"
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[gateway.admission]
+policy = "token-reservation"
+reserved_tokens = 2048
+queue_timeout_s = 240

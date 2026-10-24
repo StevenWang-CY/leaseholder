@@ -1,0 +1,10 @@
+# E2 arm 3: priority scheduling with vLLM's default chunking, the first thing an operator tries, beside 8 agent
+# session trees. The gateway sends each class's priority (X-Vllm-Priority: realtime 0, background 2).
+arm = 3
+label = "priority, default chunking"
+
+[agents]
+sessions = 8
+
+[engine]
+flags = ["--max-num-batched-tokens", "2048", "--long-prefill-token-threshold", "0"]

@@ -1,0 +1,82 @@
+{
+  "name": "a7b-sglang-s8",
+  "arm": "7b",
+  "label": "SGLang 0.5.22: priority scheduling with preemption",
+  "window_s": 308.0,
+  "voice": {
+    "turns": 50,
+    "errors": 0,
+    "v2v_ms": {
+      "n": 59,
+      "p50": 1681.3,
+      "p95": 3228.2,
+      "p99": 4537.8
+    },
+    "barge_in_to_silence_ms": {
+      "n": 7,
+      "p50": 445.0,
+      "p95": 648.3,
+      "p99": 650.9
+    },
+    "barge_ins": 9
+  },
+  "background": {
+    "requests": 239,
+    "errors": 0,
+    "without_usage": 0,
+    "requests_per_s": 0.776,
+    "prompt_tokens_per_s": 2744.5,
+    "completion_tokens_per_s": 25.7,
+    "tokens_per_s": 2770.2,
+    "ttft_ms": {
+      "n": 239,
+      "mean": 350.19,
+      "p10": 70.09,
+      "p50": 92.85,
+      "p90": 744.33,
+      "p95": 1975.78,
+      "p99": 4882.98
+    }
+  },
+  "gateway": {
+    "realtime_first_byte_ms": {
+      "n": 60,
+      "mean": 253.95,
+      "p50": 84.38,
+      "p95": 1440.15,
+      "p99": 2246.57,
+      "source": "log"
+    },
+    "shed": 0,
+    "refused": 0,
+    "resubmitted": 0,
+    "discarded_tokens": 0,
+    "background_tokens_per_s": 2770.2,
+    "counters": {
+      "lh_gateway_request_outcomes_total{class=\"realtime\",outcome=\"completed\"}": 60,
+      "lh_gateway_request_outcomes_total{class=\"background\",outcome=\"completed\"}": 239,
+      "lh_gateway_requests_total{class=\"realtime\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"voice\"}": 60,
+      "lh_gateway_requests_total{class=\"background\",route=\"/v1/chat/completions\",status=\"200\",tenant=\"agents\"}": 239,
+      "lh_gateway_requests_total{class=\"\",route=\"/v1/models\",status=\"200\",tenant=\"voice\"}": 2,
+      "lh_gateway_sanitized_total{field=\"priority\"}": 239,
+      "lh_gateway_sanitized_total{field=\"x-request-id\"}": 239,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"prompt\"}": 35311,
+      "lh_gateway_usage_tokens_total{class=\"realtime\",kind=\"completion\"}": 1099,
+      "lh_gateway_usage_tokens_total{class=\"background\",kind=\"completion\"}": 7909,
+      "lh_gateway_usage_tokens_total{class=\"background\",kind=\"prompt\"}": 845390
+    },
+    "background_first_byte_ms": {
+      "n": 239,
+      "mean": 348.99,
+      "p50": 91.64,
+      "p95": 1974.45,
+      "p99": 4882.0,
+      "source": "log"
+    }
+  },
+  "engine": {
+    "preemptions": null,
+    "prompt_tokens_by_source": null,
+    "refused": null
+  }
+}

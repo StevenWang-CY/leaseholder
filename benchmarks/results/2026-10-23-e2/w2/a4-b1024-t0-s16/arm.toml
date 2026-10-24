@@ -1,0 +1,10 @@
+# E2 arm 4, step cap 1024 without a long-prefill threshold (the same point as threshold 1024), beside 16 agent
+# session trees.
+arm = 4
+label = "priority, step cap 1024, no long-prefill threshold"
+
+[agents]
+sessions = 16
+
+[engine]
+flags = ["--max-num-batched-tokens", "1024", "--long-prefill-token-threshold", "0"]

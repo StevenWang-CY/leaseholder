@@ -1,0 +1,127 @@
+{
+  "kind": "e2-point",
+  "name": "disc-a9-no-kv-makeroom-s24",
+  "status": "complete",
+  "host": "cyan",
+  "started": 1792769728.8183315,
+  "arm": {
+    "name": "disc-a9-no-kv-makeroom-s24",
+    "arm": "9",
+    "label": "Leaseholder, make-room without KV make-room",
+    "voice": {
+      "callers": 2,
+      "turns": 25,
+      "barge_in": 0.25,
+      "seed": 0,
+      "preemptive_generation": true,
+      "events": true
+    },
+    "agents": {
+      "sessions": 24,
+      "target": "gateway",
+      "think_cap": 120.0,
+      "warmup": 60.0,
+      "data": "weka-x32-long",
+      "seed": 11,
+      "send_priority": true
+    },
+    "gateway": {
+      "admission": {
+        "policy": "leaseholder",
+        "headroom_tokens": 1024,
+        "critical_prefill_budget_ms": 150,
+        "degrade_max_tokens": 16
+      }
+    },
+    "engine": {
+      "variant": "make-room",
+      "flags": [
+        "--additional-config.make_room.max_preemptions_per_step",
+        "0"
+      ]
+    },
+    "router": null
+  },
+  "versions": {
+    "source": "03af728",
+    "leaseholder_bench": "0.1.0",
+    "aiperf": "0.13.0",
+    "lh_gateway": "lh-gateway 0.0.1"
+  },
+  "engine": {
+    "server": "vllm",
+    "version": "0.32.0",
+    "pool_tokens": 36400,
+    "flags": {
+      "checked": [
+        "--scheduling-policy",
+        "--max-num-batched-tokens",
+        "--long-prefill-token-threshold"
+      ],
+      "unchecked": [
+        "--additional-config.make_room.max_preemptions_per_step"
+      ]
+    }
+  },
+  "cyan": {
+    "router": null,
+    "gateway": {
+      "restarted": true,
+      "config": {
+        "upstream": "http://127.0.0.1:18000",
+        "upstream_idle_timeout_s": 55,
+        "log_format": "json",
+        "listen": [
+          {
+            "tcp": "127.0.0.1:18080"
+          },
+          {
+            "unix": "/run/user/1007/lh/gateway.sock",
+            "tenant": "voice"
+          }
+        ],
+        "tenants": {
+          "voice": {
+            "trusted": true,
+            "default_class": "realtime",
+            "max_class": "realtime"
+          },
+          "agents": {
+            "keys_sha256": [
+              "<redacted>"
+            ],
+            "trusted": true,
+            "default_class": "background",
+            "max_class": "interactive"
+          },
+          "bench": {
+            "keys_sha256": [
+              "<redacted>"
+            ],
+            "default_class": "interactive"
+          }
+        },
+        "admission": {
+          "policy": "leaseholder",
+          "headroom_tokens": 1024,
+          "critical_prefill_budget_ms": 150,
+          "degrade_max_tokens": 16
+        }
+      }
+    },
+    "worker": {
+      "restarted": false,
+      "preemptive_generation": true,
+      "events": true
+    },
+    "llm_path": "/run/user/1007/lh/gateway.sock"
+  },
+  "window": {
+    "start": 1792769971.5997071,
+    "end": 1792770249.630988
+  },
+  "aiperf": {
+    "exit_status": 0
+  },
+  "finished": 1792770251.7769835
+}

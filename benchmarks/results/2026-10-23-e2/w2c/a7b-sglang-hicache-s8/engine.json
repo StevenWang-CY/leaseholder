@@ -1,0 +1,22 @@
+{
+  "model_path": "Qwen/Qwen3-4B-Instruct-2507-FP8",
+  "revision": "8591804019c8b22094c3b5b4454e0edc05dffc98",
+  "context_length": 32768,
+  "dtype": "auto",
+  "quantization": null,
+  "kv_cache_dtype": "auto",
+  "page_size": 1,
+  "disable_radix_cache": false,
+  "mem_fraction_static": 0.77,
+  "max_total_tokens": 36400,
+  "max_total_num_tokens": 34679,
+  "schedule_policy": "fcfs",
+  "chunked_prefill_size": 512,
+  "max_running_requests": null,
+  "enable_priority_scheduling": true,
+  "schedule_low_priority_values_first": true,
+  "priority_scheduling_preemption_threshold": 0,
+  "enable_hierarchical_cache": true,
+  "hicache_ratio": 4.0,
+  "hicache_write_policy": "write_through"
+}

@@ -1,0 +1,10 @@
+# E2 arm 7a with vLLM #54530 (variant pr54530, which sets --max-num-seqs 12 itself), beside 16 agent session
+# trees: a voice request preempts the lowest-priority running request once the 12 slots are full.
+arm = "7a"
+label = "priority, max-num-seqs 12, with vLLM #54530"
+
+[agents]
+sessions = 16
+
+[engine]
+variant = "pr54530"
