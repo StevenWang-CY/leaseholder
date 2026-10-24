@@ -11,8 +11,8 @@ PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,
 E2_RESULTS := benchmarks/results/2026-10-23-e2
 E2_REPORT ?= build/reproduce-e2
 
-.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e1 reproduce-e2 \
-  e2-figures
+.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e1 \
+  reproduce-calibration reproduce-e2 e2-figures
 
 check: lint test
 
@@ -70,6 +70,18 @@ reproduce-e1:
 	$(E1_SIM) hardware $(CORPUS) --fit --csv $(E1_REPORT)/hardware-fit.csv --markdown $(E1_REPORT)/hardware-fit.md \
 	  >/dev/null
 	@ls $(E1_REPORT)/*.md
+
+# The simulator's calibration and its validation against W0 (crates/lh-sim/README.md, and BENCHMARKS' table of W2's points)
+# from six measured runs' AIPerf exports and /metrics snapshots, one directory per run as `scripts/calibration.py export`
+# writes them, and the 32x corpus. Usage: make reproduce-calibration EXPORTS=<dir> CORPUS=<dir>.
+CALIBRATION_REPORT ?= build/reproduce-calibration
+reproduce-calibration:
+	@test -n "$(EXPORTS)" -a -n "$(CORPUS)" || \
+	  { echo "usage: make reproduce-calibration EXPORTS=<the runs' exports> CORPUS=<the 32x corpus directory>" >&2; exit 2; }
+	cargo build --release --locked -p lh-sim
+	uv run -q --no-project python crates/lh-sim/scripts/calibration.py report $(EXPORTS) $(CORPUS) $(E1_SIM) \
+	  $(CALIBRATION_REPORT) >/dev/null
+	@ls $(CALIBRATION_REPORT)/calibration.md
 
 # E2's report (frontier.md, frontier.csv, frontier.svg, waterfall.svg) from the committed records, with the bench
 # venv; it prints the files it writes.
