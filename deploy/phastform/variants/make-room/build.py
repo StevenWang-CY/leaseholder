@@ -562,7 +562,9 @@ HELPERS = '''
         hit_blocks = set() if hit is None else {id(b) for g in hit[0] for b in g}
         holders: dict[int, int] = defaultdict(int)
         blocks: dict[int, KVCacheBlock] = {}
-        groups = [freed for _, freed in self.deferred_frees]
+        groups: list[Iterable[KVCacheBlock]] = [
+            freed for _, freed in self.deferred_frees
+        ]
         for victim in victims:
             groups.extend(self.kv_cache_manager.get_blocks(victim.request_id).blocks)
         for group in groups:
