@@ -207,7 +207,7 @@ impl Gpu {
         // linear layers) by FP8 and the quadratic term (attention) by BF16. This keeps within 8% of
         // the scaled step loop's lone prefill from 4k tokens on, for both modeled GPUs. Each term is
         // written so that ratios of 1 give the box's fit back exactly.
-        let host = e0_host(&base, &steps);
+        let host = steps.e0_host(&base);
         let per_step = steps.step_ms / StepBudget::FROZEN_BOX.max_batched_tokens as f64 * 1e3;
         let cold = &base.recompute;
         TierCost {
@@ -264,24 +264,6 @@ impl FromStr for Gpu {
             let names: Vec<_> = GPUS.iter().map(|g| g.name).collect();
             format!("unknown GPU {s:?} (the GPUs are {})", names.join(", "))
         })
-    }
-}
-
-/// E0's host time: what its GPU-hit fit leaves after the one step a hit takes, through its shortest
-/// and longest cells, as `lh-core`'s step tests derive it. E0 sends token ids, so it is shorter than
-/// the replays' host time.
-fn e0_host(tier: &TierCost, steps: &StepCost) -> Linear {
-    let bt = tier.block_tokens;
-    let host = |tokens: u64| {
-        let mut hit = StepLoad::default();
-        hit.add_prefill(bt, tokens - bt);
-        tier.gpu_hit.at(tokens) - steps.step_ms(&hit)
-    };
-    let (a, b) = (1_024, 31_744);
-    let us_per_token = (host(b) - host(a)) / (b - a) as f64 * 1e3;
-    Linear {
-        ms: host(a) - us_per_token * a as f64 / 1e3,
-        us_per_token,
     }
 }
 
@@ -750,7 +732,7 @@ mod tests {
     #[test]
     fn the_modeled_cold_prefill_follows_the_scaled_step_loop() {
         // E0's host time, by its own derivation: 22.7 ms + 3.11 µs a token.
-        let host = e0_host(&TierCost::frozen_box(), &StepCost::frozen_box());
+        let host = StepCost::frozen_box().e0_host(&TierCost::frozen_box());
         assert!((host.ms - 22.67).abs() < 0.01 && (host.us_per_token - 3.113).abs() < 0.001);
         for gpu in [L4, H100_SXM] {
             let tier = gpu.tier_cost();

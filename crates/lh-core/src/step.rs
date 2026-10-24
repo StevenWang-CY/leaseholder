@@ -101,7 +101,8 @@ impl StepCost {
     ///   read at 343 GB/s (the card's memory bandwidth is 448 GB/s). `ns_per_pair` is within 13% of
     ///   twice the quadratic term of E0's recompute fit: a cold prompt of `L` tokens makes about
     ///   `L²/2` pairs whatever its chunking. `host` is the chat requests' (the API server renders and
-    ///   tokenizes their history); E0's token-id requests spend 5 µs per token less (see the tests).
+    ///   tokenizes their history); E0's token-id requests spend 5 µs per token less
+    ///   ([`StepCost::e0_host`]).
     /// - `mixed_ms`: the median excess of 1,443 decode steps beside one long prefill.
     /// - `host_per_decode_ms`: 92 GPU hits that arrived while only decodes ran, by how many decoded.
     /// - `restore_stall`: 36 restores of 2,000 tokens or more with only decodes beside them. Over each,
@@ -142,6 +143,24 @@ impl StepCost {
     /// milliseconds.
     pub fn host_ms(&self, prompt_tokens: u64, decoding: u64) -> f64 {
         (self.host.at(prompt_tokens) + self.host_per_decode_ms * decoding as f64).max(0.0)
+    }
+
+    /// E0's host time: what `tier`'s GPU-hit fit leaves after the one step a hit takes, through E0's
+    /// shortest and longest cells (1,024 and 31,744 tokens). E0 sends token ids, so it is shorter
+    /// than `host`, the chat requests'.
+    pub fn e0_host(&self, tier: &TierCost) -> Linear {
+        let bt = tier.block_tokens;
+        let host = |tokens: u64| {
+            let mut hit = StepLoad::default();
+            hit.add_prefill(bt, tokens - bt);
+            tier.gpu_hit.at(tokens) - self.step_ms(&hit)
+        };
+        let (a, b) = (1_024, 31_744);
+        let us_per_token = (host(b) - host(a)) / (b - a) as f64 * 1e3;
+        Linear {
+            ms: host(a) - us_per_token * a as f64 / 1e3,
+            us_per_token,
+        }
     }
 
     /// Time to first token of a request alone on the engine, in milliseconds: its host time, the
@@ -190,26 +209,6 @@ mod tests {
         PromptSources { gpu, cpu, computed }
     }
 
-    /// E0's requests send token ids to `/v1/completions`: their host time is what E0's GPU-hit fit
-    /// leaves after the one step a hit takes.
-    fn e0_host(cost: &StepCost, tier: &TierCost) -> StepCost {
-        let hit_step = |l: u64| {
-            let mut load = StepLoad::default();
-            load.add_prefill(BLOCK, l - BLOCK);
-            cost.step_ms(&load)
-        };
-        let (a, b) = (1_024, 31_744);
-        let slope =
-            (tier.gpu_hit.at(b) - hit_step(b) - tier.gpu_hit.at(a) + hit_step(a)) / (b - a) as f64;
-        StepCost {
-            host: Linear {
-                ms: tier.gpu_hit.at(a) - hit_step(a) - slope * a as f64,
-                us_per_token: slope * 1e3,
-            },
-            ..cost.clone()
-        }
-    }
-
     fn close(model: f64, measured: f64) -> bool {
         (model - measured).abs() <= (0.12 * measured).max(10.0)
     }
@@ -254,8 +253,12 @@ mod tests {
 
     #[test]
     fn alone_it_reproduces_the_e0_cells_with_e0s_host_time() {
+        // E0's requests send token ids to `/v1/completions`, so they spend E0's host time.
         let tier = TierCost::frozen_box();
-        let cost = e0_host(&StepCost::frozen_box(), &tier);
+        let cost = StepCost {
+            host: StepCost::frozen_box().e0_host(&tier),
+            ..StepCost::frozen_box()
+        };
         for (i, &n) in LENGTHS.iter().enumerate() {
             let gpu = cost.alone_ttft_ms(&tier, sources(n - BLOCK, 0, BLOCK), BUDGET);
             let cpu = cost.alone_ttft_ms(&tier, sources(0, n - BLOCK, BLOCK), BUDGET);
