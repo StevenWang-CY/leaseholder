@@ -194,7 +194,7 @@ pub struct ReplayStats {
     pub lanes: usize,
     pub sessions_started: u64,
     pub warmup_requests: u64,
-    pub warmup_s: f64,
+    /// When profiling started, in seconds from the run's start: how long the warmup took.
     pub profiling_start_s: f64,
     /// Requests sent during profiling but still running when the grace period ended.
     pub cut_off_requests: u64,
@@ -846,7 +846,6 @@ impl<'a> Replay<'a> {
         self.ws_last_change = self.now;
         self.profiling_end = self.now + ns(self.cfg.duration_s * 1e3);
         self.grace_end = self.profiling_end + ns(self.cfg.grace_s * 1e3);
-        self.stats.warmup_s = self.now as f64 / 1e9;
         self.stats.profiling_start_s = self.now as f64 / 1e9;
         self.stats.working_set_peak_tokens =
             self.working_set.len() as u64 * self.cfg.block_tokens as u64;
