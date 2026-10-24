@@ -22,18 +22,15 @@ from typing import Any
 
 import pytest
 
-from leaseholder_bench import e2
 from leaseholder_bench.cli import main
-from leaseholder_bench.e2 import (
-    E2Error,
-    Engine,
+from leaseholder_bench.e2 import run as e2
+from leaseholder_bench.e2.arm import E2Error, Engine, Voice, flag_values, load_arm
+from leaseholder_bench.e2.run import (
     EngineInfo,
     Host,
     Process,
     Systemd,
     check_engine,
-    flag_values,
-    load_arm,
     read_env,
     reset_cyan,
     run_point,
@@ -121,7 +118,7 @@ def _quick(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_an_arm_file_fills_in_the_defaults(tmp_path: Path) -> None:
     arm = load_arm(write(tmp_path, "a1-voice.toml", VOICE_ALONE))
     assert (arm.name, arm.arm, arm.label) == ("a1-voice", "1", "voice alone")
-    assert arm.voice == e2.Voice(callers=2, turns=25, barge_in=0.25, preemptive_generation=True)
+    assert arm.voice == Voice(callers=2, turns=25, barge_in=0.25, preemptive_generation=True)
     assert (arm.agents.sessions, arm.agents.think_cap) == (0, 120.0)
     assert (arm.gateway, arm.engine, arm.router) == ({}, Engine("frozen", ()), None)
 

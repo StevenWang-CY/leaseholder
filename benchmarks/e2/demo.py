@@ -53,7 +53,7 @@ GOODPUT_WINDOW_S = 10.0
 FADE_S = 0.05
 """The soundtrack's crossfade from the left call to the right one."""
 
-# The docs' chart palette, as frontier.py has it: the caller in its first slot, the agent in its
+# The docs' chart palette, as e2/figures.py has it: the caller in its first slot, the agent in its
 # second, the background agents in its third.
 SURFACE, PLANE, INK, SECONDARY, MUTED, GRID = (
     "#fcfcfb", "#f0efec", "#0b0b0b", "#52514e", "#898781", "#e1e0d9",

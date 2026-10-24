@@ -273,8 +273,10 @@ def _add_voice_turn(commands: Commands) -> None:
 
 
 def _e2(args: argparse.Namespace) -> int:
-    from leaseholder_bench.e2 import E2Error, Host, Systemd, load_arm, reset_cyan, run_point
-    from leaseholder_bench.frontier import export_point, load_points, render, write_report
+    from leaseholder_bench.e2.arm import E2Error, load_arm
+    from leaseholder_bench.e2.record import export_point, render
+    from leaseholder_bench.e2.report import load_points, write_report
+    from leaseholder_bench.e2.run import Host, Systemd, reset_cyan, run_point
 
     try:
         if args.action == "engine":

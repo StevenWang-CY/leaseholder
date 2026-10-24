@@ -15,38 +15,41 @@ from typing import Any
 import pytest
 
 from leaseholder_bench.cli import main
-from leaseholder_bench.e2 import SECRETS, Agents, Voice
-from leaseholder_bench.frontier import (
-    ADMISSION_COLUMNS,
+from leaseholder_bench.e2.arm import Agents, Voice
+from leaseholder_bench.e2.figures import load_sweep
+from leaseholder_bench.e2.record import (
     CALLER_ROOM,
-    COLUMNS,
-    CONFIGURATION_ARMS,
-    GPU_COLUMNS,
-    NODE_COLUMNS,
     PLACEMENT_LOGGER,
     RECORD,
     SESSIONS_LOGGER,
     SGLANG_ENGINE,
-    STACKED,
-    STANDARD_WORKLOAD,
     TURNS_LOGGER,
     WATERFALL,
-    WORKER_COLUMNS,
     background,
-    configurations,
     engine_counts,
     engine_settings,
-    figure_name,
     first_byte_ms,
     gateway_counts,
     gateway_requests,
+    summarize_point,
+)
+from leaseholder_bench.e2.report import (
+    ADMISSION_COLUMNS,
+    COLUMNS,
+    CONFIGURATION_ARMS,
+    GPU_COLUMNS,
+    NODE_COLUMNS,
+    STACKED,
+    STANDARD_WORKLOAD,
+    WORKER_COLUMNS,
+    configurations,
+    figure_name,
     load_points,
-    load_sweep,
     mark_frontier,
     stage_waterfall,
-    summarize_point,
     write_report,
 )
+from leaseholder_bench.e2.run import SECRETS
 
 T0 = 1_800_000_000.0  # the calls run from T0 to T0 + 100 s
 REPO = Path(__file__).resolve().parents[3]
