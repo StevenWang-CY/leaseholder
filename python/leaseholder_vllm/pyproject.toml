@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leaseholder-vllm"
-version = "0.0.1"
+version = "0.3.0"
 description = "Leaseholder's engine-side plugins for vLLM 0.32: a lease-aware CPU-tier cache policy and an offloading connector with per-request hit receipts"
 readme = "README.md"
 license = "Apache-2.0"

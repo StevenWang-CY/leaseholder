@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leaseholder-voice"
-version = "0.1.0"
+version = "0.3.0"
 description = "Leaseholder's realtime voice plane on LiveKit Agents 1.8.8: the voice agent, measurement callers and plugin factory"
 readme = "README.md"
 license = "Apache-2.0"
