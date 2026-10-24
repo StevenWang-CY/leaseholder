@@ -42,6 +42,7 @@ REPO = Path(__file__).resolve().parents[3]
 EXAMPLE = REPO / "deploy" / "cyan" / "gateway.example.toml"
 BENCHMARKS = REPO / "benchmarks" / "e2"
 PHASTFORM = REPO / "deploy" / "phastform"
+needs_waitid = pytest.mark.skipif(not hasattr(os, "waitid"), reason=e2.NEEDS_WAITID)
 
 ARM = """\
 arm = 2
@@ -278,6 +279,7 @@ def test_a_vllm_point_needs_the_frozen_settings_its_flags_keep() -> None:
 # Processes
 
 
+@needs_waitid
 def test_stopping_a_tool_kills_its_whole_process_group(tmp_path: Path) -> None:
     artifacts = tmp_path / "aiperf"
     env = os.environ | {"LH_BENCH_ARTIFACTS": str(artifacts), "FAKE_AIPERF": "stubborn"}
@@ -293,6 +295,7 @@ PROC = pytest.mark.skipif(not Path("/proc/self/environ").exists(), reason="reads
 
 
 @PROC
+@needs_waitid
 def test_stopping_a_tool_kills_what_it_started_in_a_session_of_its_own(tmp_path: Path) -> None:
     """AIPerf starts some services with setsid, out of its process group: its mark reaches them."""
     artifacts = tmp_path / "aiperf"
@@ -465,6 +468,8 @@ class Cyan:
 
 @pytest.fixture
 def cyan(tmp_path: Path) -> Iterator[Cyan]:
+    if not hasattr(os, "waitid"):
+        pytest.skip(e2.NEEDS_WAITID)  # every point runs its tools
     home = tmp_path / "home"
     config = home / ".config" / "leaseholder"
     config.mkdir(parents=True)

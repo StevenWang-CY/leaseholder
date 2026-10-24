@@ -27,6 +27,9 @@ development:
 uv sync --python 3.12 --extra test      # in python/leaseholder_bench: its own .venv, from uv.lock
 ```
 
+On macOS, use Python 3.13 (`--python 3.13`): `lh-bench e2 run` needs `os.waitid`, which macOS has from
+3.13 on. On 3.12 it refuses to start, and its tests skip with that reason.
+
 ## Trace scaling
 
 Each request in the corpus is a list of 64-token prefix hash blocks; the median main-agent

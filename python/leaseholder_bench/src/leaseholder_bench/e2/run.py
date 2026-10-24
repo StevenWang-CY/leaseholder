@@ -511,6 +511,10 @@ def _get_json(url: str, **kwargs: Any) -> dict[str, Any]:
 
 TOOL_MARK = "LH_E2_TOOL"
 """The environment variable that marks every process a tool of e2 run started, its children too."""
+NEEDS_WAITID = (
+    "lh-bench e2 run needs os.waitid, to watch its tools without reaping them: Linux, or macOS "
+    "from Python 3.13"
+)
 
 
 class Process:
@@ -607,6 +611,8 @@ def run_point(
     directory with a complete point is never overwritten, and an earlier attempt that did not
     complete is kept beside it. ``save_audio``, a run option rather than the arm's, has the callers
     save each call's audio (``lh-voice bots --save-audio``)."""
+    if not hasattr(os, "waitid"):
+        raise E2Error(NEEDS_WAITID)
     arm = load_arm(arm_file)
     host = host or Host()
     systemd = systemd or Systemd()
