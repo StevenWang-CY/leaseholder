@@ -6,7 +6,8 @@
 //! prefix of tokens up to a block end is determined by the hash ids up to the hash block that holds the
 //! block's last token. A [`PrefixTree`] holds every prompt of a trace as a path of hash ids; an engine
 //! block is identified exactly by that tree node, the block's offset inside the node's hash block, and
-//! a namespace (the session play and, optionally, the model), with no hashing and no collisions.
+//! a namespace (the session play), with no hashing and no collisions. Every request goes to one served
+//! model, as in an AIPerf replay, so requests to a trace's different models share KV.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -22,21 +23,18 @@ pub const UNIQUE_BIT: BlockId = 1 << 63;
 
 const SUB_BITS: u32 = 4;
 const NODE_BITS: u32 = 28;
-const MODEL_BITS: u32 = 4;
-const PLAY_BITS: u32 = 63 - SUB_BITS - NODE_BITS - MODEL_BITS;
+const PLAY_BITS: u32 = 63 - SUB_BITS - NODE_BITS;
 
-/// Most models one namespace distinguishes.
-pub const MAX_MODELS: usize = 1 << MODEL_BITS;
 /// Most session plays one run can hold.
 pub const MAX_PLAYS: u64 = 1 << PLAY_BITS;
 
 /// The identity of the engine block that ends inside the hash block at `node`, `sub` engine blocks
-/// into it, for a session play and model. Two prompts get the same identity iff they share the play,
-/// the model and every hash block up to `node`.
-pub fn block_id(play: u64, model: u8, node: NodeId, sub: u32) -> BlockId {
-    debug_assert!(play < MAX_PLAYS && (model as usize) < MAX_MODELS);
+/// into it, for a session play. Two prompts get the same identity iff they share the play and every
+/// hash block up to `node`.
+pub fn block_id(play: u64, node: NodeId, sub: u32) -> BlockId {
+    debug_assert!(play < MAX_PLAYS);
     debug_assert!(node < 1 << NODE_BITS && sub < 1 << SUB_BITS);
-    (((play << MODEL_BITS | model as u64) << NODE_BITS | node as u64) << SUB_BITS) | sub as u64
+    ((play << NODE_BITS | node as u64) << SUB_BITS) | sub as u64
 }
 
 /// Token geometry of a replay: tokens per hash block and per engine block.
@@ -103,7 +101,6 @@ impl PrefixTree {
         end: NodeId,
         tokens: Tokens,
         play: u64,
-        model: u8,
         scratch: &mut Vec<NodeId>,
         out: &mut Vec<BlockId>,
     ) {
@@ -113,7 +110,7 @@ impl PrefixTree {
         for j in 0..prompt / eb {
             let last = (j + 1) * eb - 1;
             let node = scratch[(last / hb) as usize];
-            out.push(block_id(play, model, node, ((last % hb) / eb) as u32));
+            out.push(block_id(play, node, ((last % hb) / eb) as u32));
         }
     }
 }
@@ -226,9 +223,9 @@ mod tests {
         (b.finish(), ends)
     }
 
-    fn blocks(t: &PrefixTree, end: NodeId, tokens: Tokens, play: u64, model: u8) -> Vec<BlockId> {
+    fn blocks(t: &PrefixTree, end: NodeId, tokens: Tokens, play: u64) -> Vec<BlockId> {
         let (mut scratch, mut out) = (Vec::new(), Vec::new());
-        t.engine_blocks(end, tokens, play, model, &mut scratch, &mut out);
+        t.engine_blocks(end, tokens, play, &mut scratch, &mut out);
         out
     }
 
@@ -255,8 +252,8 @@ mod tests {
         let mut fork = base.clone();
         fork[10] = 99; // inside the second engine block
         let (t, ends) = tree(&[&base, &fork]);
-        let a = blocks(&t, ends[0], tok, 0, 0);
-        let b = blocks(&t, ends[1], tok, 0, 0);
+        let a = blocks(&t, ends[0], tok, 0);
+        let b = blocks(&t, ends[1], tok, 0);
         assert_eq!((a.len(), b.len()), (3, 3));
         assert_eq!(a[0], b[0]);
         assert_ne!(a[1], b[1]);
@@ -269,15 +266,15 @@ mod tests {
         let tok = Tokens::new(2, 16);
         let ids: Vec<u32> = (0..15).collect(); // 30 tokens: one full block and a partial one
         let (t, ends) = tree(&[&ids]);
-        assert_eq!(blocks(&t, ends[0], tok, 0, 0).len(), 1);
+        assert_eq!(blocks(&t, ends[0], tok, 0).len(), 1);
     }
 
     #[test]
     fn unscaled_hash_blocks_span_several_engine_blocks() {
         let tok = Tokens::new(64, 16);
         let (t, ends) = tree(&[&[1, 2], &[1, 3]]);
-        let a = blocks(&t, ends[0], tok, 0, 0);
-        let b = blocks(&t, ends[1], tok, 0, 0);
+        let a = blocks(&t, ends[0], tok, 0);
+        let b = blocks(&t, ends[1], tok, 0);
         assert_eq!(a.len(), 8);
         assert_eq!(a[..4], b[..4]);
         assert!(a[4..].iter().zip(&b[4..]).all(|(x, y)| x != y));
@@ -287,33 +284,28 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_separate_plays_and_models() {
+    fn namespaces_separate_plays() {
         let tok = Tokens::new(2, 16);
         let ids: Vec<u32> = (0..16).collect();
         let (t, ends) = tree(&[&ids]);
-        let base = blocks(&t, ends[0], tok, 3, 0);
-        assert_eq!(base, blocks(&t, ends[0], tok, 3, 0));
+        let base = blocks(&t, ends[0], tok, 3);
+        assert_eq!(base, blocks(&t, ends[0], tok, 3));
         assert_ne!(
             base,
-            blocks(&t, ends[0], tok, 4, 0),
+            blocks(&t, ends[0], tok, 4),
             "another play (cache bust) shares nothing"
-        );
-        assert_ne!(
-            base,
-            blocks(&t, ends[0], tok, 3, 1),
-            "another model shares nothing"
         );
         assert!(base.iter().all(|id| id & UNIQUE_BIT == 0));
     }
 
     #[test]
     fn the_id_hasher_spreads_keys_that_differ_only_in_high_bits() {
-        // One node's block in 1,024 plays: the ids differ only above bit 36. A hash map picks the
+        // One node's block in 1,024 plays: the ids differ only above bit 32. A hash map picks the
         // bucket from the low bits of the hash and tags entries with the top 7, so both must vary.
         let hashes: Vec<u64> = (0..1024)
             .map(|play| {
                 let mut h = IdHasher::default();
-                h.write_u64(block_id(play, 0, 7, 0));
+                h.write_u64(block_id(play, 7, 0));
                 h.finish()
             })
             .collect();

@@ -88,9 +88,6 @@ struct ReplayArgs {
     /// Start at most this many session plays, the initial lanes included.
     #[arg(long)]
     max_sessions: Option<u64>,
-    /// Let requests to different models share KV, as an AIPerf replay against one served model does.
-    #[arg(long)]
-    shared_models: bool,
     /// Multiply hash-block and output tokens: 32 replays a 32x-scaled corpus at its original token
     /// counts.
     #[arg(long, default_value_t = 1)]
@@ -135,7 +132,6 @@ impl ReplayArgs {
             system_idle_cap_s: (self.idle_cap > 0.0).then_some(self.idle_cap),
             seed: self.seed,
             max_sessions: self.max_sessions,
-            model_namespaces: !self.shared_models,
             token_scale: self.token_scale,
             pauses: self.pauses(self.pauses),
             ..ReplayConfig::default()

@@ -65,14 +65,8 @@ pub fn rescaled(
             let turn = &plan.convs[r.conv as usize].turns[r.turn as usize];
             let tokens = Tokens::new(plan.block_size * factor, block_tokens);
             let mut prompt = Vec::new();
-            plan.prefixes.engine_blocks(
-                turn.prompt_end,
-                tokens,
-                r.play,
-                r.model,
-                &mut scratch,
-                &mut prompt,
-            );
+            plan.prefixes
+                .engine_blocks(turn.prompt_end, tokens, r.play, &mut scratch, &mut prompt);
             let output = if r.warmup {
                 r.output_tokens
             } else {

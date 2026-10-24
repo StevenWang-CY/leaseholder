@@ -12,7 +12,7 @@
 
 ## The engine model
 
-- **Blocks.** Prompts are cut into 16-token blocks. A block's identity is its exact prefix: the trace's hash-id trie node its last token falls in, its offset inside that hash block, the session play and, by default, the model. Two prompts share a block iff they share every token up to its end, which is vLLM's chained block hashing without collisions. `--shared-models` drops the model from the identity, as an AIPerf replay against one served model does.
+- **Blocks.** Prompts are cut into 16-token blocks. A block's identity is its exact prefix: the trace's hash-id trie node its last token falls in, its offset inside that hash block, and the session play. Two prompts share a block iff they share every token up to its end, which is vLLM's chained block hashing without collisions. Every request goes to one served model, as in an AIPerf replay, so requests the traces sent to different models share KV.
 - **GPU pool.** 2,275 blocks (36,400 tokens) on the frozen box, one of them vLLM's null block. A request takes the longest cached prefix of its full blocks, at most `⌊(L − 1) / 16⌋` blocks, because vLLM always computes the last prompt token. Running requests pin their blocks (reference counted, shared by common prefixes). A finished request frees its blocks in reverse order: cached blocks join the back of the free queue, so the end of a prefix is evicted before its start, and the partial last block joins the front. A block recomputed while a copy is cached is cached a second time, as vLLM keeps every block per hash. A hit takes a copy that running requests already pin when there is one, where vLLM takes the first copy cached; the two differ only for such recomputed blocks, and the clairvoyant pass relies on the rule (see below).
 - **CPU tier.** 9,102 blocks (20 GiB at 144 KiB per token) on the frozen box, or a ratio of the pool. After the GPU hit, the tier extends it with the following blocks it holds; they are restored into new GPU blocks. When a request finishes, every full block it holds, prompt and output (`offload_prompt_only: false`), is offered to the tier: from the start of the prompt, or from past the restored blocks when it restored any (vLLM's chunk-level store index). LRU follows vLLM's `LRUCachePolicy`: blocks become most recent when stored and when a request that used them finishes, in reverse prefix order. A store never evicts a block it offers, and stores nothing when it cannot make room.
 - **Output KV.** Output tokens take blocks and are written through, but they are never reused: AIPerf synthesizes each turn's history from the trace, not from what the model generated.
@@ -82,14 +82,14 @@ Shares, latencies, restored bytes and stalls cover the profiling requests that c
 
 ```sh
 cargo build --release -p lh-sim
-lh-sim run DATA/weka-x32 --shared-models --json w0.json --csv w0.csv     # the W0 configuration, the stock arms
+lh-sim run DATA/weka-x32 --json w0.json --csv w0.csv                      # the W0 configuration, the stock arms
 lh-sim run DATA/weka-x32 --cpu-ratio 2,4,8 --arms lru-cpu,clairvoyant    # CPU tier at 2x, 4x and 8x the pool
-lh-sim run DATA/weka-x32 --shared-models --service idle                   # v0's idle-box service
-lh-sim run DATA/weka-x32 --shared-models --pauses tracelab --arms lru-cpu,oracle-prefetch
-lh-sim regime DATA/weka-x32 --shared-models --csv regime.csv --markdown regime.md
-lh-sim hardware DATA/weka-x32 --shared-models --csv hw.csv --markdown hw.md  # other GPUs, modeled
-lh-sim hardware DATA/weka-x32 --shared-models --fit --csv hw-fit.csv --markdown hw-fit.md  # each at its own scaling
-lh-sim mrc DATA/weka-x32 --shared-models --csv mrc.csv                    # miss-ratio curves
+lh-sim run DATA/weka-x32 --service idle                                   # v0's idle-box service
+lh-sim run DATA/weka-x32 --pauses tracelab --arms lru-cpu,oracle-prefetch
+lh-sim regime DATA/weka-x32 --csv regime.csv --markdown regime.md
+lh-sim hardware DATA/weka-x32 --csv hw.csv --markdown hw.md               # other GPUs, modeled
+lh-sim hardware DATA/weka-x32 --fit --csv hw-fit.csv --markdown hw-fit.md # each at its own scaling
+lh-sim mrc DATA/weka-x32 --csv mrc.csv                                    # miss-ratio curves
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl      # a measured run through the engine model
 lh-sim replay-log DATA/weka-x32 runs/w0/aiperf/profile_export.jsonl --timed --csv w0-timed.csv
 ```
@@ -104,7 +104,7 @@ The replay options are the fields of `lh-bench`'s `configs/agentic_replay.yaml`,
 
 ## Calibration against the GPU operating points
 
-Three operating points on the frozen box, each on a freshly started engine: AIPerf `agentic_replay` at 8, 16 and 24 sessions (the 32× corpus, 120 s think cap, 600 s plus 60 s grace, seed 11, burst starts, straight to the engine as W0). The simulator runs `lh-sim run DATA/weka-x32 --shared-models --arms lru-cpu --concurrency N`. Measured shares are the engine's `prompt_tokens_cached_by_source` counters over the profiling phase (the counters' deltas less the warm-up requests' own tokens); simulated shares cover the profiling requests. Resume TTFT covers profiling requests after a conversation's first turn.
+Three operating points on the frozen box, each on a freshly started engine: AIPerf `agentic_replay` at 8, 16 and 24 sessions (the 32× corpus, 120 s think cap, 600 s plus 60 s grace, seed 11, burst starts, straight to the engine as W0). The simulator runs `lh-sim run DATA/weka-x32 --arms lru-cpu --concurrency N`. Measured shares are the engine's `prompt_tokens_cached_by_source` counters over the profiling phase (the counters' deltas less the warm-up requests' own tokens); simulated shares cover the profiling requests. Resume TTFT covers profiling requests after a conversation's first turn.
 
 | Point | | Requests | Resume TTFT p50 / p90 / p99 (ms) | GPU / CPU / computed (%) |
 |---|---|---|---|---|
@@ -129,7 +129,7 @@ Leave-one-out refits every coefficient on the other two points and predicts the 
 
 ## Validation against W0 (v0, the idle service)
 
-W0 replayed the full 32× corpus against the frozen box: AIPerf's sequential sampler gave its 16 lanes the first 16 traces in name order, and its 10 recycled plays the next 10. The simulator runs the same configuration with seed 11 and shared models (one served model), here with `--service idle`. `replay-log` feeds the engine model W0's own requests at their measured start and end times, which separates the cache model from the replay timing.
+W0 replayed the full 32× corpus against the frozen box: AIPerf's sequential sampler gave its 16 lanes the first 16 traces in name order, and its 10 recycled plays the next 10. The simulator runs the same configuration with seed 11, here with `--service idle`. `replay-log` feeds the engine model W0's own requests at their measured start and end times, which separates the cache model from the replay timing.
 
 | | W0, measured | Engine model on W0's timeline | Full simulation |
 |---|---|---|---|
@@ -151,7 +151,7 @@ The measured split is the engine's `prompt_tokens_cached_by_source` counters ove
 
 ## The E1 regime map
 
-`lh-sim regime DATA/weka-x32 --shared-models` at seeds 11, 12 and 13: resume TTFT gain over `lru-cpu` (1 − arm / `lru-cpu`) at p50 / p90, the mean over the seeds, with the CPU tier at 4× the pool. ρ is 0.25–0.28 in every cell. The CSV has the 2× and 8× tiers, the other arms, avoidable recompute and PCIe bytes.
+`lh-sim regime DATA/weka-x32` at seeds 11, 12 and 13: resume TTFT gain over `lru-cpu` (1 − arm / `lru-cpu`) at p50 / p90, the mean over the seeds, with the CPU tier at 4× the pool. ρ is 0.25–0.28 in every cell. The CSV has the 2× and 8× tiers, the other arms, avoidable recompute and PCIe bytes.
 
 | Pauses | Sessions | Pressure | π | `oracle-prefetch` | `history-prefetch` | `tokencake` | `ttl-30` | `clairvoyant` |
 |---|---|---|---|---|---|---|---|---|

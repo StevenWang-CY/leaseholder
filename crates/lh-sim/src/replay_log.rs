@@ -137,7 +137,7 @@ fn read(corpus: &mut Corpus, log: &Path, block_tokens: u32) -> Result<Log, Strin
         let tokens = Tokens::new(plan.block_size, block_tokens);
         let mut prompt = Vec::new();
         plan.prefixes
-            .engine_blocks(turn.prompt_end, tokens, play, 0, &mut scratch, &mut prompt);
+            .engine_blocks(turn.prompt_end, tokens, play, &mut scratch, &mut prompt);
         out.spans
             .push((m.request_start_ns, m.request_end_ns.max(m.request_start_ns)));
         out.prompts.push(prompt);
