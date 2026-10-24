@@ -9,10 +9,11 @@
 //! restore's fixed part, the mixed-step extra and the restore stall. The box's own profile gives its
 //! measured costs back exactly; every other GPU's are modeled, and labeled so.
 //!
-//! The pool is the GPU's memory less what the box keeps beside its own (the engine, STT and TTS on
-//! one card: the edge pattern), in whole blocks, with the CPU tier a multiple of it. [`sweep`] runs
-//! the E1 arms in each GPU's cells and records where it sits on the map (KV pressure, π, ρ), how long
-//! the agents leave a realtime tier short of KV, and the step a realtime turn waits behind.
+//! The pool is the GPU's memory, less what its default ECC keeps and what the box keeps beside its
+//! own (the engine, STT and TTS on one card: the edge pattern), in whole blocks, with the CPU tier a
+//! multiple of it. [`sweep`] runs the E1 arms in each GPU's cells and records where it sits on the
+//! map (KV pressure, π, ρ), how long the agents leave a realtime tier short of KV, and the step a
+//! realtime turn waits behind.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -58,7 +59,8 @@ pub struct Gpu {
     /// The name on the command line.
     pub name: &'static str,
     pub title: &'static str,
-    pub memory_gib: u64,
+    /// Memory in MiB, less what the card's default ECC keeps of it.
+    pub memory_mib: u64,
     pub bandwidth_gb_s: f64,
     /// Dense tensor throughput, in TFLOPS.
     pub fp8_tflops: f64,
@@ -79,7 +81,7 @@ pub struct Gpu {
 pub const RTX_5060_TI: Gpu = Gpu {
     name: "rtx-5060-ti",
     title: "RTX 5060 Ti 16 GB",
-    memory_gib: 16,
+    memory_mib: 16 << 10,
     bandwidth_gb_s: 448.0,
     fp8_tflops: 759.0 / 4.0,
     bf16_tflops: 759.0 / 16.0,
@@ -90,11 +92,19 @@ pub const RTX_5060_TI: Gpu = Gpu {
 };
 
 /// NVIDIA's L4 datasheet (<https://www.nvidia.com/en-us/data-center/l4/>): 24 GB at 300 GB/s, 485 FP8
-/// and 242 BF16 TFLOPS "shown with sparsity", halved, and PCIe Gen4 x16.
+/// and 242 BF16 TFLOPS "shown with sparsity", halved, and PCIe Gen4 x16. Its product brief
+/// (PB-11316-001, tables 2 and 3,
+/// <https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/l4/PB-11316-001_v01.pdf>) gives
+/// the 24 GB as GDDR6 with ECC "Enabled (by default)", and with ECC on, GDDR memory keeps its check
+/// bits in 6.25% of itself (the CUDA C++ Best Practices Guide, 9.2.1,
+/// <https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#theoretical-bandwidth-calculation>).
+/// That leaves 22.5 GiB, of which `nvidia-smi` shows 23,034 MiB
+/// (<https://github.com/NVIDIA/TensorRT-LLM/issues/1823>), as it shows 16,311 MiB of the box's
+/// 16 GiB.
 pub const L4: Gpu = Gpu {
     name: "l4",
     title: "L4 24 GB",
-    memory_gib: 24,
+    memory_mib: (24 << 10) * 15 / 16,
     bandwidth_gb_s: 300.0,
     fp8_tflops: 485.0 / 2.0,
     bf16_tflops: 242.0 / 2.0,
@@ -109,7 +119,7 @@ pub const L4: Gpu = Gpu {
 pub const H100_SXM: Gpu = Gpu {
     name: "h100-sxm",
     title: "H100 SXM 80 GB",
-    memory_gib: 80,
+    memory_mib: 80 << 10,
     bandwidth_gb_s: 3_350.0,
     fp8_tflops: 3_958.0 / 2.0,
     bf16_tflops: 1_979.0 / 2.0,
@@ -234,7 +244,7 @@ impl Gpu {
 
     /// The GPU pool in tokens: whole blocks of what the box would leave to its pool on this card.
     pub fn pool_tokens(&self, geometry: &KvGeometry) -> u64 {
-        let bytes = (self.memory_gib << 30).saturating_sub(BOX_BESIDE_POOL);
+        let bytes = (self.memory_mib << 20).saturating_sub(BOX_BESIDE_POOL);
         geometry.blocks_in_bytes(bytes) * geometry.block_tokens
     }
 
@@ -451,6 +461,15 @@ fn tenths(x: f64) -> String {
     format!("{}.{}", thousands(t / 10), t % 10)
 }
 
+/// `mib` in GiB: whole, or to a tenth.
+fn gib(mib: u64) -> String {
+    if mib.is_multiple_of(1024) {
+        thousands(mib / 1024)
+    } else {
+        tenths(mib as f64 / 1024.0)
+    }
+}
+
 /// The GPUs: their published peaks and the costs modeled from them.
 pub fn profiles(gpus: &[Gpu]) -> String {
     let geometry = KvGeometry::QWEN3_4B_BF16;
@@ -469,7 +488,7 @@ pub fn profiles(gpus: &[Gpu]) -> String {
              | {:.1} ms + {:.2} µs/token + {:.3} ns/token² |",
             g.title,
             g.label(),
-            g.memory_gib,
+            gib(g.memory_mib),
             thousands(g.bandwidth_gb_s as u64),
             tenths(g.fp8_tflops),
             tenths(g.bf16_tflops),
@@ -707,12 +726,17 @@ mod tests {
             box_tier.cpu_restore.us_per_token / 2.0
         );
         assert_eq!((s, t.recompute), (box_steps.clone(), box_tier.recompute));
-        // More memory: a larger pool, by what it adds.
-        let g = the_box_with(|g| g.memory_gib = 24);
-        assert_eq!(g.pool_tokens(&QWEN), L4.pool_tokens(&QWEN));
+        // More memory: a larger pool, by what it adds. The L4's ECC leaves it 22.5 of its 24 GiB.
+        let g = the_box_with(|g| g.memory_mib = 24 << 10);
         assert_eq!(
             g.pool_tokens(&QWEN),
             QWEN.blocks_in_bytes(13 << 30) * QWEN.block_tokens
+        );
+        let g = the_box_with(|g| g.memory_mib = L4.memory_mib);
+        assert_eq!(g.pool_tokens(&QWEN), L4.pool_tokens(&QWEN));
+        assert_eq!(
+            g.pool_tokens(&QWEN),
+            QWEN.blocks_in_bytes(23 << 29) * QWEN.block_tokens
         );
         // The L4 has less bandwidth than the box and more of everything else; the H100 has more.
         let (l4, h100) = (L4.step_cost(), H100_SXM.step_cost());
@@ -725,7 +749,29 @@ mod tests {
         assert!(restore(H100_SXM) < restore(L4) && restore(L4) < restore(RTX_5060_TI));
         assert_eq!(
             (L4.pool_tokens(&QWEN), H100_SXM.pool_tokens(&QWEN)),
-            (94_656, 502_432)
+            (83_728, 502_432)
+        );
+    }
+
+    #[test]
+    fn the_l4_loses_a_sixteenth_of_its_memory_to_ecc() {
+        // ECC, on by default, keeps a sixteenth of the L4's 24 GiB of GDDR6. The 22.5 GiB left, less
+        // what the box keeps beside its pool, hold 5,233 blocks: 83,728 tokens, where all 24 GiB
+        // would hold 94,656.
+        let left = (24 << 30) / 16 * 15 - BOX_BESIDE_POOL;
+        assert_eq!(QWEN.blocks_in_bytes(left), 5_233);
+        assert_eq!(L4.pool_tokens(&QWEN), 83_728);
+        let all = QWEN.blocks_in_bytes((24 << 30) - BOX_BESIDE_POOL) * QWEN.block_tokens;
+        assert_eq!(all, 94_656);
+        // The table gives the memory left; the box's and the H100's keep all theirs.
+        let gpus = profiles(&GPUS);
+        assert!(
+            gpus.contains("| L4 24 GB | modeled | 22.5 GiB | 300 GB/s |"),
+            "{gpus}"
+        );
+        assert!(
+            gpus.contains("| H100 SXM 80 GB | modeled | 80 GiB | 3,350 GB/s |"),
+            "{gpus}"
         );
     }
 
@@ -785,7 +831,7 @@ mod tests {
         assert_eq!(fitted_token_scale(&RTX_5060_TI, &QWEN, 36_385, 32), Some(1));
         assert_eq!(fitted_token_scale(&RTX_5060_TI, &QWEN, 36_386, 32), None);
         // A card with no room beside the box's footprint has no pool at all.
-        let small = the_box_with(|g| g.memory_gib = 8);
+        let small = the_box_with(|g| g.memory_mib = 8 << 10);
         assert_eq!(small.pool_tokens(&QWEN), 0);
         assert_eq!(fitted_token_scale(&small, &QWEN, 16, 32), None);
     }
@@ -795,8 +841,8 @@ mod tests {
         let all = [5, 8, 12, 16, 24, 32, 40, 64, 96, 128, 192, 256];
         let regime_map = [5, 8, 12, 16, 24, 32, 40];
         assert_eq!(sessions_for(&RTX_5060_TI, &QWEN, 1, &all), regime_map);
-        // 2.6 and 13.8 times the box's pool at its scale: up to 104 and 552 sessions.
-        assert_eq!(sessions_for(&L4, &QWEN, 1, &all).last(), Some(&96));
+        // 2.3 and 13.8 times the box's pool at its scale: up to 92 and 552 sessions.
+        assert_eq!(sessions_for(&L4, &QWEN, 1, &all).last(), Some(&64));
         assert_eq!(sessions_for(&H100_SXM, &QWEN, 1, &all).len(), all.len());
         // At 4x, the H100's pool holds 1.7 times the box's at 32x: up to 69 sessions.
         assert_eq!(sessions_for(&H100_SXM, &QWEN, 8, &all).last(), Some(&64));
@@ -827,6 +873,8 @@ mod tests {
         assert_eq!(t, ["0", "999", "1,000", "36,400", "1,234,567"]);
         let t = [189.75, 47.4375, 121.0, 1_979.0, 999.96].map(tenths);
         assert_eq!(t, ["189.8", "47.4", "121.0", "1,979.0", "1,000.0"]);
+        let t = [16 << 10, 23_040, 80 << 10, 1_200 << 10, 1_536].map(gib);
+        assert_eq!(t, ["16", "22.5", "80", "1,200", "1.5"]);
     }
 
     /// A placement whose arms have resume TTFT p50 100 ms and p90 1,000 ms (`oracle` for
@@ -918,7 +966,7 @@ mod tests {
             "{gpus}"
         );
         assert!(
-            gpus.contains("PCIe 4.0 x16, 31.5 GB/s | 94,656 tokens | 17.26 ms"),
+            gpus.contains("PCIe 4.0 x16, 31.5 GB/s | 83,728 tokens | 17.26 ms"),
             "{gpus}"
         );
         assert!(gpus.contains("| 1,979.0 / 989.5 TFLOPS |"), "{gpus}");
