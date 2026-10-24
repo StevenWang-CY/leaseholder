@@ -25,7 +25,13 @@ from typing import Any
 
 import orjson
 
-from leaseholder_bench.e2.record import REPLY_TIMEOUT_MS, WATERFALL, _added, compact, turn_samples
+from leaseholder_bench.e2.record import (
+    REPLY_TIMEOUT_MS,
+    WATERFALL,
+    compact,
+    measured_sum,
+    turn_samples,
+)
 from leaseholder_bench.load import summarize
 
 COLUMNS = (
@@ -135,7 +141,7 @@ def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Pa
         # The arm file's own workload first, then the rest of its corpus, then the other corpora.
         data, callers = r["data"], r["callers"]
         first = ((data, callers) != STANDARD_WORKLOAD, data != STANDARD_WORKLOAD[0], data, callers)
-        return (*first, _arm_order(r["arm"]), goodput, r["point"], r["campaign"])
+        return (*first, arm_order(r["arm"]), goodput, r["point"], r["campaign"])
 
     rows.sort(key=order)
     return rows, incomplete
@@ -189,7 +195,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         "realtime_first_byte_source": first_byte["source"],
         "engine_preemptions": engine["preemptions"],
         "shed": gateway["shed"],
-        "refused": _added(gateway["refused"], *(engine["refused"] or {}).values()),
+        "refused": measured_sum(gateway["refused"], *(engine["refused"] or {}).values()),
         "resubmitted": gateway["resubmitted"],
         "gateway_background_tokens_per_s": gateway["background_tokens_per_s"],
     }
@@ -346,7 +352,7 @@ def voice_slo(groups: Sequence[Mapping[str, Any]], callers: int) -> tuple[float,
     alone = [
         g
         for g in groups
-        if _arm_order(g["arm"])[0] == 1
+        if arm_order(g["arm"])[0] == 1
         and g["runs"][0]["callers"] == callers
         and g["v2v_p95_ms"] is not None
     ]
@@ -356,7 +362,7 @@ def voice_slo(groups: Sequence[Mapping[str, Any]], callers: int) -> tuple[float,
     return p95 + SLO_MARGIN_MS, [g["point"] for g in alone]
 
 
-def _arm_order(arm: str) -> tuple[int, str]:
+def arm_order(arm: str) -> tuple[int, str]:
     """Arms in E2's order: 2 before 10, 7a before 7b."""
     number = re.match(r"\d+", arm)
     return (int(number[0]) if number else 1000, arm)
@@ -521,7 +527,7 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         align += "---:|---:|"
     for members in _by_workload(rows):
         lines += ["", f"## Workload: {members[0]['workload']}", "", _slo_line(members[0], groups)]
-        for arm in sorted({r["arm"] for r in members}, key=_arm_order):
+        for arm in sorted({r["arm"] for r in members}, key=arm_order):
             lines += ["", f"### Arm {arm}", "", header, align]
             lines += _arm_rows([r for r in members if r["arm"] == arm], groups, gpu_columns)
     if NODE_COLUMNS in measured:

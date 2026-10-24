@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from leaseholder_bench.e2.record import REPLY_TIMEOUT_MS
-from leaseholder_bench.e2.report import SLO_MARGIN_MS, STACKED, _arm_order, configurations
+from leaseholder_bench.e2.report import SLO_MARGIN_MS, STACKED, arm_order, configurations
 
 # Light chart surface, ink and the categorical palette, in its order.
 _SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
@@ -78,7 +78,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
     placed = [g for g in configurations(rows) if g["v2v_p95_ms"] is not None]
     groups = [g for g in placed if not g["failed_turns"]]
     failed = [g for g in placed if g["failed_turns"]]
-    arms = sorted({g["arm"] for g in placed}, key=_arm_order)
+    arms = sorted({g["arm"] for g in placed}, key=arm_order)
     fence = _fence([g["v2v_p95_ms"] for g in groups])
     # The scale of the measured configurations: a censored V2V must not flatten them.
     top = fence if fence is not None else max((g["v2v_p95_ms"] for g in groups), default=None)

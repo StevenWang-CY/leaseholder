@@ -372,7 +372,7 @@ def added_engine_counts(counts: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         return totals
 
     return {
-        "preemptions": _added(*(c["preemptions"] for c in counts)),
+        "preemptions": measured_sum(*(c["preemptions"] for c in counts)),
         "prompt_tokens_by_source": added("prompt_tokens_by_source"),
         "refused": added("refused"),
     }
@@ -523,7 +523,7 @@ def _number(fields: Sequence[str], index: int) -> float | None:
         return None
 
 
-def _added(*counts: int | None) -> int | None:
+def measured_sum(*counts: int | None) -> int | None:
     """The sum of the counts that were measured; None when none was."""
     measured = [c for c in counts if c is not None]
     return sum(measured) if measured else None
