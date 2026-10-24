@@ -147,7 +147,10 @@ rsync -a --delete -e "$ssh" "$cyan:$runs/report/" "$results/report/"
 $ssh "$cyan" "$bench e2 reset" 2>&1 | tee -a "$results/campaign.log" || die "lh-bench e2 reset failed"
 if $pause; then
   for gpu in "${gpus[@]}"; do
-    $ssh "$gpu" systemctl --user stop leaseholder.target || die "the units of ${gpu%%.*} did not stop"
+    # Naming the units makes systemctl wait for their stops too, not only the target's, which returns at once: a
+    # campaign started right after would otherwise meet an engine still shutting down.
+    $ssh "$gpu" systemctl --user stop leaseholder.target lh-engine lh-stt lh-tts ||
+      die "the units of ${gpu%%.*} did not stop"
     log "${gpu%%.*} is paused; start it again with systemctl --user start leaseholder.target"
   done
 fi
