@@ -41,10 +41,11 @@ trusted = true
 default_class = "background"
 max_class = "interactive"
 
-# Load generators (AIPerf replays). Untrusted: their X-Session-ID and X-LH-Class are ignored.
+# An untrusted client: its X-Session-ID and X-LH-Class are ignored, and it gets background, so that it never
+# outranks the agents (E2 replays its AIPerf traffic as the agents tenant).
 [tenants.bench]
 keys_sha256 = ["<sha256 of the bench key>"]
-default_class = "interactive"
+default_class = "background"
 
 # The admission policy (crates/lh-gateway/README.md#admission). Without the table, every request goes upstream
 # at once. E2's baselines set one policy and its keys:

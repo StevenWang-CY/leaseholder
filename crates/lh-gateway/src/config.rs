@@ -1686,7 +1686,7 @@ mod tests {
             classes,
             [
                 ("agents", true, Background, Interactive),
-                ("bench", false, Interactive, Interactive),
+                ("bench", false, Background, Background),
                 ("voice", true, Realtime, Realtime),
             ]
         );
