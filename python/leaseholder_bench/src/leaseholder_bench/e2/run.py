@@ -51,7 +51,16 @@ from typing import Any
 import httpx
 import orjson
 
-from leaseholder_bench.e2.arm import Arm, E2Error, Engine, Voice, flag_values, gpu_nodes, load_arm
+from leaseholder_bench.e2.arm import (
+    NODE_NAME,
+    Arm,
+    E2Error,
+    Engine,
+    Voice,
+    flag_values,
+    gpu_nodes,
+    load_arm,
+)
 from leaseholder_bench.e2.record import gateway_request_lines, render, summarize_point, worker_lines
 from leaseholder_bench.kv_metrics import fetch
 from leaseholder_bench.tiers import pool_tokens
@@ -713,11 +722,14 @@ def run_point(
     systemd: Systemd | None = None,
     *,
     save_audio: bool = False,
+    gpu_source: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Measure the point of ``arm_file`` into the directory ``out``; returns the summary. A
     directory with a complete point is never overwritten, and an earlier attempt that did not
     complete is kept beside it. ``save_audio``, a run option rather than the arm's, has the callers
-    save each call's audio (``lh-voice bots --save-audio``)."""
+    save each call's audio (``lh-voice bots --save-audio``). ``gpu_source`` is each GPU node's
+    deployed revision (its ~/leaseholder/src/DEPLOYED, None where it has none), which campaign.sh
+    reads over its SSH at the point's start and run.json keeps beside cyan's; None when unknown."""
     if not hasattr(os, "waitid"):
         raise E2Error(NEEDS_WAITID)
     arm = load_arm(arm_file)
@@ -726,7 +738,7 @@ def run_point(
     with _exclusive(host):
         _fresh(out)
         shutil.copyfile(arm_file, out / "arm.toml")
-        record = _Record(out, arm, host)
+        record = _Record(out, arm, host, gpu_source)
         record["save_audio"] = save_audio
         # Under the lock no other run's tools are alive: a marked process is left from a run that
         # was killed before it could stop them.
@@ -997,7 +1009,9 @@ def _fresh(out: Path) -> None:
 class _Record:
     """run.json, rewritten at each step so that a point that dies keeps its status, and run.log."""
 
-    def __init__(self, out: Path, arm: Arm, host: Host) -> None:
+    def __init__(
+        self, out: Path, arm: Arm, host: Host, gpu_source: Mapping[str, str | None] | None
+    ) -> None:
         self.path = out / "run.json"
         self.log = out / "run.log"
         self.data: dict[str, Any] = {
@@ -1007,7 +1021,7 @@ class _Record:
             "host": platform.node(),
             "started": time.time(),
             "arm": asdict(arm),
-            "versions": _versions(host),
+            "versions": _versions(host, gpu_source),
         }
         self._write()
 
@@ -1037,7 +1051,7 @@ class _Record:
         _write_json(self.path, self.data)
 
 
-def _versions(host: Host) -> dict[str, str | None]:
+def _versions(host: Host, gpu_source: Mapping[str, str | None] | None) -> dict[str, Any]:
     deployed = host.root / "src" / "DEPLOYED"  # deploy/deploy.sh records the commit it synced
     gateway = host.root / "bin" / "lh-gateway"
     lh_gateway = None
@@ -1046,10 +1060,28 @@ def _versions(host: Host) -> dict[str, str | None]:
         lh_gateway = shown.stdout.strip() or None
     return {
         "source": deployed.read_text().strip() if deployed.exists() else None,
+        "gpu_source": None if gpu_source is None else dict(gpu_source),
         "leaseholder_bench": metadata.version("leaseholder-bench"),
         "aiperf": metadata.version("aiperf"),
         "lh_gateway": lh_gateway,
     }
+
+
+_REVISION = re.compile(r"[A-Za-z0-9._+-]*")
+"""A deployed revision as deploy/deploy.sh writes it (``git describe --always --dirty``)."""
+
+
+def gpu_sources(values: Sequence[str]) -> dict[str, str | None]:
+    """``NODE=REVISION`` values (``lh-bench e2 run --gpu-source``) by node, an empty revision None."""
+    sources: dict[str, str | None] = {}
+    for value in values:
+        node, sep, revision = value.partition("=")
+        if not sep or not NODE_NAME.fullmatch(node) or not _REVISION.fullmatch(revision):
+            raise E2Error(f"--gpu-source {value!r} is not NODE=REVISION")
+        if node in sources:
+            raise E2Error(f"--gpu-source names {node} twice")
+        sources[node] = revision or None
+    return sources
 
 
 def _write_json(path: Path, data: Any) -> None:

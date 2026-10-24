@@ -3,7 +3,8 @@
 # to the hosts, like deploy/deploy.sh. CAMPAIGN names arm files, one per line, relative to itself. For each point
 # whose run directory on cyan is not complete, in order, it
 #   1. switches each GPU node to the arm's engine (deploy/phastform/variant.sh use, with what lh-bench e2 engine prints),
-#   2. measures the point on cyan (lh-bench e2 run) into ~/leaseholder/runs/e2/CAMPAIGN/POINT, sampling each GPU's
+#   2. measures the point on cyan (lh-bench e2 run) into ~/leaseholder/runs/e2/CAMPAIGN/POINT, with each GPU node's
+#      deployed revision (its ~/leaseholder/src/DEPLOYED as the point starts) for run.json, sampling each GPU's
 #      clocks and temperature once a second meanwhile into that directory's gpu.csv (gpu-NODE.csv on several nodes),
 #   3. fetches that run directory into $LH_E2_RESULTS/CAMPAIGN/POINT (default ~/leaseholder/runs/e2).
 # A complete point is skipped, so running a stopped campaign again resumes it; the first failure stops it. At the end
@@ -118,16 +119,23 @@ for i in "${!points[@]}"; do
   # A point whose ssh session dropped may still be running on cyan; switching the engine would spoil it.
   $ssh "$cyan" flock -n leaseholder/runs/.lh-bench-e2.lock true ||
     die "a point is still running on cyan (its pid is in leaseholder/runs/.lh-bench-e2.lock); run again once it ends"
+  sources=""
   for gpu in "${gpus[@]}"; do
     log "$point: ${gpu%%.*} runs ${engines[$i]}"
     $ssh "$gpu" "bash leaseholder/src/deploy/phastform/variant.sh use ${engines[$i]}" 2>&1 |
       tee -a "$results/campaign.log" || die "$point: ${gpu%%.*} did not start ${engines[$i]} (journalctl there)"
+    # The node's deployed revision as the point starts (deploy/deploy.sh writes it), for run.json beside cyan's; empty
+    # when the node has none.
+    deployed=$($ssh "$gpu" cat leaseholder/src/DEPLOYED 2>/dev/null) || deployed=""
+    [[ $deployed =~ ^[A-Za-z0-9._+-]+$ ]] || deployed=""
+    log "$point: ${gpu%%.*} has ${deployed:-no DEPLOYED}"
+    sources+=" --gpu-source ${gpu%%.*}=$deployed"
   done
   log "$point: measuring"
   sample_gpus "$point"
   status=0
-  $ssh "$cyan" "$bench e2 run $runs/arms/$point.toml --out $runs/$point" 2>&1 | tee -a "$results/campaign.log" ||
-    status=$?
+  $ssh "$cyan" "$bench e2 run $runs/arms/$point.toml --out $runs/$point$sources" 2>&1 |
+    tee -a "$results/campaign.log" || status=$?
   stop_gpus "$point"
   if ((status == 255)); then
     die "$point: lost the connection to cyan; the point may still be running there"

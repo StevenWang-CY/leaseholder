@@ -739,6 +739,7 @@ VLLM_CONFIG = {
     "cache_config": {"block_size": 16, "enable_prefix_caching": True, "cache_dtype": "auto"}
     | {"kv_cache_memory_bytes": 5368709120, "num_gpu_blocks": 2275, "gpu_memory_utilization": 0.7},
     "scheduler_config": {"policy": "priority", "max_num_batched_tokens": 512, "max_num_seqs": 256}
+    | {"scheduler_cls": "lh_make_room_scheduler.AsyncScheduler"}
     | {"long_prefill_token_threshold": 256, "async_scheduling": True, "watermark": 0.1}
     | {"max_num_queued_tokens": None, "enable_chunked_prefill": True},
     "kv_transfer_config": {"kv_connector": "OffloadingConnector", "kv_role": "kv_both"}
@@ -758,7 +759,8 @@ def test_a_records_engine_json_says_what_the_point_ran_on() -> None:
         | {"kv_cache_memory_bytes": 5368709120, "num_gpu_blocks": 2275},
         "scheduler_config": {"policy": "priority", "max_num_batched_tokens": 512}
         | {"long_prefill_token_threshold": 256, "max_num_seqs": 256, "async_scheduling": True}
-        | {"watermark": 0.1, "max_num_queued_tokens": None},
+        | {"watermark": 0.1, "max_num_queued_tokens": None}
+        | {"scheduler_cls": "lh_make_room_scheduler.AsyncScheduler"},
         "kv_transfer_config": {"kv_connector": "OffloadingConnector"}
         | {"kv_connector_extra_config": {"cpu_bytes_to_use": 21474836480, "spill": "~/kv"}},
         "additional_config": {"make_room": {"max_preemptions_per_step": 2}},
@@ -786,6 +788,9 @@ def whole(run_dir: Path) -> Path:
     (run_dir / "voice-worker.log").write_text("registered worker\n")
     (run_dir / "arm.toml").write_text('arm = 4\nlabel = "x"\n')
     (run_dir / "engine.json").write_text(json.dumps(VLLM_CONFIG))
+    run = json.loads((run_dir / "run.json").read_text())  # as e2 run wrote it before gpu_source
+    run["versions"] = {"source": "03af728", "leaseholder_bench": "0.3.0", "aiperf": "0.13.0"}
+    (run_dir / "run.json").write_text(json.dumps(run, indent=2) + "\n")
     (run_dir / "bots" / "summary.json").write_text(json.dumps({"turns": 2, "errors": 0}))
     callers = {"config": {"api_key": "lh2a17802e4561", "api_secret": "<redacted>"}}
     (run_dir / "bots" / "run.json").write_text(json.dumps(callers))
@@ -813,6 +818,22 @@ def test_a_compact_record_gives_the_report_of_its_run_directory(tmp_path: Path, 
     kept = sorted(str(p.relative_to(record)) for p in record.rglob("*") if p.is_file())
     assert kept == sorted([*RECORD, "summary.json", "engine.json"])
     assert json.loads((record / "engine.json").read_text()) == engine_settings(VLLM_CONFIG)
+    # The run's run.json, the GPU node's revision null beside cyan's: it was not recorded then.
+    run = json.loads((dirs[0] / "run.json").read_text())
+    recorded = json.loads((record / "run.json").read_text())
+    assert recorded["versions"] == {
+        "source": "03af728",
+        "gpu_source": None,
+        "leaseholder_bench": "0.3.0",
+        "aiperf": "0.13.0",
+    }
+    assert {k: v for k, v in recorded.items() if k != "versions"} == {
+        k: v for k, v in run.items() if k != "versions"
+    }
+    run["versions"]["gpu_source"] = {"phastform": "v0.3-30-g6851e13"}  # a run that recorded it
+    (dirs[0] / "run.json").write_text(json.dumps(run))
+    again = export_point(dirs[0], tmp_path / "again")
+    assert json.loads((again / "run.json").read_text())["versions"] == run["versions"]
     written = [p.read_text() for p in out.rglob("*") if p.is_file()]
     assert not any("lh2a17802e4561" in text or "/home/" in text for text in written)
     summary = json.loads((record / "summary.json").read_text())

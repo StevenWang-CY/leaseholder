@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# nvidia-smi in the campaign.sh tests: a sample of campaign.sh's query every 0.1 s until it is stopped.
+while :; do
+  echo "2026/10/24 15:00:00.000, 2805 MHz, 13801 MHz, 61, 150.21 W, 0x0000000000000000"
+  sleep 0.1
+done

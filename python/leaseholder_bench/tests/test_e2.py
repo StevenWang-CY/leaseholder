@@ -31,6 +31,7 @@ from leaseholder_bench.e2.run import (
     Process,
     Systemd,
     check_engine,
+    gpu_sources,
     read_env,
     reset_cyan,
     run_point,
@@ -41,6 +42,7 @@ FAKES = Path(__file__).parent / "fakes"
 REPO = Path(__file__).resolve().parents[3]
 EXAMPLE = REPO / "deploy" / "cyan" / "gateway.example.toml"
 BENCHMARKS = REPO / "benchmarks" / "e2"
+RESULTS = REPO / "benchmarks" / "results" / "2026-10-23-e2"
 PHASTFORM = REPO / "deploy" / "phastform"
 needs_waitid = pytest.mark.skipif(not hasattr(os, "waitid"), reason=e2.NEEDS_WAITID)
 
@@ -424,6 +426,22 @@ def test_the_engine_runs_exactly_the_switches_its_flags_set(tmp_path: Path) -> N
     ]
 
 
+def test_the_committed_points_ran_the_engines_their_arm_files_name() -> None:
+    """Each vLLM point of the committed records passes the engine check of its arm file, its scheduler
+    class among what is checked: the check refuses none of the engines the variants start."""
+    checked = 0
+    for engine_json in sorted(RESULTS.glob("*/*/engine.json")):
+        config = json.loads(engine_json.read_text())
+        if "scheduler_config" not in config:
+            continue  # SGLang's
+        arm = load_arm(engine_json.with_name("arm.toml"))
+        settings = config["cache_config"] | config["scheduler_config"]
+        flags = check_engine(arm.engine, EngineInfo("vllm", "0.32.0", 36400, settings, config))
+        assert "--scheduler-cls" not in flags["unchecked"], engine_json
+        checked += 1
+    assert checked == 119
+
+
 def test_a_vllm_point_needs_the_frozen_settings_its_flags_keep(tmp_path: Path) -> None:
     with pytest.raises(E2Error, match="policy = 'fcfs', the point needs --scheduling-policy prio"):
         check_engine(Engine("frozen", ()), vllm(**STOCK_SCHEDULER))  # left over from arm 2
@@ -686,6 +704,9 @@ def test_voice_alone_runs_the_calls_against_the_box_as_it_is(cyan: Cyan) -> None
     assert engine["model_config"]["hf_token"] == "<redacted>"
     assert run_json["cyan"]["llm_path"].endswith("gateway.sock")
     assert run_json["versions"]["aiperf"] == "0.13.0"
+    # No campaign named the GPU node's revision; it goes beside cyan's.
+    assert list(run_json["versions"])[:2] == ["source", "gpu_source"]
+    assert run_json["versions"]["gpu_source"] is None
     assert (out / "arm.toml").read_text().startswith("arm = 1")
     args = json.loads((out / "bots.args").read_text())
     assert args[args.index("--turns") + 1] == "25" and args[args.index("--callers") + 1] == "2"
@@ -880,6 +901,28 @@ def test_the_worker_journal_waits_only_for_sessions_that_end(
     summary = run(cyan, "a1-voice", VOICE_ALONE, out="again")
     assert len(reads) >= 3
     assert (summary["worker"]["sessions"], summary["worker"]["events"]) == (1, None)
+
+
+def test_run_json_keeps_each_gpu_nodes_deployed_revision(cyan: Cyan, capsys) -> None:
+    arm_file = write(cyan.arms, "a1-voice.toml", VOICE_ALONE)
+    out = cyan.host.root / "runs" / "a1-voice"
+    sources = gpu_sources(["phastform=v0.3-30-g6851e13", "gray="])
+    assert sources == {"phastform": "v0.3-30-g6851e13", "gray": None}
+    run_point(arm_file, out, cyan.host, cyan.systemd, gpu_source=sources)
+    assert record(cyan, "a1-voice")["versions"]["gpu_source"] == sources
+    for values, error in (
+        (["phastform"], "'phastform' is not NODE=REVISION"),
+        (["phastform=v0.3 dirty"], "is not NODE=REVISION"),
+        (["a b=v0.3"], "is not NODE=REVISION"),
+        (["gray=a", "gray=b"], "names gray twice"),
+    ):
+        with pytest.raises(E2Error, match=re.escape(error)):
+            gpu_sources(values)
+    # The command line refuses one before it measures anything.
+    args = ["e2", "run", str(arm_file), "--out", str(out.with_name("again"))]
+    assert main([*args, "--gpu-source", "phastform"]) == 1
+    assert "--gpu-source 'phastform' is not NODE=REVISION" in capsys.readouterr().err
+    assert not out.with_name("again").exists()
 
 
 def test_the_callers_save_their_audio_when_the_run_asks(cyan: Cyan) -> None:

@@ -532,8 +532,9 @@ def measured_sum(*counts: int | None) -> int | None:
 # The compact record
 
 RECORD = ("run.json", "arm.toml", "bots/summary.json", "bots/turns.jsonl")
-"""What a point's compact record (``lh-bench e2 export``) copies from its run directory, beside its
-summary.json and a reduced engine.json (engine-NODE.json for each of several GPU nodes). Left out:
+"""What a point's compact record (``lh-bench e2 export``) keeps of its run directory's files, its
+run.json as :func:`compact` gives it, beside its summary.json and a reduced engine.json
+(engine-NODE.json for each of several GPU nodes). Left out:
 the gateway's request log and the GPU's samples, whose numbers the record's summary keeps; AIPerf's
 exports, the metric snapshots, the worker's journal and the tools' logs; and the callers' run.json,
 which names LiveKit's API key."""
@@ -555,12 +556,14 @@ VLLM_ENGINE = {
         "async_scheduling",
         "watermark",
         "max_num_queued_tokens",
+        "scheduler_cls",
     ),
     "kv_transfer_config": ("kv_connector", "kv_connector_extra_config"),
 }
 """What a record keeps of a vLLM engine's configuration, beside all of its additional_config: the
-settings lh-bench e2 run checks the arms' flags against, and what it takes to serve the same engine
-again (the model and its revision, the context, dtype and quantization, the KV pool, the CPU tier)."""
+settings lh-bench e2 run checks the arms' flags against, the scheduler class among them (a variant's
+module, or None for vLLM's own), and what it takes to serve the same engine again (the model and its
+revision, the context, dtype and quantization, the KV pool, the CPU tier)."""
 SGLANG_ENGINE = (
     "model_path",
     "revision",
@@ -592,15 +595,21 @@ _HOME = re.compile(r"/(?:home|Users)/[^/\s]+|/root(?=/)")
 def compact(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """The run.json and summary.json of the compact record of the point in ``run_dir``, a run
     directory or a record (whose own it returns); None for a point that did not complete. The
-    summary takes the first bytes of both classes exactly from the request log, and the GPU's median
-    SM clock and highest temperature from gpu.csv (``gpu``; on several GPU nodes over all of their
-    gpu-NODE.csv, and each node's in its share): what a record keeps of the files it leaves out.
-    The report reads every point through it, so a run directory and its record give the same
-    tables."""
+    run.json is the run's, its ``versions`` naming the GPU nodes' deployed revisions as null where
+    the run did not record them (``gpu_source``). The summary takes the first bytes of both classes
+    exactly from the request log, and the GPU's median SM clock and highest temperature from gpu.csv
+    (``gpu``; on several GPU nodes over all of their gpu-NODE.csv, and each node's in its share): what
+    a record keeps of the files it leaves out. The report reads every point through it, so a run
+    directory and its record give the same tables."""
     run_file = run_dir / "run.json"
     run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
     if run.get("status") != "complete":
         return None
+    if "versions" in run and "gpu_source" not in run["versions"]:
+        # Points measured before e2 run recorded it: beside cyan's revision, as e2 run writes it.
+        versions = list(run["versions"].items())
+        at = 1 + next((i for i, (key, _) in enumerate(versions) if key == "source"), -1)
+        run["versions"] = dict([*versions[:at], ("gpu_source", None), *versions[at:]])
     summary = orjson.loads((run_dir / "summary.json").read_bytes())
     window = run.get("window")
     requests = gateway_requests(run_dir, window["start"], window["end"]) if window else None
@@ -630,13 +639,15 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
     several nodes) keeps only what says which engine the point ran on (:func:`engine_settings`)."""
     if (point := compact(run_dir)) is None:
         return None
-    summary = point[1]
+    run, summary = point
     nodes = summary.get("nodes") or {}
     record = out / run_dir.absolute().parent.name / run_dir.absolute().name
     (record / "bots").mkdir(parents=True, exist_ok=True)
     for name in RECORD:
-        if (run_dir / name).exists():
+        if name != "run.json" and (run_dir / name).exists():
             shutil.copyfile(run_dir / name, record / name)
+    # As e2 run writes them, so that a run.json the record keeps as it was stays the same bytes.
+    (record / "run.json").write_bytes(orjson.dumps(run, option=orjson.OPT_INDENT_2) + b"\n")
     (record / "summary.json").write_bytes(orjson.dumps(summary, option=orjson.OPT_INDENT_2) + b"\n")
     for name in [f"engine-{node}.json" for node in nodes] or ["engine.json"]:
         if (engine := run_dir / name).exists():

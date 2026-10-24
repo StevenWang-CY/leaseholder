@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# ssh in the campaign.sh tests: `ssh HOST COMMAND...` runs COMMAND with bash in $FAKE_HOSTS/HOST, the host's home, as
+# its login shell would, and logs the call to $FAKE_HOSTS/ssh.log.
+host=$1
+shift
+mkdir -p "$FAKE_HOSTS/$host"
+printf '%s %s\n' "$host" "$*" >>"$FAKE_HOSTS/ssh.log"
+cd "$FAKE_HOSTS/$host" && HOME=$FAKE_HOSTS/$host exec bash -c "$*"

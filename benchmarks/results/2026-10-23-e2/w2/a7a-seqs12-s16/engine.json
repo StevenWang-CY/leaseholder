@@ -20,7 +20,8 @@
     "max_num_seqs": 12,
     "async_scheduling": true,
     "watermark": 0.0,
-    "max_num_queued_tokens": null
+    "max_num_queued_tokens": null,
+    "scheduler_cls": null
   },
   "kv_transfer_config": {
     "kv_connector": "OffloadingConnector",

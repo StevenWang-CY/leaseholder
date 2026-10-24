@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# rsync in the campaign.sh tests: copies the sources to the destination, HOST:PATH being $FAKE_HOSTS/HOST/PATH. A source
+# that ends in / is a directory whose contents go, and --delete empties the destination first.
+delete=false
+paths=()
+while (($#)); do
+  case $1 in
+    -a) ;;
+    --delete) delete=true ;;
+    -e | --exclude) shift ;;
+    *) paths+=("$1") ;;
+  esac
+  shift
+done
+local_path() { if [[ $1 == *:* ]]; then echo "$FAKE_HOSTS/${1%%:*}/${1#*:}"; else echo "$1"; fi; }
+last=$((${#paths[@]} - 1))
+dest=$(local_path "${paths[$last]}")
+unset "paths[$last]"
+for source in "${paths[@]}"; do
+  source=$(local_path "$source")
+  if [[ $source == */ ]]; then
+    if $delete; then rm -rf "$dest"; fi
+    mkdir -p "$dest" && cp -R "$source." "$dest" || exit 23
+  else
+    mkdir -p "$dest" && cp "$source" "$dest" || exit 23
+  fi
+done

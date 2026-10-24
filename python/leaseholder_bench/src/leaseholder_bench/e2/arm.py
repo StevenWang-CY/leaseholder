@@ -16,7 +16,7 @@ from typing import Any
 _FLAG = re.compile(r"[A-Za-z0-9._:/=,+-]+")
 """Engine flags travel through ssh and a systemd environment line, so each is one plain word."""
 _ARM = re.compile(r"(10|[1-9])[a-z]?(-[a-z0-9]+)*")
-_NODE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+NODE_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 """The gateway's rule for node names, which unit, file and socket names carry."""
 
 
@@ -152,7 +152,11 @@ def gpu_nodes(arm: Arm) -> dict[str, str]:
     urls = {}
     for name, node in nodes.items():
         url = node.get("upstream") if isinstance(node, Mapping) else None
-        if not _NODE.fullmatch(name) or not isinstance(url, str) or not url.startswith("http://"):
+        if (
+            not NODE_NAME.fullmatch(name)
+            or not isinstance(url, str)
+            or not url.startswith("http://")
+        ):
             raise E2Error(
                 f"{where}: {name!r} needs a name from [A-Za-z0-9._-] and an http:// upstream"
             )

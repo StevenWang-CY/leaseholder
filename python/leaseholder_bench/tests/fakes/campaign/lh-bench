@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# lh-bench on cyan in the campaign.sh tests (leaseholder/venvs/bench/bin/lh-bench of the host's home). `e2 engine` is
+# the real one ($FAKE_LH_BENCH), which reads the arm file; `e2 run` writes a complete point's run.json as e2 run does;
+# `e2 report` and `e2 reset` do what campaign.sh needs. Each call goes to lh-bench.log in the home.
+echo "lh-bench $*" >>"$HOME/lh-bench.log"
+case "$1 $2" in
+  "e2 engine") exec "$FAKE_LH_BENCH" "$@" ;;
+  "e2 run")
+    out=$(printf '%s\n' "$@" | grep -A1 -x -- --out | tail -1)
+    mkdir -p "$out" && printf '{\n  "kind": "e2-point",\n  "status": "complete"\n}\n' >"$out/run.json"
+    ;;
+  "e2 report")
+    out=$(printf '%s\n' "$@" | grep -A1 -x -- --out | tail -1)
+    mkdir -p "$out" && echo "# E2 frontier" >"$out/frontier.md"
+    ;;
+  "e2 reset") echo "gateway: unchanged" ;;
+  *) echo "lh-bench: unexpected $*" >&2 && exit 2 ;;
+esac

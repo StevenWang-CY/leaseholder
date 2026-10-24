@@ -39,6 +39,7 @@
   },
   "versions": {
     "source": "419e181",
+    "gpu_source": null,
     "leaseholder_bench": "0.1.0",
     "aiperf": "0.13.0",
     "lh_gateway": "lh-gateway 0.0.1"

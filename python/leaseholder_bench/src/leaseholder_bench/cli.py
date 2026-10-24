@@ -276,7 +276,7 @@ def _e2(args: argparse.Namespace) -> int:
     from leaseholder_bench.e2.arm import E2Error, load_arm
     from leaseholder_bench.e2.record import export_point, render
     from leaseholder_bench.e2.report import load_points, write_report
-    from leaseholder_bench.e2.run import Host, Systemd, reset_cyan, run_point
+    from leaseholder_bench.e2.run import Host, Systemd, gpu_sources, reset_cyan, run_point
 
     try:
         if args.action == "engine":
@@ -289,8 +289,11 @@ def _e2(args: argparse.Namespace) -> int:
             # A closed ssh session does not stop a point; SIGINT and SIGTERM do, after cleaning up.
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, _interrupted)
+            sources = gpu_sources(args.gpu_source) if args.gpu_source else None
             try:
-                summary = run_point(args.arm, args.out, save_audio=args.save_audio)
+                summary = run_point(
+                    args.arm, args.out, save_audio=args.save_audio, gpu_source=sources
+                )
             except KeyboardInterrupt:
                 print(f"lh-bench e2: {args.arm.stem} interrupted", file=sys.stderr)
                 return 130
@@ -351,6 +354,15 @@ def _add_e2(commands: Commands) -> None:
         action="store_true",
         help="have the callers save each call's audio (lh-voice bots --save-audio), for the demo "
         "video; recorded in run.json",
+    )
+    run.add_argument(
+        "--gpu-source",
+        action="append",
+        default=[],
+        metavar="NODE=REVISION",
+        help="a GPU node's deployed revision (its ~/leaseholder/src/DEPLOYED, empty when it has "
+        "none), as campaign.sh reads it at the point's start; run.json keeps it beside cyan's "
+        "(repeatable, one per node)",
     )
     report = actions.add_parser(
         "report",

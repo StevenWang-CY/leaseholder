@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# flock in the campaign.sh tests: `flock -n FILE COMMAND...` runs COMMAND, as when no point holds the lock.
+shift 2
+exec "$@"

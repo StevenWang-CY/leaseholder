@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# stdbuf in the campaign.sh tests: `stdbuf -oL COMMAND...` runs COMMAND.
+shift
+exec "$@"
