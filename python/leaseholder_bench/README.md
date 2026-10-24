@@ -222,15 +222,13 @@ A point runs in this order:
 | `[voice] seed` | 0 | The callers' seed |
 | `[voice] preemptive_generation` | `true` | LiveKit's preemptive generation in the voice worker (`LH_PREEMPTIVE_GENERATION`) |
 | `[voice] events` | `true` | The voice worker's lifecycle events to the gateway (`LH_EVENTS`); `false` measures a point without them |
-| `[agents] sessions` | 0 | Session trees AIPerf keeps live; 0 is voice alone |
-| `[agents] target` | `"gateway"` | `"gateway"`, as the `agents` tenant with `LH_GATEWAY_AGENTS_KEY` from `~/.config/leaseholder/gateway-keys.env`, or `"engine"`, straight through the tunnel |
+| `[agents] sessions` | 0 | Session trees AIPerf keeps live, through the gateway as the `agents` tenant with `LH_GATEWAY_AGENTS_KEY` from `~/.config/leaseholder/gateway-keys.env`; 0 is voice alone |
 | `[agents] think_cap` | 120 | Cap on each recorded think time, in seconds |
 | `[agents] warmup` | 60 | Seconds of profiling before the calls start |
 | `[agents] data` | `"weka-x32"` | The corpus, a `scale-traces` directory under `~/leaseholder/data` |
 | `[agents] seed` | 11 | AIPerf's seed |
-| `[agents] send_priority` | `true` | The plugin's body `priority`. The gateway strips it, so it reaches only an engine targeted directly |
 | `[gateway]` | none | Merged into `gateway.toml` as it is, tables key by key: `upstream`, `upstream_priority`, `[gateway.admission]` and any other key of [`lh-gateway`'s configuration](../../crates/lh-gateway/README.md) |
-| `[gateway.nodes.<name>]`, `[gateway.placement]` | none | A point on several GPU nodes: two or more, each with an `http://` `upstream`, and how the gateway places sessions on them ([placement](../../crates/lh-gateway/README.md#placement)). Its agents go through the gateway, and it takes no `router` |
+| `[gateway.nodes.<name>]`, `[gateway.placement]` | none | A point on several GPU nodes: two or more, each with an `http://` `upstream`, and how the gateway places sessions on them ([placement](../../crates/lh-gateway/README.md#placement)). It takes no `router` |
 | `[engine] variant` | `"frozen"` | A directory of [`deploy/phastform/variants`](../../deploy/phastform/variants/README.md), or `frozen` |
 | `[engine] flags` | `[]` | Engine flags, each a plain word, added to its command line |
 

@@ -131,12 +131,11 @@ class Voice:
 
 @dataclass(frozen=True)
 class Agents:
-    """``[agents]``: the AIPerf agentic replay beside the calls; no sessions is voice alone."""
+    """``[agents]``: the AIPerf agentic replay beside the calls, through the gateway as its tenant
+    ``agents``; no sessions is voice alone."""
 
     sessions: int = 0
     """Session trees AIPerf keeps live."""
-    target: str = "gateway"
-    """``gateway`` (tenant ``agents``, with its key) or ``engine`` (straight through the tunnel)."""
     think_cap: float = 120.0
     """Cap on each recorded think time, in seconds."""
     warmup: float = 60.0
@@ -144,8 +143,6 @@ class Agents:
     data: str = "weka-x32"
     """A ``scale-traces`` directory, relative to ~/leaseholder/data."""
     seed: int = 11
-    send_priority: bool = True
-    """Send the vLLM ``priority`` field; only reaches an engine with target ``engine``."""
 
 
 @dataclass(frozen=True)
@@ -275,18 +272,12 @@ def load_arm(path: Path) -> Arm:
         (voice.callers >= 1 and voice.turns >= 1, "[voice] needs a caller and a turn"),
         (0 <= voice.barge_in <= 1, "[voice] barge_in is a share of turns, 0 to 1"),
         (agents.sessions >= 0, "[agents] sessions cannot be negative"),
-        (agents.target in ("gateway", "engine"), "[agents] target is gateway or engine"),
         (agents.think_cap > 0 and agents.warmup >= 0, "[agents] think_cap and warmup are seconds"),
     ):
         if not ok:
             raise E2Error(f"{path.name}: {what}")
-    if gpu_nodes(arm):
-        for ok, what in (
-            (arm.router is None, "a router fronts one engine, not several GPU nodes"),
-            (agents.target == "gateway", "[agents] go through the gateway to several GPU nodes"),
-        ):
-            if not ok:
-                raise E2Error(f"{path.name}: {what}")
+    if gpu_nodes(arm) and arm.router is not None:
+        raise E2Error(f"{path.name}: a router fronts one engine, not several GPU nodes")
     return arm
 
 
@@ -919,7 +910,7 @@ def _start_aiperf(
 ) -> Process:
     """Start the replay and return once it has been profiling for the warm-up."""
     agents = arm.agents
-    record.say(f"AIPerf: {agents.sessions} session trees through the {agents.target}")
+    record.say(f"AIPerf: {agents.sessions} session trees through the gateway")
     aiperf = Process("AIPerf", host.aiperf(), out / "aiperf.log", _aiperf_env(arm, host, out))
     running.callback(aiperf.stop, AIPERF_STOP_S)
     deadline = time.monotonic() + PROFILING_TIMEOUT_S
@@ -1046,10 +1037,14 @@ def _aiperf_env(arm: Arm, host: Host, out: Path) -> dict[str, str]:
         raise E2Error(
             f"no AIPerf configuration in {CONFIGS}: install the package from its source tree"
         )
-    url = host.gateway_url if agents.target == "gateway" else host.engine_url
+    keys = host.config / "gateway-keys.env"
+    tenant_key = read_env(keys).get("LH_GATEWAY_AGENTS_KEY") if keys.exists() else None
+    if not tenant_key:
+        raise E2Error(f"{keys} has no LH_GATEWAY_AGENTS_KEY, the agents tenant's key")
     env = os.environ | read_env(CONFIGS / "aiperf.env")
     env |= {
-        "LH_BENCH_URL": f"{url}/v1/chat/completions",
+        "LH_BENCH_URL": f"{host.gateway_url}/v1/chat/completions",
+        "LH_BENCH_API_KEY": tenant_key,
         "LH_BENCH_DATA": str(data),
         "LH_BENCH_SESSIONS": str(agents.sessions),
         "LH_BENCH_DURATION": str(AIPERF_DURATION_S),
@@ -1057,15 +1052,8 @@ def _aiperf_env(arm: Arm, host: Host, out: Path) -> dict[str, str]:
         "LH_BENCH_THINK_CAP": f"{agents.think_cap:g}",
         "LH_BENCH_SEED": str(agents.seed),
         "LH_BENCH_CLASS": "background",
-        "LH_BENCH_SEND_PRIORITY": str(agents.send_priority).lower(),
         "LH_BENCH_ARTIFACTS": str(out / "aiperf"),
     }
-    if agents.target == "gateway":
-        keys = host.config / "gateway-keys.env"
-        tenant_key = read_env(keys).get("LH_GATEWAY_AGENTS_KEY") if keys.exists() else None
-        if not tenant_key:
-            raise E2Error(f"{keys} has no LH_GATEWAY_AGENTS_KEY, the agents tenant's key")
-        env["LH_BENCH_API_KEY"] = tenant_key
     return env
 
 
