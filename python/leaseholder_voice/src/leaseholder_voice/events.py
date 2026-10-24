@@ -32,6 +32,7 @@ import collections
 import contextlib
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -107,6 +108,9 @@ class EventSender:
         self._queue: collections.deque[dict[str, Any]] = collections.deque()
         self._batch: list[dict[str, Any]] = []
         self._seq = 0
+        # The control plane remembers ids for 10 minutes: a sender made anew for the same session, as when a
+        # worker rejoins its room, must not repeat the ids of the one before.
+        self._nonce = uuid.uuid4().hex[:8]
         self._failing = False
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
@@ -114,14 +118,15 @@ class EventSender:
         self._task = asyncio.create_task(self._run(), name="lifecycle-events")
 
     def emit(self, event_type: str, **fields: int) -> None:
-        """Queue one event, stamped now; ``event_id`` is the session and a sequence number."""
+        """Queue one event, stamped now; ``event_id`` is the session, the sender's nonce and a sequence
+        number."""
         self._seq += 1
         if len(self._queue) >= self._limit:
             self._queue.popleft()
             self.dropped += 1
         self._queue.append(
             {
-                "event_id": f"{self.session_id}-{self._seq}",
+                "event_id": f"{self.session_id}-{self._nonce}-{self._seq}",
                 "session_id": self.session_id,
                 "at_ms": time.time_ns() // 1_000_000,
                 "source": SOURCE,

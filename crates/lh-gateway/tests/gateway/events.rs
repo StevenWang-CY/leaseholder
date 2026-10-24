@@ -28,16 +28,18 @@ async fn events_are_validated_deduplicated_and_taken_only_from_trusted_tenants()
         json!({"accepted": 0, "duplicates": 1})
     );
 
-    // A batch: a repeat, and two new events. The key is (source, event_id), so the same id from another
-    // source is a different event.
+    // A batch of three new events, though the first has the voice worker's id and source: the key is (tenant,
+    // source, event_id), so the same event from another tenant, and the same id from another source, are other
+    // events. Within the batch, a repeat is a repeat.
     let batch = format!(
         r#"[{SPEECH},
             {{"event_id":"aa-1","session_id":"s-1","at_ms":2,"source":"agentic-api","type":"tool_wait_started",
               "tool":"web_search","eta_ms":2400}},
-            {{"event_id":"vw-1","session_id":"s-1","at_ms":3,"source":"client","type":"session_closed"}}]"#
+            {{"event_id":"vw-1","session_id":"s-1","at_ms":3,"source":"client","type":"session_closed"}},
+            {SPEECH}]"#
     );
     let reply = post(&gw.tcp, &[AGENTS_AUTH], &batch).await;
-    assert_eq!(reply.json(), json!({"accepted": 2, "duplicates": 1}));
+    assert_eq!(reply.json(), json!({"accepted": 3, "duplicates": 1}));
 
     // A batch with an unknown type is refused whole, naming the problem.
     let bad = r#"[{"event_id":"x-1","session_id":"s","at_ms":1,"source":"client","type":"turn_started"},
@@ -82,6 +84,7 @@ async fn events_are_validated_deduplicated_and_taken_only_from_trusted_tenants()
         accepted,
         [
             ("voice".into(), EventSource::VoiceWorker, "vw-1".into()),
+            ("agents".into(), EventSource::VoiceWorker, "vw-1".into()),
             ("agents".into(), EventSource::AgenticApi, "aa-1".into()),
             ("agents".into(), EventSource::Client, "vw-1".into()),
             ("agents".into(), EventSource::Client, "x-1".into()),
@@ -93,6 +96,27 @@ async fn events_are_validated_deduplicated_and_taken_only_from_trusted_tenants()
             "lh_gateway_events_total{{type=\"user_speech_started\",source=\"voice-worker\",duplicate=\"{duplicate}\"}}"
         )
     };
-    assert_eq!(metric(&metrics, &series(false)), Some(1.0));
+    assert_eq!(metric(&metrics, &series(false)), Some(2.0));
     assert_eq!(metric(&metrics, &series(true)), Some(2.0));
+}
+
+/// The review's probe P3: another trusted tenant posts the voice worker's next event id, with the voice worker as
+/// its source, before the voice worker does. The voice worker's own event is still new.
+#[tokio::test]
+async fn another_tenant_cannot_make_the_voice_workers_events_repeats() {
+    let mock = Mock::start(Script::Json("{}")).await;
+    let gw = Gateway::start(mock.addr, "").await;
+    let event = |kind: &str| {
+        format!(
+            r#"{{"event_id":"voice-RM_x-1","session_id":"voice-RM_x","at_ms":1,"source":"voice-worker","type":"{kind}"}}"#
+        )
+    };
+    let squat = event("user_turn_ended");
+    let reply = call(&gw.tcp, "POST", "/v1/events", &[AGENTS_AUTH], &squat).await;
+    assert_eq!(reply.json(), json!({"accepted": 1, "duplicates": 0}));
+    let genuine = event("user_speech_started");
+    let reply = call(&gw.unix, "POST", "/v1/events", &[], &genuine).await;
+    assert_eq!(reply.json(), json!({"accepted": 1, "duplicates": 0}));
+    let again = call(&gw.unix, "POST", "/v1/events", &[], &genuine).await;
+    assert_eq!(again.json(), json!({"accepted": 0, "duplicates": 1}));
 }

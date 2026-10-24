@@ -130,9 +130,12 @@ def test_barge_in_closes_llm_stream(
         assert reply.disconnected_at > barge_in["speech_end"], f"closed too early; see {record}"
     assert close <= BOUND[case], f"closed {close:.3f} s after the barge-in; see {record}"
 
-    # Every lifecycle event reached the control plane, in order.
+    # Every lifecycle event reached the control plane, in order: one sender's ids, the session, the
+    # sender's nonce and a sequence number.
     types = [e["type"] for e in lifecycle]
-    ids = [f"{session_id}-{n}" for n in range(1, len(lifecycle) + 1)]
+    assert lifecycle, f"no lifecycle event reached the control plane; see {record}"
+    nonce = lifecycle[0]["event_id"].removeprefix(f"{session_id}-").split("-")[0]
+    ids = [f"{session_id}-{nonce}-{n}" for n in range(1, len(lifecycle) + 1)]
     assert [e["event_id"] for e in lifecycle] == ids, f"events lost or reordered; see {record}"
     assert _in_order(SKELETON, types), f"lifecycle events {types}; see {record}"
     assert types.count("session_closed") == 1 and types[-1] == "session_closed", types

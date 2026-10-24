@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import tempfile
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -232,7 +233,10 @@ def test_events_go_out_in_order_and_what_waits_goes_together(socket_path: str) -
         ["user_turn_ended", "playback_started", "playback_ended"],
     ]
     delivered = [event for batch in fake.batches for event in batch]
-    assert [e["event_id"] for e in delivered] == [f"voice-RM_x-{n}" for n in range(1, 5)]
+    # The session, the sender's nonce and a sequence number.
+    nonce = delivered[0]["event_id"].split("-")[2]
+    assert re.fullmatch(r"[0-9a-f]{8}", nonce)
+    assert [e["event_id"] for e in delivered] == [f"voice-RM_x-{nonce}-{n}" for n in range(1, 5)]
     assert {(e["session_id"], e["source"]) for e in delivered} == {("voice-RM_x", "voice-worker")}
     assert all(started * 1000 - 1 <= e["at_ms"] <= finished * 1000 for e in delivered)
     assert delivered[-1]["played_ms"] == 1840
@@ -240,6 +244,22 @@ def test_events_go_out_in_order_and_what_waits_goes_together(socket_path: str) -
     assert all(set(schema["required"]) <= set(e) for e in delivered)
     assert events.SOURCE in [v["const"] for v in schema["$defs"]["EventSource"]["oneOf"]]
     assert (sender.sent, sender.dropped, sender.failed) == (4, 0, 0)
+
+
+def test_a_new_sender_for_the_same_session_repeats_no_id(socket_path: str) -> None:
+    # A worker that rejoins a room builds a new sender for its session: within the control plane's
+    # deduplication window (10 minutes), a repeated id would make its events repeats, and drop them.
+    async def scenario() -> list[str]:
+        async with gateway(socket_path) as fake:
+            for _ in range(2):
+                sender = events.EventSender("voice-RM_x", uds=socket_path)
+                sender.emit("user_speech_started")
+                await sender.aclose()
+            return [e["event_id"] for batch in fake.batches for e in batch]
+
+    first, second = asyncio.run(scenario())
+    assert first != second
+    assert all(re.fullmatch(r"voice-RM_x-[0-9a-f]{8}-1", event_id) for event_id in (first, second))
 
 
 def test_a_slow_or_refusing_control_plane_loses_batches_and_nothing_else(
@@ -289,7 +309,7 @@ def test_a_full_queue_drops_its_oldest_events(socket_path: str) -> None:
             return fake, sender
 
     fake, sender = asyncio.run(scenario())
-    assert [e["event_id"] for e in fake.batches[1]] == ["s-4", "s-5", "s-6"]
+    assert [e["event_id"].rsplit("-", 1)[1] for e in fake.batches[1]] == ["4", "5", "6"]
     assert (sender.sent, sender.dropped, sender.failed) == (4, 2, 0)
 
 

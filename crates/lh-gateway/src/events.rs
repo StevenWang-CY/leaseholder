@@ -1,4 +1,4 @@
-//! Lifecycle events: `POST /v1/events` from trusted tenants, deduplicated by `(source, event_id)` within a
+//! Lifecycle events: `POST /v1/events` from trusted tenants, deduplicated by `(tenant, source, event_id)` within a
 //! bounded window, then handed to the admission point of each one's node, where policy leaseholder follows the
 //! realtime sessions' turns by them, and to an [`EventSink`], which records them ([`LogSink`]).
 
@@ -99,7 +99,9 @@ impl Events {
             events
                 .into_iter()
                 .filter(|event| {
-                    let key = format!("{}\0{}", event.source.as_str(), event.event_id);
+                    // Per tenant: any trusted tenant may name any source, and must not make another's events
+                    // repeats by posting their ids first. Tenant names hold no NUL.
+                    let key = format!("{tenant}\0{}\0{}", event.source.as_str(), event.event_id);
                     let fresh = seen.insert(key.into(), received, self.capacity);
                     metrics.event(event.kind.label(), event.source.as_str(), !fresh);
                     fresh

@@ -2,7 +2,7 @@
 //!
 //! One schema serves every workload (ADR-0002). Policy `leaseholder` follows the voice sessions' turns by their
 //! events, which time its KV headroom and its critical window; the agents' events are recorded, and nothing acts
-//! on them. Events arrive at `POST /v1/events`, idempotent by `(source, event_id)`, or the control plane infers
+//! on them. Events arrive at `POST /v1/events`, idempotent by `(tenant, source, event_id)`, or the control plane infers
 //! them from the traffic it proxies.
 //!
 //! On the wire an event is one flat JSON object; `type` selects the variant and its fields:
@@ -20,7 +20,8 @@ use crate::SessionId;
 /// One lifecycle event of one session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LifecycleEvent {
-    /// Idempotency key, 1 to 128 bytes, unique per emitter. A repeated id is acknowledged and ignored.
+    /// Idempotency key, 1 to 128 bytes, unique per emitter. A repeat of an id that the same tenant posted from the
+    /// same source is acknowledged and ignored.
     pub event_id: String,
     pub session_id: SessionId,
     /// When the emitter observed the event, in Unix epoch milliseconds. The control plane also stamps its own
