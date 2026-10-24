@@ -843,7 +843,9 @@ def _cpu_tier(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         "here in tokens at the bytes of KV a token takes in the engine's pool (its KV cache's bytes "
         "over its tokens; `kv_bytes_per_token` in frontier.csv). Loaded beyond first scheduling is "
         "the CPU tier's loads less its hits at first scheduling: the loads of requests resumed after "
-        "a preemption. How much of a resumed request's prompt was computed again, no counter shows.",
+        "a preemption, give or take those of requests whose load and first scheduling are not both "
+        "within the calls (one falls before or after them, or the request is aborted in between). "
+        "How much of a resumed request's prompt was computed again, no counter shows.",
         "",
         "| Point | Preemptions | Computed at first scheduling | GPU-pool hits at first scheduling "
         "| CPU-tier hits at first scheduling | Loaded from the CPU tier "
