@@ -74,6 +74,7 @@ Without any engine change, aborting background requests that have no first byte 
 
 - **A voice turn that two preemptions cannot make room for** waits as on stock: the change preempts at most `N` requests a step, and none if `N` would not do.
 - **Only realtime work** leaves nothing to preempt: the engine schedules it by priority and arrival, as stock.
+- **Known gaps in the change**, in the variant and both PRs until they are fixed ([ARCHITECTURE.md §2](ARCHITECTURE.md#2-the-engine-change)): a background request whose CPU-tier load has finished can still prefill inside the protected window; a request's cached prefix counts against the KV gates, so agents sharing a prefix can be held back more than stock would; and a turn can need a second preemption a step later. E2's numbers include their effect.
 - **Host memory pressure.** The CPU tier lives in shared memory charged to the engine's cgroup, so a memory-pressure killer such as `systemd-oomd` picks the engine first under a host-wide stall ([the runbook](../ops/RUNBOOK.md#failures)). Keep the host's swap and memory pressure low; where `systemd-oomd` acts for the engine's own manager, `ManagedOOMPreference=avoid` on the engine's unit makes it a last resort.
 - **Another process on the GPU** slows every stage: keep the GPU exclusive, as `gpu-guard` does for the box's units.
 - **A reserve too large to start** (only with `make_room.reserve_tokens` above 0): the engine refuses to start if the reserve and one `max_model_len` request do not fit in the pool together.

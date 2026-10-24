@@ -36,7 +36,7 @@ Every `X-LH-` header ends at the gateway; none reaches the engine.
 | Kind | Names |
 |---|---|
 | Headers | `X-Vllm-Priority`, `X-SMG-Priority`, `X-Session-ID` (from untrusted callers), `X-data-parallel-rank`, `X-Request-Id` |
-| Body fields | `session_id`, `priority`, `kv_transfer_params`, `cache_salt`, `request_id`, `vllm_xargs` |
+| Body fields | vLLM's `session_id`, `priority`, `kv_transfer_params`, `cache_salt`, `request_id`, `vllm_xargs`; SGLang's `rid`, `extra_key`, `session_params`, `custom_labels`, `routed_dp_rank`, `data_parallel_rank`, `disagg_prefill_dp_rank`, `bootstrap_host`, `bootstrap_port`, `bootstrap_room` |
 
 vLLM 0.32 reads the body's `session_id` before the header, and `vllm_xargs.session_id` after it; `X-Vllm-Priority` takes precedence over the body's `priority`. When `upstream_priority` lists `body`, the gateway writes the class's engine priority into the body's `priority`, which SGLang reads (E2 arm 7b). vLLM's FCFS scheduler ignores priorities. Each tenant's `cache_salt` is the first 32 hex digits of SHA-256("leaseholder-cache-salt", NUL, tenant): it depends on the tenant's name, not its key, so rotating a key keeps the tenant's cache.
 

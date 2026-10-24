@@ -50,7 +50,7 @@ Arm 10 of the plan (MPS with an active-thread split, audio off the GPU) was not 
 **Factors**, at 16 session trees in the standard scenario: LiveKit's preemptive generation off (on by default), and four and six callers.
 
 **Metrics** the report computes, per point:
-- **Voice.** V2V p50, p95 and p99, and failed turns. Barge-in to silence.
+- **Voice.** V2V p50, p95 and p99, and failed turns, each counted as a sample censored at the callers' 30 s reply timeout. Barge-in to silence.
 - **The voice worker's stage times** (endpointing, the reply's first sentence, TTS's first audio, transport and playout) and the realtime first byte, exact from the gateway's request log.
 - **Agents.** Background goodput (the prompt and completion tokens of the agent requests completed during the calls, over the calls' duration) and the agents' TTFT p50 and p99.
 - **The engine.** Prompt tokens by source (computed, cached, restored from the CPU tier) and preemptions.

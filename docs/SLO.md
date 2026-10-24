@@ -16,7 +16,7 @@ Every E2 point computes these (`lh-bench e2`; [EXPERIMENTS.md](EXPERIMENTS.md#e2
 
 | Indicator | Definition | Target, or what is reported |
 |---|---|---|
-| Voice V2V | The end of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing | **The SLO: p95 at most 250 ms above voice alone with as many callers.** For two callers, voice alone is the median of five runs, 1,767 ms (the four on the W3 build alone: 1,768.5 ms), so the SLO is 2,017 ms. W2's one-run tables used 1,744 ms and 1,994 |
+| Voice V2V | The end of the caller's speech to the agent's first audio, from waveforms at the caller (`lh-voice bots`), with fixed endpointing; a turn not answered within 30 s counts at 30 s | **The SLO: p95 at most 250 ms above voice alone with as many callers.** For two callers, voice alone is the median of five runs, 1,767 ms (the four on the W3 build alone: 1,768.5 ms), so the SLO is 2,017 ms. W2's one-run tables used 1,744 ms and 1,994 |
 | The voice turn's stages | Endpointing, the reply's first sentence, TTS's first audio, transport and playout, from the voice worker's line per reply | Reported per point; the reply's first sentence dominates under load |
 | Realtime first byte | The gateway's request log, exact to the millisecond | Reported per point |
 | Barge-in to silence | The caller starts speaking during the agent's speech, until the agent's audio falls below threshold | Reported per point |
