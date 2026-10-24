@@ -550,7 +550,10 @@ mod tests {
         let metrics = Metrics::new();
         let body = br#"{"model":"m","pri\u006frity":-9,"messages":[{"role":"user","content":"hi \"priority\""}],
             "session_id":"x","kv_transfer_params":{"a":1},"cache_salt":"theirs","request_id":"r",
-            "vllm_xargs":{"session_id":"y"},"prompt_cache_key":"pck-1","stream":true}"#;
+            "vllm_xargs":{"session_id":"y"},"rid":"theirs","extra_key":"other-tenant",
+            "session_params":{"id":"s"},"custom_labels":{"x":"y"},"routed_dp_rank":1,"data_parallel_rank":1,
+            "disagg_prefill_dp_rank":0,"bootstrap_host":"h","bootstrap_port":1,"bootstrap_room":7,
+            "prompt_cache_key":"pck-1","stream":true}"#;
         let out = rewrite_body(body, "0123", None, &metrics).unwrap();
         let value: Value = serde_json::from_slice(&out.json).unwrap();
         assert_eq!(

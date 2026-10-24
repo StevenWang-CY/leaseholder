@@ -134,7 +134,17 @@ fn client_controlled_engine_inputs_are_listed() {
             "{header}"
         );
     }
-    for field in ["session_id", "priority", "kv_transfer_params", "cache_salt"] {
+    // vLLM 0.32's, then SGLang 0.5.22's request id, cache namespace, session and data-parallel routing.
+    for field in [
+        "session_id",
+        "priority",
+        "kv_transfer_params",
+        "cache_salt",
+        "rid",
+        "extra_key",
+        "session_params",
+        "routed_dp_rank",
+    ] {
         assert!(
             headers::ENGINE_CONTROL_BODY_FIELDS.contains(&field),
             "{field}"

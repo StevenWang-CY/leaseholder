@@ -80,6 +80,23 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
 }
 
 #[tokio::test]
+async fn sglangs_engine_fields_are_removed_as_well() {
+    // E2's arm 7b runs SGLang behind the gateway, which sends the class's priority in the body.
+    let mock = Mock::start(Script::Json("{}")).await;
+    let gw = Gateway::start(mock.addr, "upstream_priority = [\"body\"]").await;
+    let body = r#"{"model":"qwen","messages":[],"rid":"someone-elses-id","extra_key":"other-tenant",
+        "session_params":{"id":"s"},"custom_labels":{"x":"y"},"routed_dp_rank":1,"data_parallel_rank":1,
+        "disagg_prefill_dp_rank":0,"bootstrap_host":"h","bootstrap_port":1,"bootstrap_room":7,"priority":-100}"#;
+    let reply = call(&gw.tcp, "POST", "/v1/chat/completions", &[BENCH_AUTH], body).await;
+    assert_eq!(reply.status, 200);
+    // SGLang reads its request id, cache namespace, session and routing from these fields: none is the client's.
+    assert_eq!(
+        mock.last().json(),
+        json!({"model": "qwen", "messages": [], "priority": 1, "cache_salt": BENCH_SALT})
+    );
+}
+
+#[tokio::test]
 async fn trusted_tenants_choose_session_and_class_within_their_limits() {
     let mock = Mock::start(Script::Json("{}")).await;
     let gw = Gateway::start(mock.addr, "").await;

@@ -44,13 +44,27 @@ pub const ENGINE_CONTROL_HEADERS: [&str; 4] =
 
 /// Body fields with the same role. vLLM 0.32 reads `session_id` before the header (and `vllm_xargs.session_id`
 /// after it), takes `priority` for scheduling, `kv_transfer_params` for the offload policy, `cache_salt` for
-/// prefix-cache isolation and `request_id` as its own request id. The control plane removes them from client
-/// bodies and sets its own; each tenant's `cache_salt` is derived from the tenant's name.
-pub const ENGINE_CONTROL_BODY_FIELDS: [&str; 6] = [
+/// prefix-cache isolation and `request_id` as its own request id. SGLang 0.5.22, which E2 runs behind the
+/// control plane as well, takes `rid` as its request id, `extra_key` beside `cache_salt` as a prefix-cache
+/// namespace, `session_params` to continue a session's KV, `custom_labels` as metric labels, and the routing
+/// fields a router injects: the data-parallel rank (`routed_dp_rank`, and the deprecated `data_parallel_rank`)
+/// and the prefill-decode disaggregation fields. The control plane removes them from client bodies and sets its
+/// own; each tenant's `cache_salt` is derived from the tenant's name.
+pub const ENGINE_CONTROL_BODY_FIELDS: [&str; 16] = [
     "session_id",
     "priority",
     "kv_transfer_params",
     "cache_salt",
     "request_id",
     "vllm_xargs",
+    "rid",
+    "extra_key",
+    "session_params",
+    "custom_labels",
+    "routed_dp_rank",
+    "data_parallel_rank",
+    "disagg_prefill_dp_rank",
+    "bootstrap_host",
+    "bootstrap_port",
+    "bootstrap_room",
 ];
