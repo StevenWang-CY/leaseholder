@@ -58,8 +58,8 @@ reproduce-e2:
 	@cd python/leaseholder_bench && uv run -q lh-bench e2 report \
 	  $(abspath $(dir $(wildcard $(E2_RESULTS)/*/*/run.json))) --out $(abspath $(E2_REPORT))
 
-# E2's figures in the docs, docs/figures/e2-frontier.svg (README) and e2-waterfall.svg (BENCHMARKS.md), from the records
-# of the configurations an operator could deploy (the ablations left out), each with all its runs.
+# E2's figures in the docs, docs/figures/e2-frontier.svg and e2-waterfall.svg, from the records of the configurations an
+# operator could deploy (the ablations left out), each with all its runs. The demo GIF beside them is demo.py's.
 E2_DEPLOYABLE := a1-voice disc-frozen-s24 disc-a4-b1024-t0-s24 disc-a6-reserve2048-s24 disc-a7b-sglang-hicache-s24 \
   disc-a8c-resubmit-s24 disc-a9-s24 disc-pr-ab48-s24
 E2_STAGES := a1-voice disc-frozen-s24 disc-a6-reserve2048-s24 disc-a8c-resubmit-s24 disc-a9-s24 disc-pr-ab48-s24

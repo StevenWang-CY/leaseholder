@@ -4,6 +4,10 @@
 
 **A realtime voice agent and background agents on one GPU.** A self-hosted voice agent (speech to text, an LLM, text to speech) leaves its GPU idle most of the time, and background LLM work could use the gaps: coding agents, post-call summaries, batch jobs. On stock vLLM that costs the voice agent its latency. A waiting voice turn cannot take KV cache from running background requests, and once it runs, their prefill shares every step of its reply. Leaseholder measures this end to end on one RTX 5060 Ti against what an operator can deploy today, and fixes it in vLLM's scheduler, proposed upstream as [#63350](https://github.com/vllm-project/vllm/pull/63350) and [#63351](https://github.com/vllm-project/vllm/pull/63351).
 
+![One call of each configuration beside 24 coding-agent sessions: tuned vLLM answers the second turn after 10.8 s, vLLM with the two PRs after 1.6 s](docs/figures/e2-demo.gif)
+
+The first two turns of a call on each configuration, beside 24 coding-agent sessions on the same GPU: tuned vLLM 0.32 (left) answers the second after 10.8 s, vLLM with #63350 and #63351 (right) after 1.6 s. The 75-second video, with sound, is in the [v0.3 release](https://github.com/StevenWang-CY/leaseholder/releases/tag/v0.3).
+
 | Two calls beside 24 coding-agent sessions on one RTX 5060 Ti (vLLM 0.32, Qwen3-4B-FP8) | Voice-to-voice p95 | Agent tokens/s | Agent TTFT p99 |
 |---|---:|---:|---:|
 | Voice alone | 1.77 s | — | — |
@@ -12,11 +16,7 @@
 | **vLLM with #63350 and #63351**, a 48-token window | **2.19 s** | 3,493 | 97 s |
 | Leaseholder's arm 9: the engine change with a 16-token window and a KV reserve, its gateway policy capping replies at 16 tokens | 2.06 s | 3,411 | 103 s |
 
-Medians of five runs (three for the PRs' configuration); the SLO is voice alone plus 250 ms, 2.02 s. [BENCHMARKS.md](docs/BENCHMARKS.md#voice-under-agent-load-e2) has every configuration with its runs and range, and [docs/PRODUCTION.md](docs/PRODUCTION.md) the configuration to deploy, what to watch and how it fails.
-
-![E2's frontier: voice-to-voice p95 against the agents' goodput for every configuration an operator can deploy](docs/figures/e2-frontier.svg)
-
-Each configuration at the median of its runs, whiskers over their range (`make e2-figures`). The open diamond is stock vLLM, tuned; 4 is its best step cap, 6 a static KV reservation, 7b SGLang with HiCache and 8c abort-and-resubmit. Arm 9's line joins Leaseholder's arm 9 (left) and the two PRs with a 48-token window (right).
+Medians of five runs (three for the PRs' configuration); the SLO is voice alone plus 250 ms, 2.02 s. [BENCHMARKS.md](docs/BENCHMARKS.md#voice-under-agent-load-e2) has every configuration with its runs and range, [docs/PRODUCTION.md](docs/PRODUCTION.md) the configuration to deploy, what to watch and how it fails, and [docs/METHODS.md](docs/METHODS.md) how it was all measured.
 
 What the measurements say:
 - **The voice turn loses its seconds waiting for the LLM's first sentence**: 3.8 s of a 5.2 s mean turn on stock vLLM, against 0.3 s alone. Endpointing and TTS barely move.
@@ -108,7 +108,7 @@ python/leaseholder_voice/ the voice agent, measurement callers, LiveKit integrat
 benchmarks/               E2's arm files and campaigns, the committed records, and runs against upstream projects
 deploy/                   per-host bootstrap, systemd units, engine variants, tunnels, smoke test
 ops/                      the runbook; dashboards and alert rules are planned
-docs/                     architecture, protocol, SLOs, experiments, benchmarks, production guide, prior art, ADRs, figures
+docs/                     architecture, protocol, SLOs, experiments, benchmarks, production guide, methods, prior art, ADRs, figures
 ```
 
 ## Why not llm-d, Dynamo or vllm-project/router?
