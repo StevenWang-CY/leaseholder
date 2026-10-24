@@ -6,7 +6,7 @@ Each point is `CAMPAIGN/POINT/`, as `lh-bench e2 export` writes it from the run 
 
 | File | Contents |
 |---|---|
-| `run.json` | The point's record: the arm as read, versions, the engine and its checked flags, what cyan ran, the window of the calls |
+| `run.json` | The point's record: the arm as read, versions, the engine and its checked flags, what cyan ran, the window of the calls. Its `leaseholder_bench` version is 0.1.0 in every record: cyan's editable install kept its metadata from before the packages' 0.3.0 version (fcb0c88), while the code it ran is the revision in `source`; `lh-bench e2 run` now refuses such an install |
 | `arm.toml` | The arm file as run |
 | `engine.json` | The engine the point ran on, from its `/server_info`: the model and its revision, the context, dtype and quantization, the KV cache and pool, the scheduler settings the arms' flags set, the CPU tier's connector and `additional_config` (for SGLang the same of its server arguments), with home paths written from `~` |
 | `summary.json` | The point's E2 metrics, with the first bytes taken exactly from the gateway's request log and, where the campaign sampled the GPU, its median SM clock and highest temperature during the calls (`gpu`) |

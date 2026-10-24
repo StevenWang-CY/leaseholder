@@ -921,6 +921,40 @@ def test_a_campaign_sets_the_agents_seed_and_run_json_keeps_it(cyan: Cyan) -> No
         run_point(arm_file, runs / "negative", cyan.host, cyan.systemd, agents_seed=-1)
 
 
+def stale_metadata(monkeypatch: pytest.MonkeyPatch) -> str:
+    """lh-bench's installed metadata as an editable install left it before a version change; returns
+    the version of the source it runs."""
+    versions = {"leaseholder-bench": "0.1.0"}
+    real = e2.metadata.version
+    monkeypatch.setattr(e2.metadata, "version", lambda name: versions.get(name) or real(name))
+    return tomllib.loads(e2.PYPROJECT.read_text())["project"]["version"]
+
+
+def test_an_install_older_than_its_source_is_named(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # This test's own venv is synced from the source it runs.
+    assert e2._stale_install() is None
+    source = stale_metadata(monkeypatch)
+    assert e2._stale_install() == (
+        f"lh-bench's venv was installed at version 0.1.0 and its source is {source}: sync the venv "
+        "(deploy/cyan/bootstrap.sh) so that run.json names the version that runs"
+    )
+    # An installed wheel has no pyproject.toml beside it: its metadata is its source's.
+    assert e2._stale_install(tmp_path / "pyproject.toml") is None
+
+
+def test_a_point_on_an_install_older_than_its_source_is_refused_before_it_starts(
+    cyan: Cyan, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arm_file = write(cyan.arms, "a2-stock-s4.toml", ARM)
+    source = stale_metadata(monkeypatch)
+    out = cyan.host.root / "runs" / "stale"
+    with pytest.raises(E2Error, match=re.escape(f"version 0.1.0 and its source is {source}")):
+        run_point(arm_file, out, cyan.host, cyan.systemd)
+    assert not out.exists() and cyan.systemd.calls == []  # nothing made, nothing switched
+
+
 def test_the_same_arm_again_restarts_nothing(cyan: Cyan) -> None:
     run_stock(cyan)
     cyan.systemd.calls.clear()

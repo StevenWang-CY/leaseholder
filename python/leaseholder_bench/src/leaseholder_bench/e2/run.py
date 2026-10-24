@@ -735,6 +735,8 @@ def run_point(
     seed`` for AIPerf; run.json keeps the seed the replay ran with (``agents_seed``)."""
     if not hasattr(os, "waitid"):
         raise E2Error(NEEDS_WAITID)
+    if stale := _stale_install():
+        raise E2Error(stale)
     if agents_seed is not None and agents_seed < 0:
         raise E2Error(f"the agents' seed cannot be negative: {agents_seed}")
     arm = load_arm(arm_file)
@@ -1067,6 +1069,26 @@ class _Record:
 
     def _write(self) -> None:
         _write_json(self.path, self.data)
+
+
+PYPROJECT = Path(__file__).resolve().parents[3] / "pyproject.toml"
+"""lh-bench's own pyproject.toml, where it runs from its source tree (bootstrap.sh's editable install)."""
+
+
+def _stale_install(pyproject: Path = PYPROJECT) -> str | None:
+    """Why lh-bench's install does not match the source it runs, or None. An editable install runs the
+    source tree but keeps the metadata of its install, the version run.json records among it: until
+    the venv is synced again, a version change in pyproject.toml would leave every record naming the
+    old one. An installed wheel has no pyproject.toml beside it and its own metadata."""
+    if not pyproject.exists():
+        return None
+    source = tomllib.loads(pyproject.read_text())["project"]["version"]
+    if (installed := metadata.version("leaseholder-bench")) != source:
+        return (
+            f"lh-bench's venv was installed at version {installed} and its source is {source}: sync "
+            "the venv (deploy/cyan/bootstrap.sh) so that run.json names the version that runs"
+        )
+    return None
 
 
 def _versions(host: Host, gpu_source: Mapping[str, str | None] | None) -> dict[str, Any]:
