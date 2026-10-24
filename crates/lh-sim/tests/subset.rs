@@ -1,17 +1,20 @@
 //! End to end on the 16-trace subset in `testdata/`: the AIPerf port against AIPerf's own replay
-//! structure, a run of every stock arm, and of the E1 arms.
+//! structure, a run of every stock arm, of the E1 arms and of v0's idle service, and `replay-log` on
+//! a simulated run and on a record of AIPerf's own.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use lh_core::{FROZEN_BOX_POOL_TOKENS, KvGeometry, TierCapacity};
+use lh_core::{FROZEN_BOX_POOL_TOKENS, KvGeometry, PromptSources, TierCapacity};
 use lh_sim::aiperf::{PlanOptions, reference};
 use lh_sim::corpus::Corpus;
+use lh_sim::engine::Engine;
 use lh_sim::hardware::{self, Gpu, H100_SXM, RTX_5060_TI};
-use lh_sim::regime;
-use lh_sim::replay::{Pauses, ReplayConfig};
+use lh_sim::replay::{Pauses, Replay, ReplayConfig, Service, TimelineEvent};
+use lh_sim::retention::Retention;
 use lh_sim::run::{self, Arm, ArmResult, RunConfig};
-use serde_json::Value;
+use lh_sim::{regime, replay_log};
+use serde_json::{Value, json};
 
 fn testdata(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -281,4 +284,138 @@ fn the_box_places_as_the_regime_sweep_runs_it_and_an_h100_elsewhere() {
     assert!(share(h) <= share(b) && share(b) < 1.0);
     let table = hardware::csv(&placed);
     assert_eq!(table.lines().count(), 1 + 2 * Arm::E1.len());
+}
+
+/// The idle service is v0's: with the W0 settings it gives the subset run v0 published, 559 requests
+/// and 736,878 prompt tokens, 72.4 / 13.3 / 14.3% from the GPU pool, the CPU tier and computation.
+#[test]
+fn the_idle_service_reproduces_v0_on_the_subset() {
+    let cfg = RunConfig {
+        service: Service::Idle,
+        ..RunConfig::frozen_box(ReplayConfig::default())
+    };
+    let capacity = TierCapacity::frozen_box(&cfg.geometry);
+    let results = run::run(&mut corpus(), &cfg, &[Arm::LruCpu], &[capacity], |_| {}).unwrap();
+    let s = &results[0].summary;
+    assert_eq!((s.requests, s.prompt_tokens), (559, 736_878));
+    assert_eq!(
+        (s.gpu_tokens, s.cpu_tokens, s.computed_tokens),
+        (533_168, 98_352, 105_358)
+    );
+    let percent = |x: f64| (1_000.0 * x).round() / 10.0;
+    assert_eq!(
+        (
+            percent(s.shares.gpu),
+            percent(s.shares.cpu),
+            percent(s.shares.computed)
+        ),
+        (72.4, 13.3, 14.3)
+    );
+}
+
+/// `replay-log`, the calibration's instrument, on a run whose engine is known: the subset's
+/// simulation, written as AIPerf's export with each request's start and end. Every trace plays once
+/// from its start, so a session tree is a trace, and the lines follow the simulation's admissions,
+/// which `replay-log` takes in line order at equal times. Every request finds the sources the
+/// simulation gave it.
+#[test]
+fn replay_log_finds_a_simulated_runs_sources_again() {
+    let replay = ReplayConfig {
+        start_max_ratio: 0.0,
+        max_sessions: Some(16),
+        duration_s: 1e8,
+        grace_s: 0.0,
+        ..ReplayConfig::default()
+    };
+    let cfg = RunConfig::frozen_box(replay.clone());
+    let capacity = TierCapacity::frozen_box(&cfg.geometry);
+    let engine = || Engine::new(&cfg.engine_config(Arm::LruCpu, capacity), None);
+    let mut corpus = corpus();
+    let out = Replay::new(
+        replay,
+        &mut corpus,
+        engine(),
+        cfg.cost.clone(),
+        Service::Idle,
+        Retention::None,
+        true,
+    )
+    .run()
+    .unwrap();
+    let timeline = out.timeline.expect("recorded");
+    assert!(out.records.len() > 400, "{} requests", out.records.len());
+    let mut log = String::new();
+    let mut simulated = Vec::new();
+    for event in &timeline.events {
+        let TimelineEvent::Admit(i) = *event else {
+            continue;
+        };
+        let r = &out.records[timeline.requests[i]
+            .record
+            .expect("every request completes")];
+        let plan = corpus.plan(r.trace as usize).unwrap();
+        let line = json!({
+            "metadata": {
+                "conversation_id": plan.convs[r.conv as usize].id,
+                "turn_index": r.turn,
+                "source_trace_id": plan.trace_id,
+                "root_correlation_id": plan.trace_id,
+                "benchmark_phase": "profiling",
+                "request_start_ns": r.issued_ns,
+                "request_end_ns": r.done_ns,
+            },
+            "metrics": {
+                "usage_prompt_tokens": {"value": r.prompt_tokens},
+                "usage_prompt_cache_read_tokens": {"value": r.sources.gpu + r.sources.cpu},
+                "output_sequence_length": {"value": r.output_tokens},
+                "time_to_first_token": {"value": r.ttft_ns as f64 / 1e6},
+            },
+        });
+        log += &format!("{line}\n");
+        simulated.push(r.sources);
+    }
+    assert_eq!(simulated.len(), out.records.len());
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("simulated-profile-export.jsonl");
+    std::fs::write(&path, log).unwrap();
+    let replayed =
+        replay_log::replay(&mut corpus, &path, engine(), cfg.replay.block_tokens).unwrap();
+    let sources: Vec<PromptSources> = replayed.requests.iter().map(|r| r.sources).collect();
+    assert_eq!(sources, simulated);
+    assert_eq!(replayed.profiling_requests as usize, simulated.len());
+    assert_eq!(replayed.mean_abs_cached_share_error, 0.0);
+}
+
+/// One record of W0's AIPerf export (`testdata/aiperf-0.13.0-record.jsonl`), on a trace of the
+/// subset: `replay-log` reads its identity, its engine counts and its timing, and takes its prompt
+/// from the corpus.
+#[test]
+fn replay_log_reads_a_record_of_aiperfs_export() {
+    let mut corpus = corpus();
+    let cfg = RunConfig::frozen_box(ReplayConfig::default());
+    let capacity = TierCapacity::frozen_box(&cfg.geometry);
+    let engine = Engine::new(&cfg.engine_config(Arm::LruCpu, capacity), None);
+    let log = testdata("aiperf-0.13.0-record.jsonl");
+    let replayed = replay_log::replay(&mut corpus, &log, engine, cfg.replay.block_tokens).unwrap();
+    let [r] = &replayed.requests[..] else {
+        panic!("one request: {:?}", replayed.requests)
+    };
+    assert_eq!(
+        (r.conversation.as_str(), r.turn, r.warmup),
+        ("04dba6fe621301a1d01fd63b8d02c9645c48", 5, false)
+    );
+    assert_eq!(
+        (
+            r.measured_prompt_tokens,
+            r.measured_cached_tokens,
+            r.output_tokens
+        ),
+        (2_397, 2_384, 20)
+    );
+    assert_eq!(r.measured_ttft_ms, 512.077_520_999_999_9);
+    // The corpus's prompt, without the engine's chat template, all computed on an empty engine.
+    assert_eq!(r.prompt_tokens, 2_352);
+    assert_eq!(
+        (r.sources.gpu, r.sources.cpu, r.sources.computed),
+        (0, 0, 2_352)
+    );
 }
