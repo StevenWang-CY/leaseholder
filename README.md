@@ -85,15 +85,16 @@ The experiments are in [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md). E2, the voice
 Development needs Rust 1.98, uv and Python 3.12. No GPU is required.
 
 ```sh
-make check                                   # lint and every test CI runs (below)
-make schema                                  # regenerate crates/lh-proto/schema after changing a wire type
-VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm   # the engine plugin tests against an existing vLLM checkout
-make reproduce-e2                            # E2's report, tables, frontiers and waterfall from the committed records
-make e2-figures                              # the docs' E2 figures from the same records
-make reproduce-e1 CORPUS=DIR                 # E1's tables with lh-sim, from the 32x corpus in DIR
+make check                                         # lint and every test CI runs (below)
+make schema                                        # regenerate crates/lh-proto/schema after changing a wire type
+VLLM_SRC=~/src/vllm-v0.32.0 make test-vllm         # the engine plugin tests against an existing vLLM checkout
+make reproduce-e2                                  # E2's report, tables, frontiers and waterfall from the committed records
+make e2-figures                                    # the docs' E2 figures from the same records
+make reproduce-e1 CORPUS=DIR                       # E1's tables with lh-sim, from the 32x corpus in DIR
+make reproduce-calibration EXPORTS=DIR CORPUS=DIR  # lh-sim's calibration, from six measured runs' exports
 ```
 
-`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. `make reproduce-e1` rebuilds E1's tables in about a minute from the 32× corpus, which stays outside the repository ([how to build it](crates/lh-sim/README.md#usage)). Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
+`make check` runs rustfmt, clippy and ruff, the Rust tests, the engine plugin tests against vLLM's real offload manager (in a sparse vLLM v0.32.0 checkout it clones once into `~/.cache/leaseholder`), and the Python unit tests. `make reproduce-e2` rebuilds E2's report from the compact records of its 129 points, the same files as from the run directories. `make reproduce-e1` rebuilds E1's tables in about a minute from the 32× corpus, which stays outside the repository ([how to build it](crates/lh-sim/README.md#usage)). `make reproduce-calibration` recomputes the simulator's calibration from the exports of the six runs it was fitted and validated on, an asset of the [v0.3 release](https://github.com/StevenWang-CY/leaseholder/releases/tag/v0.3). Deploying to the hosts is in [ops/RUNBOOK.md](ops/RUNBOOK.md#deploy).
 
 ## Repository layout
 

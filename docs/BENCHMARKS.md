@@ -405,7 +405,7 @@ Measured in W0: AIPerf `agentic_replay` of the 32×-scaled Claude Code corpus, 1
 
 ## Agent replay at three loads, and the simulator calibrated on it (W2)
 
-AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to the engine, think times capped at 120 s, 10 minutes plus a 60 s grace), each on a freshly started engine, 2026-10-22. TTFT is AIPerf's profiling phase; the prompt-token split is vLLM's `prompt_tokens_by_source` counters over the whole run, warm-up included.
+AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to the engine, think times capped at 120 s, 10 minutes plus a 60 s grace), each on a freshly started engine, 2026-10-22. TTFT is AIPerf's profiling phase; the prompt-token split is vLLM's `prompt_tokens_by_source` counters over the whole run, warm-up included. `make reproduce-calibration` recomputes the table, and the simulator's figures below, from the runs' exports, an asset of the [v0.3 release](https://github.com/StevenWang-CY/leaseholder/releases/tag/v0.3) ([`crates/lh-sim`](../crates/lh-sim/README.md#calibration-against-the-gpu-operating-points)).
 
 | Session trees | Requests | TTFT p50 / p90 / p99 | ITL p50 | Prompt tokens: GPU / CPU tier / computed | Preemptions |
 |---|---|---|---|---|---|
@@ -413,7 +413,7 @@ AIPerf `agentic_replay` of the 32× corpus against the frozen box (straight to t
 | 16 | 686 | 132 / 787 / 9,198 ms | 15.6 ms | 55.2 / 34.6 / 10.2% | 3 |
 | 24 | 1,568 | 175 / 1,415 / 15,605 ms | 22.0 ms | 51.4 / 33.4 / 15.2% | 2 |
 
-- **Repeatability.** Three 16-session runs (W0's, one on a warm engine and the fresh one above) agree within a point on the split and range from 787 to 1,023 ms at TTFT p90. At 24 sessions a run on a warm engine was slower (TTFT p90 1,900 ms).
+- **Repeatability.** Three 16-session runs (W0's, one on a warm engine and the fresh one above) agree within 1.5 points on the split and range from 787 to 1,023 ms at TTFT p90. At 24 sessions a run on a warm engine was slower (TTFT p90 1,900 ms).
 - **The simulator against them.** `lh-sim` with the W2 contention model (the step loop and a fitted step time; [its README](../crates/lh-sim/README.md#the-contention-model)) reproduces resume TTFT p50 / p90 within 4–8% at 8 and 16 sessions, also when each point is left out of the fit, and request counts within 1%. At 24 sessions it is 18% / 30% fast, because restores take 163 ms longer there than modeled; the likely cause is store traffic, which the model omits.
 
 **E1 in the simulator: does knowing when a session returns help?** Resume TTFT gain over LRU + the CPU tier, in the realistic regime (the traces' think times, the CPU tier at 4×, 20 seeds): the mean of the per-seed gains, and in parentheses, where it differs by more than 2 points, the gain of the seeds' mean latencies:
