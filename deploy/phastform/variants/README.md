@@ -23,7 +23,7 @@ The frozen box schedules asynchronously (vLLM's default here), so `pr54530` and 
 
 `make-room`'s three switches are keys of vLLM's `--additional-config`, read once at engine start: `make_room.max_preemptions_per_step` (0 is off), `make_room.budget_cap` (with `make_room.budget_cap_tokens`, 16) and `make_room.reserve_tokens` (0 is off). Its `lh-engine.conf` sets arm 9's values, and an arm file ablates one with engine flags, which come after the variant's and win (vLLM warns of the duplicate key): `flags = ["--additional-config.make_room.reserve_tokens", "0"]`. The engine reports them under `additional_config` in `/server_info`, so each point's `engine.json` records them; `lh-bench e2 run` lists such flags as unchecked, as it checks only the cache and scheduler settings.
 
-The engine start fails on an unknown `make_room` key or a bad value (`budget_cap` takes true or false in any case, or 1 or 0; the others an integer, `budget_cap_tokens` at least 1), on a switch under a policy other than priority, and on a switch for an encoder-decoder model, whose cross-attention blocks the room would leave out; `build.py` refuses an installed vLLM other than 0.32.0. The PRs name the same switches as engine flags:
+The engine start fails on an unknown `make_room` key or a bad value (`budget_cap` takes true or false in any case, or 1 or 0; the others an integer, `budget_cap_tokens` at least 1), and on a switch under a policy other than priority; for an encoder-decoder model the room counts a request's cross-attention blocks. `build.py` refuses an installed vLLM other than 0.32.0. The PRs name the same switches as engine flags:
 
 | Variant key | vLLM PR flag |
 |---|---|

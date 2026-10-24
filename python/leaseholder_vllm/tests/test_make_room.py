@@ -20,12 +20,14 @@ pytest.importorskip("vllm.v1.core.sched.scheduler")
 import torch
 from vllm.config import CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig, VllmConfig
 from vllm.lora.request import LoRARequest
+from vllm.multimodal.inputs import MultiModalFeatureSpec, MultiModalKwargsItem, PlaceholderRange
 from vllm.sampling_params import SamplingParams
 from vllm.utils.hashing import sha256
+from vllm.v1.core.encoder_cache_manager import EncoderDecoderCacheManager
 from vllm.v1.core.kv_cache_utils import get_request_block_hasher, init_none_hash
-from vllm.v1.core.sched.request_queue import SchedulingPolicy
 from vllm.v1.core.sched.scheduler import Scheduler as StockScheduler
 from vllm.v1.kv_cache_interface import (
+    CrossAttentionSpec,
     FullAttentionSpec,
     KVCacheConfig,
     KVCacheGroupSpec,
@@ -139,8 +141,11 @@ def scheduler(
     max_num_seqs: int = 16,
     lora_config: LoRAConfig | None = None,
     connector: Connector | None = None,
+    encoder_decoder: bool = False,
 ):
-    """A scheduler over a KV pool of ``num_blocks`` blocks of 16 tokens (one of them vLLM's null block)."""
+    """A scheduler over a KV pool of ``num_blocks`` blocks of 16 tokens (one of them vLLM's null block). An
+    ``encoder_decoder`` one has a cross-attention group too and schedules as for such a model, patched in after
+    construction as vLLM's own tests do: a real one would need the model's multimodal processor."""
     model_config = ModelConfig(
         model=model, dtype="float16", seed=42, skip_tokenizer_init=True, max_model_len=max_model_len
     )
@@ -150,7 +155,7 @@ def scheduler(
         max_model_len=max_model_len,
         long_prefill_token_threshold=long_prefill_token_threshold,
         enable_chunked_prefill=True,
-        is_encoder_decoder=False,
+        is_encoder_decoder=encoder_decoder,
         watermark=watermark,
         policy=policy,
     )
@@ -165,11 +170,12 @@ def scheduler(
         lora_config=lora_config,
         additional_config={"make_room": make_room} if make_room is not None else {},
     )
-    spec = FullAttentionSpec(block_size=BLOCK, num_kv_heads=1, head_size=1, dtype=torch.float32)
+    shape = {"block_size": BLOCK, "num_kv_heads": 1, "head_size": 1, "dtype": torch.float32}
+    groups = [KVCacheGroupSpec(["layer"], FullAttentionSpec(**shape))]
+    if encoder_decoder:
+        groups.append(KVCacheGroupSpec(["cross_layer"], CrossAttentionSpec(**shape)))
     kv_cache_config = KVCacheConfig(
-        num_blocks=num_blocks,
-        kv_cache_tensors=[],
-        kv_cache_groups=[KVCacheGroupSpec(["layer"], spec)],
+        num_blocks=num_blocks, kv_cache_tensors=[], kv_cache_groups=groups
     )
     sched = cls(
         vllm_config=vllm_config,
@@ -178,6 +184,10 @@ def scheduler(
         block_size=BLOCK,
     )
     sched.connector = connector  # vLLM's tests attach a mock one likewise
+    if encoder_decoder:
+        sched.is_encoder_decoder = True
+        sched.max_num_encoder_input_tokens = max_num_batched_tokens
+        sched.encoder_cache_manager = EncoderDecoderCacheManager(cache_size=max_num_batched_tokens)
     return sched
 
 
@@ -191,9 +201,21 @@ def request(
     prompt: list[int] | None = None,
     lora: int = 0,
     resumable: bool = False,
+    encoder_tokens: int = 0,
 ) -> Request:
     """A request of ``num_tokens`` prompt tokens, all ``token``, or of ``prompt``: with prefix caching on, requests
-    of different tokens share no block. ``lora`` names a LoRA adapter."""
+    of different tokens share no block. ``lora`` names a LoRA adapter; ``encoder_tokens`` sizes an encoder input,
+    for an encoder-decoder model."""
+    encoder_inputs = None
+    if encoder_tokens:
+        encoder_inputs = [
+            MultiModalFeatureSpec(
+                data=MultiModalKwargsItem.dummy(),
+                mm_position=PlaceholderRange(offset=0, length=encoder_tokens),
+                identifier=f"audio-{req_id}",
+                modality="audio",
+            )
+        ]
     return Request(
         request_id=req_id,
         prompt_token_ids=prompt if prompt is not None else [token] * num_tokens,
@@ -204,6 +226,7 @@ def request(
         block_hasher=get_request_block_hasher(BLOCK, sha256),
         lora_request=LoRARequest(f"lora{lora}", lora, f"/lora{lora}") if lora else None,
         resumable=resumable,
+        mm_features=encoder_inputs,
     )
 
 
@@ -465,6 +488,31 @@ def test_the_room_includes_the_decodes_next_blocks(module, model):
 
     assert out.preempted_req_ids == {"bg", "bg2"}
     assert "voice" in scheduled(out)
+
+
+def test_the_room_includes_an_encoder_decoder_requests_cross_attention_blocks(module, model):
+    """For an encoder-decoder model, a request is admitted with blocks for its encoder output too, which
+    cross-attention reads: the priority-0 request needs 2 blocks for its prompt and 15 for its encoder output, 17 with
+    11 free. The latest priority-2 runner gives back its 4 and its 5, which is enough, and the request runs at once."""
+    sched = scheduler(
+        module.Scheduler, model, 65, {"max_preemptions_per_step": 2}, encoder_decoder=True
+    )
+    run(
+        sched,
+        request("rt", blocks(4), priority=0, arrival=0, encoder_tokens=10 * BLOCK),
+        request("bg", blocks(10), priority=2, arrival=1, encoder_tokens=20 * BLOCK),
+        request("bg2", blocks(4), priority=2, arrival=2, encoder_tokens=5 * BLOCK),
+    )
+    assert [len(group) for group in sched.kv_cache_manager.get_blocks("bg2").blocks] == [4, 5]
+    assert free_blocks(sched) == 11
+
+    voice = request("voice", blocks(2), priority=0, arrival=3, encoder_tokens=15 * BLOCK)
+    sched.add_request(voice)
+    out = step(sched)
+
+    assert out.preempted_req_ids == {"bg2"}
+    assert "voice" in scheduled(out) and voice.status == RequestStatus.RUNNING
+    assert free_blocks(sched) == 3
 
 
 def test_no_preemption_for_an_equal_priority(module, model):
@@ -1135,19 +1183,6 @@ def test_the_switches_need_priority_scheduling(module, model):
     scheduler(
         module.Scheduler, model, 33, {"budget_cap": False, "reserve_tokens": 0}, policy="fcfs"
     )
-
-
-def test_encoder_decoder_models_are_refused(module):
-    """The room would leave out an encoder-decoder model's cross-attention blocks. (A scheduler for one needs the
-    model's multimodal processor, so this checks the switches' validation on its own.)"""
-    for is_encoder_decoder, switches in ((True, {}), (False, {"max_preemptions_per_step": 2})):
-        state = SimpleNamespace(
-            policy=SchedulingPolicy.PRIORITY, is_encoder_decoder=is_encoder_decoder
-        )
-        module.Scheduler._make_room_switches(state, switches)
-    state = SimpleNamespace(policy=SchedulingPolicy.PRIORITY, is_encoder_decoder=True)
-    with pytest.raises(ValueError, match="does not support encoder-decoder models"):
-        module.Scheduler._make_room_switches(state, {"max_preemptions_per_step": 2})
 
 
 # Stock behavior

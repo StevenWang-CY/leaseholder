@@ -43,10 +43,10 @@ Each part is a switch:
    cached, would otherwise take them back between the chunks of the request it made room for. Neither check holds
    back a request that holds its KV.
 
-The switches are keys of ``--additional-config``'s ``make_room`` table, read once at scheduler init. An unknown key, a
-bad value, a switch under a policy other than priority or for an encoder-decoder model (whose cross-attention blocks
-the room would leave out) fails the engine start, naming it. With none on, the module schedules exactly as stock. The
-edits match anchors in 0.32.0's source, each required to occur exactly once.
+For an encoder-decoder model, a request's remaining sequence includes its cross-attention blocks. The switches are
+keys of ``--additional-config``'s ``make_room`` table, read once at scheduler init. An unknown key, a bad value or a
+switch under a policy other than priority fails the engine start, naming it. With none on, the module schedules
+exactly as stock. The edits match anchors in 0.32.0's source, each required to occur exactly once.
 
 The change targets ``Scheduler.schedule``, which vLLM's ``AsyncScheduler`` inherits, and the frozen box schedules
 asynchronously (vLLM's default for this configuration). So the module also defines ``AsyncScheduler``, the stock
@@ -212,18 +212,12 @@ HELPERS = '''
                     f"make_room has no key {key!r}; its keys are "
                     + ", ".join(switches)
                 )
-        if (
+        if self.policy != SchedulingPolicy.PRIORITY and (
             switches["max_preemptions_per_step"]
             or switches["budget_cap"]
             or switches["reserve_tokens"]
         ):
-            if self.policy != SchedulingPolicy.PRIORITY:
-                raise ValueError("make_room needs --scheduling-policy priority")
-            if self.is_encoder_decoder:
-                raise ValueError(
-                    "make_room does not support encoder-decoder models: its room "
-                    "would leave out their cross-attention blocks"
-                )
+            raise ValueError("make_room needs --scheduling-policy priority")
         return switches
 
     def _make_room_log(self) -> None:
@@ -422,10 +416,17 @@ HELPERS = '''
         """Blocks `request` still needs for its whole remaining sequence, as
         allocate_slots admits it: net of its prefix-cache hit `hit`, whose blocks
         other requests hold take none and whose blocks in the free queue take
-        one each."""
-        if hit is None:
-            return self._request_remaining_blocks(request)
-        hit_blocks, num_hit_tokens = hit
+        one each, and with an encoder-decoder model's cross-attention blocks."""
+        hit_blocks, num_computed_tokens = hit or (
+            self.kv_cache_manager.empty_kv_cache_blocks.blocks,
+            request.num_computed_tokens,
+        )
+        num_encoder_tokens = 0
+        if self.is_encoder_decoder:
+            num_encoder_tokens = sum(
+                request.get_num_encoder_embeds(i)
+                for i in range(request.num_encoder_inputs)
+            )
         full_num_tokens = min(request.num_tokens, self.max_model_len)
         num_tokens = full_num_tokens
         if self.num_spec_tokens:
@@ -434,9 +435,9 @@ HELPERS = '''
             request_id=request.request_id,
             num_tokens=num_tokens,
             new_computed_blocks=hit_blocks,
-            num_encoder_tokens=0,
-            total_computed_tokens=num_hit_tokens,
-            num_local_computed_tokens=num_hit_tokens,
+            num_encoder_tokens=num_encoder_tokens,
+            total_computed_tokens=num_computed_tokens,
+            num_local_computed_tokens=num_computed_tokens,
             num_tokens_main_model=full_num_tokens,
             apply_admission_cap=True,
             prefill_end=max(request.num_prompt_tokens, request.num_tokens - 1),
