@@ -8,6 +8,9 @@ low, and one of the two strictly better. A point on several GPU nodes is placed 
 Points measured from the same arm file in several campaigns are repeats of one configuration, which
 the frontier places at their medians; the tables keep every run. The stage waterfall splits each
 configuration's voice turn into the stages that add up to its mean V2V.
+
+It reads each point as its compact record keeps it (:func:`.record.compact`): a record, or a run
+directory, whose raw files only :mod:`.record` reads.
 """
 
 from __future__ import annotations
@@ -22,16 +25,7 @@ from typing import Any
 
 import orjson
 
-from leaseholder_bench.e2.record import (
-    REPLY_TIMEOUT_MS,
-    WATERFALL,
-    _added,
-    _gpu_samples,
-    gateway_requests,
-    gpu,
-    logged_first_byte,
-    turn_samples,
-)
+from leaseholder_bench.e2.record import REPLY_TIMEOUT_MS, WATERFALL, _added, compact, turn_samples
 from leaseholder_bench.load import summarize
 
 COLUMNS = (
@@ -126,12 +120,10 @@ def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Pa
     frontier places the configuration at their medians."""
     rows, incomplete = [], []
     for run_dir in run_dirs:
-        run_file = run_dir / "run.json"
-        run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
-        if run.get("status") != "complete":
+        if (point := compact(run_dir)) is None:
             incomplete.append(run_dir)
             continue
-        rows.append(_row(run_dir, run, orjson.loads((run_dir / "summary.json").read_bytes())))
+        rows.append(_row(run_dir, *point))
     groups = configurations(rows)
     mark_frontier(groups)
     placed = {_configuration(g): g for g in groups}
@@ -165,20 +157,12 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     arm, voice = run["arm"], summary["voice"]
     background = summary["background"] or {}
     gateway, engine = summary["gateway"], summary["engine"]
-    window = run.get("window")
     first_byte = gateway["realtime_first_byte_ms"]
-    # A request log fetched into the run directory after its summary was written counts as well.
-    if (
-        window
-        and (requests := gateway_requests(run_dir, window["start"], window["end"])) is not None
-    ):
-        first_byte = logged_first_byte(requests, "realtime")
     worker = summary.get("worker") or {}
     waterfall, events = worker.get("waterfall") or {}, worker.get("events") or {}
-    # V2V from the callers' turns, where a failed turn counts at the reply timeout; from the callers'
-    # summary for a run directory without them.
+    # V2V from the callers' turns, where a failed turn counts at the reply timeout.
     samples = v2v_samples(run_dir / "bots" / "turns.jsonl")
-    v2v = percentiles(samples) if samples else voice["v2v_ms"]
+    v2v = percentiles(samples)
     row = {
         "arm": CONFIGURATION_ARMS.get(run["name"], str(arm["arm"])),
         "workload": _workload(arm["agents"]["data"], arm["voice"]["callers"]),
@@ -202,8 +186,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         "agent_ttft_p50_ms": background.get("ttft_ms", {}).get("p50"),
         "agent_ttft_p99_ms": background.get("ttft_ms", {}).get("p99"),
         "realtime_first_byte_p95_ms": first_byte.get("p95"),
-        # summaries from before the request log was kept took it from the histogram
-        "realtime_first_byte_source": first_byte.get("source", "histogram"),
+        "realtime_first_byte_source": first_byte["source"],
         "engine_preemptions": engine["preemptions"],
         "shed": gateway["shed"],
         "refused": _added(gateway["refused"], *(engine["refused"] or {}).values()),
@@ -229,8 +212,8 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     row["v2v_samples"] = samples
     nodes = summary.get("nodes") or {}
     row["nodes"] = " ".join(nodes) or None
-    row["by_node"] = [_node_row(run_dir, node, share, window) for node, share in nodes.items()]
-    return row | _gpu(run_dir, _gpu_samples(nodes), summary, window)
+    row["by_node"] = [_node_row(node, share) for node, share in nodes.items()]
+    return row | _gpu(summary)
 
 
 def leaseholder_counts(counters: Mapping[str, int]) -> dict[str, int | float | None]:
@@ -255,9 +238,7 @@ def leaseholder_counts(counters: Mapping[str, int]) -> dict[str, int | float | N
 
 def v2v_samples(turns: Path) -> list[float]:
     """The callers' voice-to-voice samples in their turns.jsonl (:func:`turn_samples`), a failed
-    turn's censored at REPLY_TIMEOUT_MS; none without the file."""
-    if not turns.exists():
-        return []
+    turn's censored at REPLY_TIMEOUT_MS."""
     return turn_samples(map(orjson.loads, filter(str.strip, turns.read_text().splitlines())))[0]
 
 
@@ -271,9 +252,7 @@ def percentiles(samples: Sequence[float]) -> dict[str, float | int]:
     return {"n": len(xs), "p50": round(q[49], 1), "p95": round(q[94], 1), "p99": round(q[98], 1)}
 
 
-def _node_row(
-    run_dir: Path, node: str, share: Mapping[str, Any], window: Mapping[str, float] | None
-) -> dict[str, Any]:
+def _node_row(node: str, share: Mapping[str, Any]) -> dict[str, Any]:
     """One node's share of a point, for frontier.md's table of GPU nodes."""
     voice, background = share["voice"] or {}, share["background"] or {}
     v2v, first_byte = voice.get("v2v_ms", {}), background.get("first_byte_ms", {})
@@ -291,18 +270,14 @@ def _node_row(
         "agent_first_byte_p99_ms": first_byte.get("p99"),
         "realtime_first_byte_p95_ms": (share["realtime_first_byte_ms"] or {}).get("p95"),
         "engine_preemptions": share["engine"]["preemptions"],
-    } | _gpu(run_dir, _gpu_samples([node]), share, window)
+    } | _gpu(share)
 
 
-def _gpu(
-    run_dir: Path, names: Sequence[str], kept: Mapping[str, Any], window: Mapping[str, float] | None
-) -> dict[str, int | None]:
-    """The GPU columns from the samples ``names`` in the run directory; in a compact record, which
-    leaves them out, from what its summary (or a node's share in it) kept of them, ``gpu``."""
-    files = [run_dir / name for name in names]
-    if not any(path.exists() for path in files) and "gpu" in kept:
-        return {f"gpu_{key}": value for key, value in kept["gpu"].items()}
-    return gpu(files, window)
+def _gpu(kept: Mapping[str, Any]) -> dict[str, int | None]:
+    """The GPU columns from what the summary (or a node's share in it) keeps of the GPU's samples,
+    ``gpu``; None without them."""
+    clocks = kept.get("gpu") or {}
+    return {column: clocks.get(column.removeprefix("gpu_")) for column in GPU_COLUMNS}
 
 
 REPEATED = (

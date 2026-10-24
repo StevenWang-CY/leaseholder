@@ -28,6 +28,7 @@ from leaseholder_bench.e2.record import (
     background,
     engine_counts,
     engine_settings,
+    export_point,
     first_byte_ms,
     gateway_counts,
     gateway_requests,
@@ -298,7 +299,7 @@ def point(
         },
         "background": bg,
         "gateway": {
-            "realtime_first_byte_ms": {"n": 60, "p95": 120.0},
+            "realtime_first_byte_ms": {"n": 60, "p95": 120.0, "source": "histogram"},
             "shed": None,
             "refused": 2,
             "resubmitted": None,
@@ -308,6 +309,12 @@ def point(
     }
     if status == "complete":
         (run_dir / "summary.json").write_text(json.dumps(summary))
+        # The callers' turns: of 101 samples, the inclusive quantiles are the 51st, 96th and 100th.
+        v2v = [1600.0] * 51 + [p95] * 45 + [p95 + 500] * 5
+        (run_dir / "bots").mkdir()
+        (run_dir / "bots" / "turns.jsonl").write_text(
+            "".join(json.dumps(t) + "\n" for t in answered(*v2v))
+        )
     return run_dir
 
 
@@ -410,7 +417,7 @@ def test_the_report_writes_the_table_and_the_csv(tmp_path: Path, capsys) -> None
         rows = list(csv.DictReader(f))
     assert list(rows[0]) == list(COLUMNS)  # no point has the optional columns
     assert [r["point"] for r in rows] == ["a2-s8", "a10-mps"]  # arm 2 before arm 10
-    assert rows[0]["v2v_p95_ms"] == "2000" and rows[0]["frontier"] == "True"
+    assert rows[0]["v2v_p95_ms"] == "2000.0" and rows[0]["frontier"] == "True"
     assert rows[0]["refused"] == "3"  # 2 by the gateway's admission point, 1 by the engine
     assert rows[0]["gateway_background_tokens_per_s"] == "3000"
     # A summary from before the request log took the first byte from the histogram.
@@ -644,7 +651,7 @@ def turn_lines(run_dir: Path, stages: dict[str, float], turns: int, v2v: list[di
     turns.jsonl."""
     waterfall = {stage: {"n": turns, "mean": mean} for stage, mean in stages.items()}
     rewrite(run_dir, lambda s: s.update(worker={"turns": turns, "waterfall": waterfall}))
-    (run_dir / "bots").mkdir()
+    (run_dir / "bots").mkdir(exist_ok=True)
     (run_dir / "bots" / "turns.jsonl").write_text("".join(json.dumps(t) + "\n" for t in v2v))
 
 
@@ -852,6 +859,20 @@ def test_the_committed_records_give_the_report_and_hold_no_credential(tmp_path: 
             assert not re.search(r"/(home|Users|root)/", path.read_text()), path  # no account
     write_report(rows, tmp_path)
     assert (tmp_path / "frontier.md").read_text().startswith("# E2 frontier")
+
+
+def test_a_committed_record_exports_to_itself(tmp_path: Path) -> None:
+    # A record leaves out the files compact() reads beside run.json and summary.json, so exporting it
+    # gives it back byte for byte: lh-bench e2 report reads records and run directories alike.
+    records = sorted(run.parent for run in RESULTS.glob("*/*/run.json"))
+    assert records
+    for record in records:
+        again = export_point(record, tmp_path)
+        assert again is not None and again.relative_to(tmp_path) == record.relative_to(RESULTS)
+        files = sorted(p.relative_to(record) for p in record.rglob("*") if p.is_file())
+        assert sorted(p.relative_to(again) for p in again.rglob("*") if p.is_file()) == files
+        for name in files:
+            assert (again / name).read_bytes() == (record / name).read_bytes(), record / name
 
 
 def test_the_report_reads_the_lines_the_voice_worker_writes() -> None:

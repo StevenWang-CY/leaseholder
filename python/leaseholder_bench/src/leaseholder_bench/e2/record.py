@@ -7,8 +7,9 @@ that the gateway or the engine does not export is null, never zero, and a counte
 (its process restarted during the calls) is an error. A point on several GPU nodes reports its
 totals as a point on one does, its engines' counters added up, and each node's share.
 
-:func:`export_point` writes a point's compact record (``lh-bench e2 export``), the few small files
-from which the report gives the same tables as from the whole run directory.
+:func:`export_point` writes a point's compact record (``lh-bench e2 export``): the few small files
+the report reads. :func:`compact` gives the record's run.json and summary.json from a run directory
+or from a record alike, so the report gives the same tables from either.
 """
 
 from __future__ import annotations
@@ -588,15 +589,14 @@ _SNAPSHOT = re.compile(r"models--(?P<name>[^/]+)/snapshots/(?P<revision>[0-9a-f]
 _HOME = re.compile(r"/(?:home|Users)/[^/\s]+|/root(?=/)")
 
 
-def export_point(run_dir: Path, out: Path) -> Path | None:
-    """Write the compact record of the point in ``run_dir`` into ``out``, at CAMPAIGN/POINT as the
-    run directory sits in its campaign, and return its directory; None for a point that did not
-    complete. Its summary.json takes the first bytes exactly from the request log, as the report
-    does, and the GPU's median SM clock and highest temperature from gpu.csv (``gpu``; on several
-    GPU nodes over all of their gpu-NODE.csv, and each node's in its share), so the report gives the
-    same tables from the record as from the run directory. Its engine.json (engine-NODE.json for
-    each of several nodes) keeps only what says which engine the point ran on
-    (:func:`engine_settings`)."""
+def compact(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The run.json and summary.json of the compact record of the point in ``run_dir``, a run
+    directory or a record (whose own it returns); None for a point that did not complete. The
+    summary takes the first bytes of both classes exactly from the request log, and the GPU's median
+    SM clock and highest temperature from gpu.csv (``gpu``; on several GPU nodes over all of their
+    gpu-NODE.csv, and each node's in its share): what a record keeps of the files it leaves out.
+    The report reads every point through it, so a run directory and its record give the same
+    tables."""
     run_file = run_dir / "run.json"
     run = orjson.loads(run_file.read_bytes()) if run_file.exists() else {}
     if run.get("status") != "complete":
@@ -620,6 +620,18 @@ def export_point(run_dir: Path, out: Path) -> Path | None:
     for node, share in nodes.items():
         if (run_dir / f"gpu-{node}.csv").exists():
             share["gpu"] = clocks([f"gpu-{node}.csv"])
+    return run, summary
+
+
+def export_point(run_dir: Path, out: Path) -> Path | None:
+    """Write the compact record of the point in ``run_dir`` into ``out``, at CAMPAIGN/POINT as the
+    run directory sits in its campaign, and return its directory; None for a point that did not
+    complete. Its summary.json is :func:`compact`'s. Its engine.json (engine-NODE.json for each of
+    several nodes) keeps only what says which engine the point ran on (:func:`engine_settings`)."""
+    if (point := compact(run_dir)) is None:
+        return None
+    summary = point[1]
+    nodes = summary.get("nodes") or {}
     record = out / run_dir.absolute().parent.name / run_dir.absolute().name
     (record / "bots").mkdir(parents=True, exist_ok=True)
     for name in RECORD:
