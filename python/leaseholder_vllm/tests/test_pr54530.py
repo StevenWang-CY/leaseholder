@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(not VLLM_SRC, reason="needs VLLM_SRC, a vLLM v0.
 
 
 def test_build_applies_the_pr_and_nothing_else(tmp_path: Path) -> None:
-    # A clean interpreter: build.py finds vLLM with find_spec, without the stand-ins conftest installs.
+    # A clean interpreter: build.py finds vLLM, with find_spec, in VLLM_SRC alone.
     env = os.environ | {"PYTHONPATH": str(VLLM_SRC)}
     subprocess.run(
         [sys.executable, str(BUILD), str(tmp_path)], env=env, check=True, capture_output=True
