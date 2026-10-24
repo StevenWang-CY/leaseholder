@@ -117,6 +117,7 @@ fn client_controlled_engine_inputs_are_listed() {
         "session_id",
         "priority",
         "kv_transfer_params",
+        "ec_transfer_params",
         "cache_salt",
         "rid",
         "extra_key",

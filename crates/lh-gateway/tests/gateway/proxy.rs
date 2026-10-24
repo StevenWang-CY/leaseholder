@@ -96,6 +96,25 @@ async fn sglangs_engine_fields_are_removed_as_well() {
     );
 }
 
+/// The review's probe P2: vLLM 0.32 takes `ec_transfer_params`, the encoder-cache connector's input, on every route
+/// as it takes `kv_transfer_params`, so a client's never reaches the engine. The Responses API's `background` and
+/// `store` pass: the deployed engine refuses a background response, since its response store is off.
+#[tokio::test]
+async fn the_encoder_cache_connectors_input_is_removed_as_well() {
+    let mock = Mock::start(Script::Json(r#"{"id":"resp_1","status":"queued"}"#)).await;
+    let gw = Gateway::start(mock.addr, "").await;
+    let body = r#"{"model":"qwen","input":"hi","background":true,"store":false,
+        "ec_transfer_params":{"peer_host":"10.0.0.9","peer_port":1}}"#;
+    let reply = call(&gw.tcp, "POST", "/v1/responses", &[BENCH_AUTH], body).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        mock.last().json(),
+        json!({"model": "qwen", "input": "hi", "background": true, "store": false, "cache_salt": BENCH_SALT})
+    );
+    let series = "lh_gateway_sanitized_total{field=\"ec_transfer_params\"}";
+    assert_eq!(metric(&gw.metrics().await, series), Some(1.0));
+}
+
 #[tokio::test]
 async fn trusted_tenants_choose_session_and_class_within_their_limits() {
     let mock = Mock::start(Script::Json("{}")).await;

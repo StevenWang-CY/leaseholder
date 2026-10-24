@@ -39,17 +39,19 @@ pub const ENGINE_CONTROL_HEADERS: [&str; 4] =
     [SESSION_ID, VLLM_PRIORITY, SMG_PRIORITY, DATA_PARALLEL_RANK];
 
 /// Body fields with the same role. vLLM 0.32 reads `session_id` before the header (and `vllm_xargs.session_id`
-/// after it), takes `priority` for scheduling, `kv_transfer_params` for the offload policy, `cache_salt` for
-/// prefix-cache isolation and `request_id` as its own request id. SGLang 0.5.22, which E2 runs behind the
+/// after it), takes `priority` for scheduling, `kv_transfer_params` for the offload policy, `ec_transfer_params` as
+/// the encoder-cache connector's input, `cache_salt` for prefix-cache isolation and `request_id` as its own request
+/// id. SGLang 0.5.22, which E2 runs behind the
 /// control plane as well, takes `rid` as its request id, `extra_key` beside `cache_salt` as a prefix-cache
 /// namespace, `session_params` to continue a session's KV, `custom_labels` as metric labels, and the routing
 /// fields a router injects: the data-parallel rank (`routed_dp_rank`, and the deprecated `data_parallel_rank`)
 /// and the prefill-decode disaggregation fields. The control plane removes them from client bodies and sets its
 /// own; each tenant's `cache_salt` is derived from the tenant's name.
-pub const ENGINE_CONTROL_BODY_FIELDS: [&str; 16] = [
+pub const ENGINE_CONTROL_BODY_FIELDS: [&str; 17] = [
     "session_id",
     "priority",
     "kv_transfer_params",
+    "ec_transfer_params",
     "cache_salt",
     "request_id",
     "vllm_xargs",
