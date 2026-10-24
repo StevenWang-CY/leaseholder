@@ -1,0 +1,11 @@
+# E2 W5 re-measure (w5-r1.campaign to w5-r5.campaign): the frozen box in the discriminating scenario, as
+# disc-frozen-s24.toml with each call opening with an unmeasured warm-up turn.
+arm = 4
+label = "frozen box, discriminating scenario (large contexts), a warm-up turn opening each call"
+
+[voice]
+warmup_turns = 1
+
+[agents]
+sessions = 24
+data = "weka-x32-long"

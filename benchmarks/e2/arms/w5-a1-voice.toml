@@ -1,0 +1,7 @@
+# E2 W5 re-measure (w5-r1.campaign to w5-r5.campaign): voice alone on the frozen box, the SLO's reference for the
+# round's other points, as a1-voice.toml with each call opening with an unmeasured warm-up turn.
+arm = 1
+label = "frozen box, voice alone, a warm-up turn opening each call"
+
+[voice]
+warmup_turns = 1

@@ -1,0 +1,15 @@
+# E2 W5 re-measure (w5-r1.campaign to w5-r5.campaign), the control: w5-disc-pr-ab48-s24.toml on make-room as v0.3
+# built it (the make-room-v03 variant), so that each round measures the fixed engine beside the one it fixes.
+arm = "9-pr-ab48-v03"
+label = "vLLM PRs A and B with a 48-token window as v0.3 built them, no gateway policy, a warm-up turn opening each call"
+
+[voice]
+warmup_turns = 1
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+variant = "make-room-v03"
+flags = ["--additional-config.make_room.reserve_tokens", "0", "--additional-config.make_room.budget_cap_tokens", "48"]

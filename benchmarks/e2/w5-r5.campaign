@@ -1,0 +1,17 @@
+# E2 W5 re-measure, round 5 of 5: the vLLM PRs' configuration with a 48-token window on make-room as W5's
+# fixes leave it and on make-room as v0.3 built it (make-room-v03, the control), beside voice alone and the frozen
+# box, every call opening with a warm-up turn. Each round replays a sample of the agents of its own (seeds 11 to 15)
+# and runs the four in an order rotated from round to round, so that each runs in each place.
+#   benchmarks/e2/campaign.sh benchmarks/e2/w5-r5.campaign
+
+agents-seed 15
+
+# engine frozen
+arms/w5-a1-voice.toml
+arms/w5-disc-frozen-s24.toml
+
+# engine make-room --additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap_tokens 48
+arms/w5-disc-pr-ab48-s24.toml
+
+# engine make-room-v03 --additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap_tokens 48
+arms/w5-disc-pr-ab48-v03-s24.toml

@@ -159,3 +159,16 @@ def test_without_a_seed_line_each_point_keeps_its_arm_files_seed(hosts: Hosts) -
     done = hosts.run(hosts.campaign("c5", ["arms/a1.toml"], {"a1": VOICE}))
     assert done.returncode == 0, done.stdout + done.stderr
     assert "--agents-seed" not in runs(hosts)[0]
+
+
+@pytest.mark.parametrize("round", range(1, 6))
+def test_campaign_sh_reads_each_w5_round(hosts: Hosts, round: int) -> None:
+    done = hosts.run(REPO / "benchmarks" / "e2" / f"w5-r{round}.campaign", "--dry-run")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (
+        "4 points, arm files at" in done.stdout and f"the agents' seed {10 + round}" in done.stdout
+    )
+    window = "--additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap_tokens 48"
+    assert f"w5-disc-pr-ab48-v03-s24: pending, engine make-room-v03 {window}" in done.stdout
+    assert f"w5-disc-pr-ab48-s24: pending, engine make-room {window}" in done.stdout
+    assert "w5-a1-voice: pending, engine frozen" in done.stdout

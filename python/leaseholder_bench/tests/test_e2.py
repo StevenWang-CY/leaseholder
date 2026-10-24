@@ -3,6 +3,8 @@ and stand-ins for AIPerf and the callers that run as real processes, so stopping
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import json
 import os
 import re
@@ -193,6 +195,64 @@ def test_the_campaigns_name_arm_files_that_load() -> None:
             variant = arm.engine.variant
             assert variant == "frozen" or (PHASTFORM / "variants" / variant).is_dir(), line
     assert all(load_arm(path) for path in (BENCHMARKS / "arms").glob("*.toml"))
+
+
+V03_BUILD_SHA256 = "ba7bbe076530311b37f91aa07ac24489904a120c983f495c66f876fd7221a3cd"
+V03_CONF_SHA256 = "853dacb1a096a97e2a06762ac7ca6f875c35550d3a386dc59edb2c6ab9dbee85"
+"""The sha256 of make-room's build.py and lh-engine.conf at the v0.3 tag."""
+
+
+def test_the_w5_control_is_make_room_as_v03_built_it() -> None:
+    control = PHASTFORM / "variants" / "make-room-v03"
+    assert hashlib.sha256((control / "build.py").read_bytes()).hexdigest() == V03_BUILD_SHA256
+    # v0.3's lh-engine.conf with a first line saying what it is, and its own build.py and module.
+    first, rest = (control / "lh-engine.conf").read_text().split("\n", 1)
+    assert first.startswith("# W5's control: make-room as the v0.3 tag has it")
+    v03 = rest.replace("make-room-v03", "make-room")
+    assert hashlib.sha256(v03.encode()).hexdigest() == V03_CONF_SHA256
+    assert "variants/make-room-v03/build.py %h/leaseholder/cache/make-room-v03" in rest
+    assert "Environment=PYTHONPATH=%h/leaseholder/cache/make-room-v03" in rest
+    assert e2.variant_flags("make-room-v03") == (
+        "--scheduler-cls", "lh_make_room_scheduler.AsyncScheduler",
+        "--additional-config.make_room.max_preemptions_per_step", "2",
+        "--additional-config.make_room.budget_cap", "true",
+        "--additional-config.make_room.reserve_tokens", "2048",
+    )  # fmt: skip
+
+
+W5 = ("w5-a1-voice", "w5-disc-frozen-s24", "w5-disc-pr-ab48-s24", "w5-disc-pr-ab48-v03-s24")
+"""W5's four configurations, each the W4 one it re-measures with a warm-up turn opening each call."""
+W4 = {
+    "w5-a1-voice": "a1-voice",
+    "w5-disc-frozen-s24": "disc-frozen-s24",
+    "w5-disc-pr-ab48-s24": "disc-pr-ab48-s24",
+    "w5-disc-pr-ab48-v03-s24": "disc-pr-ab48-s24",
+}
+
+
+def test_the_w5_campaign_rotates_its_four_configurations_over_five_seeded_rounds() -> None:
+    rounds = [campaign_lines(BENCHMARKS / f"w5-r{r}.campaign") for r in range(1, 6)]
+    assert [lines[0] for lines in rounds] == [f"agents-seed {seed}" for seed in range(11, 16)]
+    orders = [[Path(line).stem for line in lines[1:]] for lines in rounds]
+    assert all(sorted(order) == sorted(W5) for order in orders)
+    for order, then in itertools.pairwise(orders):
+        assert then == [*order[1:], order[0]]  # rotated by one from round to round
+    assert all({order[place] for order in orders} == set(W5) for place in range(4))
+    for name in W5:
+        arm, before = (
+            load_arm(BENCHMARKS / "arms" / f"{name}.toml"),
+            load_arm(BENCHMARKS / "arms" / f"{W4[name]}.toml"),
+        )
+        assert arm.voice == replace(before.voice, warmup_turns=1)
+        assert (arm.agents, arm.gateway, arm.router) == (
+            before.agents,
+            before.gateway,
+            before.router,
+        )
+        assert arm.engine.flags == before.engine.flags
+    variants = {name: load_arm(BENCHMARKS / "arms" / f"{name}.toml").engine.variant for name in W5}
+    assert variants["w5-disc-pr-ab48-s24"] == "make-room"
+    assert variants["w5-disc-pr-ab48-v03-s24"] == "make-room-v03"
 
 
 def test_flag_values_pair_each_flag_with_its_value() -> None:
