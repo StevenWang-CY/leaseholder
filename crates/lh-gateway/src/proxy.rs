@@ -126,7 +126,7 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
         Ok(body) => body,
         Err(err) => return ex.error(StatusCode::BAD_REQUEST, "invalid_json", err.to_string()),
     };
-    let session = resolve_session(&tenant.name, &inputs, body.prompt_cache_key.as_deref());
+    let session = resolve_session(tenant, &inputs, body.prompt_cache_key.as_deref());
     set_engine_headers(&mut parts.headers, &session, class, &ex.id, signals);
     parts
         .headers

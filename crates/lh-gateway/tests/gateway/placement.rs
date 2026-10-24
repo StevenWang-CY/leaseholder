@@ -129,6 +129,44 @@ async fn dedicated_places_each_class_on_its_own_node() {
 }
 
 #[tokio::test]
+async fn an_untrusted_tenant_cannot_name_another_tenants_session() {
+    let voice = Mock::start(Script::Json("{}")).await;
+    let agents = Mock::start(Script::Json("{}")).await;
+    let gw = Gateway::start_nodes(&format!(
+        "[nodes.voice]\nupstream = \"http://{}\"\nclasses = [\"realtime\"]\n\
+         [nodes.agents]\nupstream = \"http://{}\"\nclasses = [\"interactive\", \"background\"]\n\
+         [placement]\npolicy = \"dedicated\"",
+        voice.addr, agents.addr
+    ))
+    .await;
+    assert_eq!(place(&gw, "voice-RM_victim").await.json()["node"], "voice");
+    // The bench tenant (untrusted) names the call's session in both sources it may set. Each becomes a session of
+    // its own, hashed with the tenant (`printf 'bench\0voice-RM_victim' | shasum -a 256 | cut -c1-32`), and is
+    // placed by its own class: the call's node and the call's session at the engine stay out of its reach.
+    let own = "h-468e550b540d0075ae9e649823e0977e";
+    let claude = [
+        BENCH_AUTH,
+        ("x-claude-code-session-id", "voice-RM_victim"),
+        (TAG, "claude"),
+    ];
+    let reply = call(&gw.tcp, "POST", "/v1/chat/completions", &claude, CHAT).await;
+    assert_eq!(
+        (reply.status.as_u16(), reply.header("x-lh-session-id")),
+        (200, Some(own))
+    );
+    let body = r#"{"model":"qwen","messages":[],"prompt_cache_key":"voice-RM_victim"}"#;
+    let pck = [BENCH_AUTH, (TAG, "pck")];
+    let reply = call(&gw.tcp, "POST", "/v1/chat/completions", &pck, body).await;
+    assert_eq!(
+        (reply.status.as_u16(), reply.header("x-lh-session-id")),
+        (200, Some(own))
+    );
+    assert!(voice.tags().is_empty());
+    assert_eq!(agents.tags(), ["claude", "pck"]);
+    assert_eq!(agents.last().header("x-session-id"), Some(own));
+}
+
+#[tokio::test]
 async fn a_node_that_fails_readiness_takes_no_new_sessions_and_its_sessions_move() {
     let tables = "[placement]\npolicy = \"least-loaded\"\nprobe_interval_s = 0.05";
     let (a, b, gw) = two_nodes(tables).await;

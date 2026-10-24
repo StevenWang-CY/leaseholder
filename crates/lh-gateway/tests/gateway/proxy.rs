@@ -34,10 +34,12 @@ async fn engine_inputs_from_clients_are_replaced_by_the_gateways() {
     let request_id = reply.header("x-request-id").unwrap();
     assert!(request_id.len() == 32 && request_id != "theirs");
     assert_eq!(seen.header("x-request-id"), Some(request_id));
-    // An untrusted tenant's X-Session-ID and X-LH-Class are ignored: the session comes from prompt_cache_key
-    // and the class is the tenant's default, interactive.
-    assert_eq!(seen.header("x-session-id"), Some("bench-7"));
-    assert_eq!(reply.header("x-lh-session-id"), Some("bench-7"));
+    // An untrusted tenant's X-Session-ID and X-LH-Class are ignored: the session comes from prompt_cache_key,
+    // hashed with the tenant (`printf 'bench\0bench-7' | shasum -a 256 | cut -c1-32`), and the class is the
+    // tenant's default, interactive.
+    let session = "h-17636c9ec78323ab9bd295ae7d8a40c1";
+    assert_eq!(seen.header("x-session-id"), Some(session));
+    assert_eq!(reply.header("x-lh-session-id"), Some(session));
     assert_eq!(seen.header("x-vllm-priority"), Some("1"));
     assert_eq!(seen.header("content-type"), Some("application/json"));
     assert_eq!(seen.header("x-trace"), Some("kept"));
