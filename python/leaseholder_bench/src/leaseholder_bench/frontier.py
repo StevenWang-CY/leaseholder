@@ -1372,6 +1372,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
     fig, ax = plt.subplots(figsize=(7.5, 5.5), facecolor=_SURFACE, layout="constrained")
     ax.set_facecolor(_SURFACE)
     ends = []
+    swept = False  # whether any arm's frontier is drawn as a line
     for arm in arms:
         _, color, (marker, size) = _style(arm)
         points = [g for g in groups if g["arm"] == arm]
@@ -1379,12 +1380,14 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
             (g for g in points if g["frontier"]), key=lambda g: g["background_tokens_per_s"]
         )
         others = [g for g in points if not g["frontier"]]
+        line = load_sweep(front)
+        swept |= line
         ax.plot(
             [g["background_tokens_per_s"] for g in front],
             [g["v2v_p95_ms"] for g in front],
             color=color,
             linewidth=1.5,
-            linestyle="-" if load_sweep(front) else "none",
+            linestyle="-" if line else "none",
             marker=marker,
             markersize=size,
             markeredgecolor=_SURFACE,
@@ -1428,11 +1431,11 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
                 linewidths=0,
                 zorder=2,
             )
-    notes = [
-        "A line joins an arm's frontier across load levels; open markers are dominated configurations"
-    ]
+    notes = ["Open markers are dominated configurations"]
     if any(len(g["runs"]) > 1 for g in groups):
         notes[0] += ", whiskers span repeated runs"
+    if swept:  # each note stays one line of the figure's width
+        notes.insert(0, "A line joins an arm's frontier across load levels")
     if fence is not None or len(crosses) < len(failed):  # the scale of the rest and the SLO
         shown = [g["v2v_p95_ms"] for g in groups if fence is None or g["v2v_p95_ms"] <= fence]
         shown += [] if slo is None else [slo]
