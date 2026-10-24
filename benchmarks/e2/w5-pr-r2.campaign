@@ -1,0 +1,13 @@
+# E2 W5 re-measure, the vLLM PRs' other two configurations, round 2 of 5: the KV preemption alone and both PRs at
+# the budget cap's default 16-token window, on make-room as W5's fixes leave it, every call opening with a warm-up
+# turn. Round N replays w5-rN's sample of the agents (seeds 11 to 15), so that each point pairs with that round's
+# points, and the two alternate in order from round to round.
+#   benchmarks/e2/campaign.sh benchmarks/e2/w5-pr-r2.campaign
+
+agents-seed 12
+
+# engine make-room --additional-config.make_room.reserve_tokens 0
+arms/w5-disc-pr-ab-s24.toml
+
+# engine make-room --additional-config.make_room.budget_cap false --additional-config.make_room.reserve_tokens 0
+arms/w5-disc-pr-a-s24.toml

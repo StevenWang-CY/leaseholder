@@ -1,0 +1,17 @@
+# E2 W5 re-measure (w5-pr-r1.campaign to w5-pr-r5.campaign): the engine as the two vLLM PRs propose it, make-room's
+# KV preemption and its budget cap at the default 16-token first-tokens window, no reserve, behind the gateway without
+# an admission policy, as disc-pr-ab-s24.toml, on make-room as W5's fixes leave it, with each call opening with an
+# unmeasured warm-up turn.
+arm = "9-pr-ab"
+label = "vLLM PRs A and B: KV preemption and the budget cap, no gateway policy, a warm-up turn opening each call"
+
+[voice]
+warmup_turns = 1
+
+[agents]
+sessions = 24
+data = "weka-x32-long"
+
+[engine]
+variant = "make-room"
+flags = ["--additional-config.make_room.reserve_tokens", "0"]

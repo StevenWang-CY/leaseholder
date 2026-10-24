@@ -71,6 +71,8 @@ The other arms take an earlier arm's winner, so their files are written from its
 
 [`w5-r1.campaign`](w5-r1.campaign) to [`w5-r5.campaign`](w5-r5.campaign) re-measure, after W5's fixes to make-room, the PRs' configuration with a 48-token window (`arms/w5-disc-pr-ab48-s24.toml`) beside its control, the same on make-room as v0.3 built it (`w5-disc-pr-ab48-v03-s24.toml`, on the `make-room-v03` variant: v0.3's `build.py` and `lh-engine.conf`, its module renamed), and beside voice alone and the frozen box (`w5-a1-voice.toml`, `w5-disc-frozen-s24.toml`) in the same rounds. Each arm file is its W4 one with each call opening with an unmeasured warm-up turn (`[voice] warmup_turns = 1`). Each round replays a sample of the agents of its own (`agents-seed` 11 to 15) and runs the four in an order rotated by one from round to round, so that each runs in each place. The control's module is `lh_make_room_v03_scheduler`, so that `lh-bench e2 run`'s engine check, which reads the engine's scheduler class back, fails a point on the other module before it starts.
 
+[`w5-pr-r1.campaign`](w5-pr-r1.campaign) to [`w5-pr-r5.campaign`](w5-pr-r5.campaign) re-measure the PRs' other two configurations the same way: the KV preemption alone (`arms/w5-disc-pr-a-s24.toml`) and both PRs at the budget cap's default 16-token window (`w5-disc-pr-ab-s24.toml`). Round N replays w5-rN's sample of the agents, so that each point pairs with that round's, and the two alternate in order from round to round.
+
 The `[admission]` keys are those of `lh-gateway`'s configuration ([its README](../../crates/lh-gateway/README.md)); `lh-bench e2 run` passes the `[gateway]` table through as it is.
 
 ## Two GPU nodes: dedicate vs pool
