@@ -532,6 +532,29 @@ CAMPAIGN/POINT). The realtime first byte is the gateway's, from its request log 
 its histogram ("histogram", interpolated). Refused adds up the gateway's admission point and the
 engine's queue limits; the gateway's own count of the background tokens it served checks AIPerf's
 goodput."""
+CONFIGURATION_ARMS = {
+    # Arm 9 in the discriminating scenario without one of its parts, or with one factor changed.
+    "disc-a9-no-headroom-s24": "9-no-headroom",
+    "disc-a9-no-throttle-s24": "9-no-throttle",
+    "disc-a9-budget0-s24": "9-budget0",
+    "disc-a9-budget500-s24": "9-budget500",
+    "disc-a9-no-degrade-s24": "9-no-degrade",
+    "disc-a9-window48-s24": "9-window48",
+    "disc-a9-no-events-s24": "9-no-events",
+    "disc-a9-trigger-request-s24": "9-trigger-request",
+    "disc-a9-engine-only-s24": "9-engine-only",
+    "disc-a9-gateway-only-s24": "9-gateway-only",
+    "disc-a9-no-kv-makeroom-s24": "9-no-kv-makeroom",
+    "disc-a9-no-reserve-s24": "9-no-reserve",
+    "disc-a9-no-budget-cap-s24": "9-no-budget-cap",
+    # The engine as vLLM #63350 and #63351 propose it: no reserve, no gateway policy.
+    "disc-pr-a-s24": "9-pr-a",
+    "disc-pr-ab-s24": "9-pr-ab",
+    "disc-pr-ab48-s24": "9-pr-ab48",
+}
+"""The arm the report gives the points of an arm file whose ``arm`` names another configuration's:
+arm 9's ablations and the vLLM PRs' configurations say ``arm = 9`` as run, but each is a
+configuration of its own, never a point on arm 9's frontier. The records stay as run."""
 STANDARD_WORKLOAD = ("weka-x32", 2)
 """The corpus and callers of an arm file that names neither (e2's Agents.data and Voice.callers):
 the workload drawn in frontier.svg."""
@@ -618,7 +641,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     samples = v2v_samples(run_dir / "bots" / "turns.jsonl")
     v2v = percentiles(samples) if samples else voice["v2v_ms"]
     row = {
-        "arm": str(arm["arm"]),
+        "arm": CONFIGURATION_ARMS.get(run["name"], str(arm["arm"])),
         "workload": _workload(arm["agents"]["data"], arm["voice"]["callers"]),
         "point": run["name"],
         "campaign": run_dir.absolute().parent.name,
@@ -1319,8 +1342,9 @@ def _style(arm: str) -> tuple[str, str, tuple[str, float]]:
 
 
 def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None) -> bool:
-    """A workload's frontier figure: each arm's frontier as a line in its family's color and with
-    the arm's marker, its dominated configurations as open markers, and the arm's name by the last
+    """A workload's frontier figure: each arm's frontier in its family's color and with the arm's
+    marker, joined by a line where it spans load levels (a sweep of sessions; configurations at one
+    load are markers), its dominated configurations as open markers, and the arm's name by the last
     point of its frontier. A configuration measured in several campaigns sits at its runs' medians,
     with whiskers over their range on both axes: one marker per configuration keeps each frontier a
     line through what frontier.md marks, and the whiskers still show a run that collapsed. A
@@ -1360,6 +1384,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
             [g["v2v_p95_ms"] for g in front],
             color=color,
             linewidth=1.5,
+            linestyle="-" if load_sweep(front) else "none",
             marker=marker,
             markersize=size,
             markeredgecolor=_SURFACE,
@@ -1403,7 +1428,9 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
                 linewidths=0,
                 zorder=2,
             )
-    notes = ["A line joins each arm's frontier; open markers are dominated configurations"]
+    notes = [
+        "A line joins an arm's frontier across load levels; open markers are dominated configurations"
+    ]
     if any(len(g["runs"]) > 1 for g in groups):
         notes[0] += ", whiskers span repeated runs"
     if fence is not None or len(crosses) < len(failed):  # the scale of the rest and the SLO
@@ -1434,7 +1461,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
         taken.append(ax.axhline(slo, color=_INK, linewidth=0.75, linestyle=(0, (4, 3)), zorder=1.5))
     title = f"E2 frontier: {rows[0]['workload']}"
     ax.set_title(title, color=_INK, loc="left", pad=12 + 11 * len(notes))
-    ax.annotate(
+    note = ax.annotate(
         ".\n".join(notes) + ".",
         (0, 1),
         xycoords="axes fraction",
@@ -1463,10 +1490,21 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
             text.set_color(_INK)
     fig.draw_without_rendering()  # lays the axes out, so that the names can be placed in them
     marks = [(g["background_tokens_per_s"], g["v2v_p95_ms"]) for g in [*groups, *crosses]]
-    _name_ends(ax, ends, marks, taken)
+    if unnamed := _name_ends(ax, ends, marks, taken):
+        notes.append(
+            f"{unnamed} variants of arms crowd too closely to name; frontier.md lists them"
+        )
+        note.set_text(".\n".join(notes) + ".")
+        ax.set_title(title, color=_INK, loc="left", pad=12 + 11 * len(notes))
     _save_svg(fig, path, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
     return True
+
+
+def load_sweep(configurations: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether configurations span load levels (numbers of session trees), so that a line through
+    them reads as one arm swept over its load. Configurations at one load are separate markers."""
+    return len({c["runs"][0]["sessions"] for c in configurations}) > 1
 
 
 def _fence(values: Sequence[float]) -> float | None:
@@ -1493,11 +1531,13 @@ def _name_ends(
     ends: Sequence[tuple[float, float, str]],
     marks: Sequence[tuple[float, float]],
     taken: Sequence[Any],
-) -> None:
+) -> int:
     """Write each arm's name by the last point of its frontier (``ends``: x, y and the name), at
     the first of _PLACES where it stays in the axes, clear of every marker (``marks``), of the texts
-    ``taken`` and of the names placed before it; where none is, beside the point anyway. Arms whose
-    ends share a marker's place share a name ("6, 8b"), and the most crowded go first."""
+    ``taken`` and of the names placed before it; where none is, an arm's name goes beside the point
+    anyway, and the names of an arm's variants (``9-no-headroom``) are left out. Arms whose ends
+    share a marker's place share a name ("6, 8b"; past three, "9, 9-budget0 and 8 more"), and the
+    most crowded go first. Returns how many variants were left unnamed."""
     import math
 
     from matplotlib.text import Text
@@ -1541,17 +1581,26 @@ def _name_ends(
         label.update_positions(renderer)
         return label, Text.get_window_extent(label, renderer).padded(1.5)
 
+    unnamed = 0
     for x, y, names, _ in sorted(shared, key=crowd):
-        name = ", ".join(names)
+        name = (
+            ", ".join(names)
+            if len(names) <= 3
+            else f"{', '.join(names[:2])} and {len(names) - 2} more"
+        )
         for place in _PLACES:
             label, box = name_at(x, y, name, *place)
             inside = frame.x0 <= box.x0 and box.x1 <= frame.x1 and frame.y0 <= box.y0
             if inside and box.y1 <= frame.y1 and not any(box.overlaps(b) for b in boxes):
                 break
             label.remove()
-        else:  # nowhere clear: beside the point anyway
+        else:  # nowhere clear: an arm's name beside the point anyway, its variants' left out
+            if all("-" in n for n in names):
+                unnamed += len(names)
+                continue
             label, box = name_at(x, y, name, *_PLACES[0])
         boxes.append(box)
+    return unnamed
 
 
 def plot_waterfall(cells: Sequence[Mapping[str, Any]], path: Path) -> bool:

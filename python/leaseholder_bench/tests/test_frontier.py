@@ -20,6 +20,7 @@ from leaseholder_bench.frontier import (
     ADMISSION_COLUMNS,
     CALLER_ROOM,
     COLUMNS,
+    CONFIGURATION_ARMS,
     GPU_COLUMNS,
     NODE_COLUMNS,
     PLACEMENT_LOGGER,
@@ -40,6 +41,7 @@ from leaseholder_bench.frontier import (
     gateway_counts,
     gateway_requests,
     load_points,
+    load_sweep,
     mark_frontier,
     stage_waterfall,
     summarize_point,
@@ -607,6 +609,31 @@ def test_policy_leaseholder_shows_what_it_deferred_and_what_it_capped(tmp_path: 
     with (out / "frontier.csv").open() as f:
         shares = {r["point"]: r["degraded_share"] for r in csv.DictReader(f)}
     assert shares == {"disc-a9-s24": "1.0", "disc-frozen-s24": ""}
+
+
+def test_arm_9s_ablations_and_the_prs_are_configurations_of_their_own(tmp_path: Path) -> None:
+    # As run, their arm files say arm 9; the report gives each its own arm, so none is placed on arm
+    # 9's frontier or joined to it, and the records stay as they are.
+    dirs = [
+        point(tmp_path, "disc-a9-s24", "9", 3400, 2057),
+        point(tmp_path, "disc-pr-ab48-s24", "9", 3500, 2193),
+        point(tmp_path, "disc-a9-gateway-only-s24", "9", 3700, 10993),
+    ]
+    rows, _ = load_points(dirs)
+    arms = {r["point"]: (r["arm"], r["frontier"]) for r in rows}
+    assert arms == {
+        "disc-a9-s24": ("9", True),
+        "disc-pr-ab48-s24": ("9-pr-ab48", True),
+        "disc-a9-gateway-only-s24": ("9-gateway-only", True),
+    }
+    assert all(arm.startswith("9-") for arm in CONFIGURATION_ARMS.values())
+
+
+def test_a_line_joins_an_arms_frontier_only_across_load_levels() -> None:
+    def at(*sessions: int) -> list[dict[str, Any]]:
+        return [{"runs": [{"sessions": n}]} for n in sessions]
+
+    assert load_sweep(at(8, 16, 24)) and not load_sweep(at(24, 24)) and not load_sweep(at(24))
 
 
 def turn_lines(run_dir: Path, stages: dict[str, float], turns: int, v2v: list[dict]) -> None:
