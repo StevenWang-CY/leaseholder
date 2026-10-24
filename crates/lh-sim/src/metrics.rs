@@ -65,10 +65,12 @@ pub struct Regime {
     /// Live working set over the GPU pool: time-weighted mean and peak.
     pub kv_pressure_mean: f64,
     pub kv_pressure_peak: f64,
-    /// Median think time over the CPU-restore time of the median prompt.
+    /// Median pause over the CPU-restore time of the median prompt.
     pub pi: f64,
     /// CPU-restore time over recompute time of the median prompt.
     pub rho: f64,
+    /// The median pause: the delay before a turn, over the turns that have one (turns sent at once
+    /// are not pauses).
     pub median_think_ms: f64,
     pub median_prompt_tokens: f64,
     pub restore_ms_at_median: f64,
@@ -180,8 +182,8 @@ pub fn summarize(
             s.stall_s += r.blocked_ns as f64 / 1e9;
         }
         prompts.push(r.prompt_tokens as f64);
-        if let Some(d) = r.delay_ms {
-            thinks.push(d.max(0.0));
+        if let Some(d) = r.delay_ms.filter(|&d| d > 0.0) {
+            thinks.push(d);
         }
     }
     let total = s.prompt_tokens.max(1) as f64;
@@ -273,6 +275,7 @@ pub fn csv(summaries: &[Summary]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lh_core::PromptSources;
 
     #[test]
     fn percentiles_interpolate_like_numpy() {
@@ -281,5 +284,47 @@ mod tests {
         assert!((p.p90 - 3.7).abs() < 1e-12);
         assert!((p.p99 - 3.97).abs() < 1e-12);
         assert_eq!(Percentiles::of(vec![]).n, 0);
+    }
+
+    #[test]
+    fn pi_counts_only_the_turns_that_pause() {
+        let record = |turn, delay_ms| RequestRecord {
+            trace: 0,
+            conv: 0,
+            turn,
+            kind: ConvKind::Root,
+            warmup: false,
+            prompt_tokens: 1_000,
+            output_tokens: 1,
+            sources: PromptSources::default(),
+            recomputed: 0,
+            delay_ms,
+            issued_ns: 0,
+            admitted_ns: 0,
+            blocked_ns: 0,
+            done_ns: 0,
+            ttft_ns: 0,
+        };
+        // A first turn, two turns sent at once and two pauses: the median pause is 3 s, not 1 s.
+        let records = [
+            record(0, None),
+            record(1, Some(0.0)),
+            record(2, Some(2_000.0)),
+            record(3, Some(0.0)),
+            record(4, Some(4_000.0)),
+        ];
+        let geometry = KvGeometry::QWEN3_4B_BF16;
+        let cost = TierCost::frozen_box();
+        let s = summarize(
+            "lru-cpu",
+            TierCapacity::frozen_box(&geometry),
+            &records,
+            &ReplayStats::default(),
+            &EngineStats::default(),
+            &cost,
+            &geometry,
+        );
+        assert_eq!(s.regime.median_think_ms, 3_000.0);
+        assert_eq!(s.regime.pi, 3_000.0 / cost.restore_ms(1_000));
     }
 }
