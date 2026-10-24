@@ -67,7 +67,7 @@ The other arms take an earlier arm's winner, so their files are written from its
 
 [`a9-window.campaign`](a9-window.campaign) measures arm 9 without degrade and with make-room's first-tokens window at 48 tokens, after `s2`: without degrade, a reply's first sentence can outrun the default 16-token window, and degrade's 16-token cap, which keeps it inside, capped every reply in the discriminating scenario.
 
-[`upstream.campaign`](upstream.campaign) measures the engine as the vLLM PRs propose it, without the reserve and behind the gateway without an admission policy: the KV preemption alone, with the budget cap, and with a 48-token window. [`upstream-r1.campaign`](upstream-r1.campaign) and [`upstream-r2.campaign`](upstream-r2.campaign) repeat these three and arm 9's 48-token window, so that each has three runs, as each of arm 9's ablations has: a configuration that misses the SLO moved by up to 1.2 s in p95 from round to round.
+[`upstream.campaign`](upstream.campaign) measures the engine as the vLLM PRs propose it, without the reserve and behind the gateway without an admission policy: the KV preemption alone, with the budget cap, and with a 48-token window. [`upstream-r1.campaign`](upstream-r1.campaign) and [`upstream-r2.campaign`](upstream-r2.campaign) repeat these three and arm 9's 48-token window, so that each has three runs, as each of arm 9's ablations has: a configuration that misses the SLO moved by up to 1.5 s in p95 from round to round.
 
 The `[admission]` keys are those of `lh-gateway`'s configuration ([its README](../../crates/lh-gateway/README.md)); `lh-bench e2 run` passes the `[gateway]` table through as it is.
 
@@ -116,7 +116,7 @@ python/leaseholder_bench/.venv/bin/lh-bench e2 export $LH_E2_RESULTS/w2c/* --out
 make reproduce-e2
 ```
 
-The run directories themselves, with the raw records the report does not need (the gateway's request log, AIPerf's exports, the metric snapshots, the worker's journal, the GPU's samples, the tools' logs), will be an asset of the GitHub release that publishes the results.
+The run directories themselves, with the raw records the report does not need (the gateway's request log, AIPerf's exports, the metric snapshots, the worker's journal, the GPU's samples, the tools' logs), are an asset of the v0.3 release.
 
 ## The demo video
 

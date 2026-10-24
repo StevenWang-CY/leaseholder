@@ -1,7 +1,7 @@
 """probe.py [URL]: the pr54530 variant's check. Fill the engine's 12 running slots (``--max-num-seqs 12``) with
 priority-2 decodes, then time a priority-0 request. With the PR it preempts one of them; without it, it waits for a
-slot. Measured on the frozen box with the port's synchronous Scheduler (2026-10-22): 81 ms with the PR, 8,900 ms
-without.
+slot. Measured on the frozen box on 2026-10-22, with the port's synchronous Scheduler before the variant loaded the
+stock AsyncScheduler over it: 81 ms with the PR, 8,900 ms without; not measured since.
 
 Run it on the GPU node with the engine's environment, which has aiohttp:
 ``~/leaseholder/venvs/engine/bin/python probe.py http://127.0.0.1:8000``

@@ -62,7 +62,7 @@ The whole corpus at 8, 16 and 24 agent session trees. At 8, every vLLM arm meets
 
 ### Where agent KV fills the pool: the discriminating scenario
 
-24 session trees of the 48 traces with the largest contexts (a median of 13.3k tokens a request). The pool holds two or three of these contexts, and under the frozen box 98% of the agents' prompt tokens are computed rather than read from a cache. Here every stock, engine and router baseline but one collapses, with a V2V p95 of 5.7–12.1 s:
+24 session trees of the 48 traces with the largest contexts (a median of 13.3k tokens a request). The pool holds two or three of these contexts, and under the frozen box about 95% of the agents' prompt tokens are computed rather than read from a cache. Here every stock, engine and router baseline but one collapses, with a V2V p95 of 5.7–12.1 s:
 - **The loss is the wait for the first sentence.** Endpointing and TTS barely move; on the frozen box the reply's first sentence takes 3.8 s of a 5.2 s mean turn, against 0.3 s alone, most of it before the LLM's first token.
 - **Engine priority does not reach it.** vLLM's priority scheduling cannot let a waiting request preempt running ones for KV ([#40004](https://github.com/vllm-project/vllm/issues/40004)); #54530 preempts at the request-count cap, which does not bind here; SGLang's priority preemption does not fire on KV either, with or without its host tier.
 - **Static answers help or cheat.** A 2,048-token KV reservation halves the tail (5.7 s); concurrency caps do not help, since two contexts fill the pool; vLLM's queue limit meets the SLO only by refusing the voice turns with the rest.
@@ -100,7 +100,7 @@ Five runs of each headline configuration and three of each ablation and PR confi
 
 Each configuration at the median of its runs, whiskers over their range. The open diamond is the frozen box; 4 is its best step cap, 6 the static reservation, 7b SGLang with HiCache and 8c preempt-resubmit. Arm 9's line joins arm 9 (left) and the PRs' configuration with a 48-token window (right).
 
-- **The engine change takes the voice tail to the SLO's edge.** Arm 9's median is 40 ms over the SLO, and two of its five runs are under it; no configuration without the engine change has a run under it.
+- **The engine change takes the voice tail to the SLO's edge.** With full replies and a 48-token window, the PRs' configuration is 176 ms over the SLO (2,193 ms). Arm 9, whose gateway capped every reply at 16 tokens, is 40 ms over it at the median, and two of its five runs are under it. No configuration without the engine change has a run under the SLO with every turn answered.
 - **The prefill cap is the necessary half.** Without it the p95 stays at 5.3 s even with the KV preemption and the reserve. The KV preemption and the reserve substitute for each other: without one or the other, arm 9 is within the spread of its own runs (2,037 and 2,116 ms). #63350 alone gets the turn into the batch, and its reply then decodes beside agent prefill (5.8 s).
 - **The reply has to fit the window.** This voice agent's replies run 20 tokens at the median and 39 at most. With a 16-token window, a full reply's first sentence outruns it and decodes beside agent prefill again: 3.2–4.0 s, with the gateway or without. Degrade capped every reply here, which is what fits arm 9's replies into the window; a 48-token window fits full replies instead, about 140 ms above the capped ones (526 against 429 ms to the first sentence).
 - **The agents keep most of their throughput.** Arm 9 keeps 92% of the frozen box's background goodput and the PRs' configuration 94%, with the agents' TTFT p99 unchanged. Preempt-resubmit keeps 98% at a 160 s tail, so neither it nor arm 9 dominates the other on the frontier.
@@ -109,13 +109,13 @@ Each configuration at the median of its runs, whiskers over their range. The ope
 
 The stages, as a mean over each configuration's replies, show where each fix acts: endpointing and TTS are the same in every row, and the bar that moves is the reply's first sentence.
 
-## When lifecycle timing pays, and when it does not
+## What lifecycle timing could and could not do
 
-Leaseholder's premise was that a realtime tier needs to know what is coming: when a caller starts to speak, when an agent's tool returns. Both experiments measured that information against doing without it, and on this box both came out near zero.
+Leaseholder's premise was that a realtime tier needs to know what is coming: when a caller starts to speak, when an agent's tool returns. Neither experiment found a use for that knowledge on this box, for different reasons.
 - **Agents (E1, in simulation).** Knowing exactly when an agent returns from its tool buys under 7% of resume TTFT at p50 over LRU with the CPU tier: the median resume is already a GPU hit or a short restore, and restores are bound by the link at 6.2 GB/s.
-- **Voice (E2).** Beside the engine change, leaving out or changing any one lifecycle-timed mechanism of the gateway's policy lands within the spread of arm 9's own runs (medians of 2,033–2,124 ms against 2,057, three runs each): the KV headroom from speech onset, about a second before the request (left out, or armed by the request instead); the critical-window throttle (left out, or its budget at 0 or 500 ms); the lifecycle events themselves. The same policy in front of the stock engine leaves voice where stock vLLM does (10,993 ms).
+- **Voice (E2).** The gateway's lifecycle-timed mechanisms could not act in the regime where voice suffers. Running agent requests held the pool, and a control plane in front can protect KV only by deferring new requests, so the headroom armed at speech onset was never there: degrade capped 60 of 60 realtime requests in every run of arm 9. The critical-window throttle, checked after the headroom, deferred nothing while the headroom ran, even at a 0 ms budget. Leaving out or changing any of these mechanisms therefore landed within the spread of arm 9's runs (medians of 2,033–2,124 ms against 2,057, three runs each), and the same policy in front of the stock engine left voice where stock vLLM does (10,993 ms).
 
-Why: everything a voice turn needs can be readied within a step or two of its request reaching the engine. KV room comes from preempting a lower-priority request or from a small reserve, compute from holding lower-priority prefill, and a turn's evicted prefix restores from the CPU tier in milliseconds. Lead time would pay where readying takes longer than the gap between the end of a turn and its request: a victim's KV offloaded over a slower link than PCIe Gen3 x8, prefill chunks several times longer, or sessions parked and prefetched. Those are the cases leases are for, and they are not on this box.
+So a control plane in front cannot make room for a voice turn while running work holds the KV; only the engine can, by preempting that work. This does not show that lifecycle timing never helps: where its mechanisms engage, as in the standard scenario at 24 session trees, where the throttle deferred 27 requests, they were not isolated from the engine change.
 
 What did pay is scheduling: the engine running a realtime request's admission, KV load and first tokens without lower-priority prefill beside them, and a reply that fits that window. [PRODUCTION.md](PRODUCTION.md) turns that into a configuration to deploy.
 
@@ -127,14 +127,14 @@ The regime where a waiting voice turn is blocked by KV (#40004) follows how long
 
 ## Two GPUs: dedicate or pool
 
-Three configurations of two GPU nodes: a voice node and an agent node (dedicate); two mixed nodes with least-loaded placement; two mixed nodes with Leaseholder's placement, which sends a new call to the node with the fewest calls and a new agent session to the node holding the least background KV. The gateway places sessions on several nodes and keeps each on its node, the harness measures a point on two nodes with each node's share, and both are deployed. The points are not measured: Gray, the second card, has been held by another user's work since 2026-10-23, so they wait for a free window on it ([EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load)).
+Three configurations of two GPU nodes: a voice node and an agent node (dedicate); two mixed nodes with least-loaded placement; two mixed nodes with Leaseholder's placement, which sends a new call to the node with the fewest calls and a new agent session to the node holding the least background KV. The gateway places sessions on several nodes and keeps each on its node, the harness measures a point on two nodes with each node's share, and both are deployed. The points are not measured yet: they wait for a window on the second card ([EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load)).
 
 ## How the runs were made
 
 - **One frozen box**, pinned by lock files and model revisions. Engine variants are drop-ins switched by one script, and runs are grouped by engine because a restart costs minutes.
 - **Campaign files** list arm files; [`benchmarks/e2/campaign.sh`](../benchmarks/e2/campaign.sh) measures them in order from a workstation, fetches each run directory and writes the report. A stopped campaign resumes where it stopped. While it measures, only the box's own units may hold the GPU, and a point measured while another process did is measured again ([the runbook](../ops/RUNBOOK.md#checks-before-heavy-work-on-a-shared-host)).
 - **Repeats are rounds**: each round is a campaign over the headline configurations, with the engine groups' order rotated. Results are reported per run with their spread, never as a mean alone.
-- **Control-plane overhead** is measured on every request: the gateway adds 0.38 ms to a voice request's first token, the paired median against the engine's own socket.
+- **Control-plane overhead.** The gateway's own time is a metric on every request (`lh_gateway_overhead_seconds`: a p99 of 0.44–0.58 ms in place on cyan). Paired against the engine's own socket, on the W1 build, the gateway added 0.38 ms to a voice request's first token.
 - **Reproduce.** `make reproduce-e2` rebuilds the report, its tables, frontiers and waterfall from the compact records of all 129 points ([`benchmarks/results`](../benchmarks/results/2026-10-23-e2/README.md)), and `make e2-figures` the figures above. The raw run directories are an asset of the v0.3 release, with the demo video: two calls side by side, the frozen box's and the PRs' configuration, measured again for it with the calls' audio saved (V2V p95 10,851 and 2,202 ms, not in the tables).
 
 ## Limitations
@@ -142,5 +142,6 @@ Three configurations of two GPU nodes: a voice node and an agent node (dedicate)
 - One model (Qwen3-4B-FP8), one GPU model, one host; synthesized callers and fixed endpointing.
 - 50 turns a point: a p95 lies between the third- and fourth-largest turn, so single runs differ by a few hundred milliseconds; a configuration near the SLO moves about 150 ms from run to run, one that misses it up to 1.5 s, and SGLang 7 s.
 - The agent traces are block-scaled 32×, which keeps their reuse structure and changes their timing.
+- Every turn counts, the first of each call included, which is slower under load: without it, the standard scenario's p95 at 16 session trees drops from 2,323 to 2,186 ms for the frozen box. Background goodput is counted over the calls, whose duration differs by configuration.
 - vLLM counts a preemption when the victim next produces output, so per-point preemption counts are lower bounds.
 - The two-node points are not measured yet.

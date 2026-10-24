@@ -55,7 +55,8 @@ A longer window holds background prefill for longer each turn: the agents' throu
 ## What not to deploy
 
 Measured in the same scenario:
-- **Lifecycle-timed protection** (KV headroom held from speech onset, a prefill throttle while a voice turn is in flight, the voice agent's events): beside the engine change, each is within the spread of leaving it out (three runs each); without the change, a gateway doing all of it leaves the p95 at 10,993 ms, as stock.
+- **Lifecycle-timed protection in a gateway** (KV headroom held from speech onset, a prefill throttle while a voice turn is answered, the voice agent's events): with agents' KV filling the pool these could not act, since a gateway can only defer new requests while running ones hold the KV. Without the engine change, a gateway doing all of it leaves the p95 at 10,993 ms, as stock.
+- **vLLM's development mode** (`VLLM_SERVER_DEV_MODE=1`), which the frozen box runs for the harness's `/server_info` and cache resets: it serves routes such as `/collective_rpc` and `/sleep` that a deployment must not expose.
 - **Engine knobs**: `--watermark` (no change), `--max-num-queued-tokens` (it refuses voice turns too: 48 of 50 failed), concurrency caps (two agent contexts fill the pool), [#54530](https://github.com/vllm-project/vllm/pull/54530) (it preempts at the request-count cap, which does not bind here).
 - **Another engine**: SGLang 0.5.22's priority preemption, with or without its host tier (11,948 ms with HiCache, five runs).
 - **A static KV reservation** halves the tail (5,671 ms) but stays seconds over the SLO.

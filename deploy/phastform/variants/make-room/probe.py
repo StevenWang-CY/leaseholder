@@ -1,7 +1,7 @@
 """probe.py [URL] [kv|prefill]: the make-room variant's two checks, a voice turn behind agent requests.
 
 kv (the default): two priority-2 requests of 18,000 tokens fill the engine's KV pool, leaving 24 blocks free,
-and keep decoding; then a priority-0 chat turn of about 700 tokens (44 blocks) arrives. Without make-room it
+and keep decoding; then a priority-0 chat turn of about 750 tokens (47 blocks) arrives. Without make-room it
 waits until the two have grown into the free blocks and vLLM preempts one of them so that the other can grow
 (a few seconds); with it, it preempts one at once. The probe sends the voice turn once the engine reports both
 running and the pool full.

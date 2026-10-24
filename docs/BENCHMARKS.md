@@ -102,7 +102,7 @@ In stock mode the reply keeps streaming for the whole barge-in.
 
 Each point: two callers (`lh-voice bots`, 25 turns each, a barge-in on a quarter of the turns) through LiveKit to the stock voice agent, beside the AIPerf replay of the 32× Claude Code corpus at a number of session trees, through `lh-gateway` ([EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load) has the arms, [`benchmarks/e2`](../benchmarks/e2) the arm files and campaigns). V2V is read from waveforms at the callers, with fixed endpointing. Background goodput is the prompt and completion tokens per second of the agent requests that completed during the calls. The realtime first byte is the gateway's, exact from its request log. The voice SLO is V2V p95 at most 250 ms above voice alone: 1,744 ms alone in W2's batch, so 1,994 ms for W2's tables, which are one run per point. With 50 turns a point, a p95 lies between the third- and fourth-largest turn, so single runs differ by a few hundred milliseconds at p95. W4 repeats the discriminating scenario and measures voice alone five times (median 1,767 ms, so an SLO of 2,017 ms), below the W2 tables.
 
-**The standard scenario** (the whole corpus), W2, 2026-10-22/23. V2V p95 and, in brackets, the realtime first byte p95, in ms:
+**The standard scenario** (the whole corpus), W2, 2026-10-22/23, on the W2 build. V2V p95 and, in brackets, the realtime first byte p95, in ms:
 
 | Session trees | Background tokens/s | Arm 2: stock (FCFS, 2,048-token chunks) | Arm 3: + priority | Arm 4: + step cap 512/256 (the frozen box) | Arm 7b: SGLang 0.5.22 |
 |---|---:|---:|---:|---:|---:|
@@ -134,13 +134,13 @@ At 16 session trees, every arm (V2V p50 / p95 / p99 in ms; the realtime first by
 | calls | frozen box, 4 callers / 6 callers | 1,747 / 2,599 / 3,135 · 1,735 / 2,670 / 3,471 | 428 · 413 | 5,296 · 5,067 | 4 callers alone: 1,655 / 2,017 / 2,110 |
 
 What the standard scenario says:
-- **At 8 session trees every vLLM arm holds the voice SLO** (1,871–1,886 ms). SGLang does not (3,228 ms).
+- **At 8 session trees every vLLM arm measured in W2 holds the voice SLO** (1,871–1,886 ms against 1,994). SGLang does not (3,228 ms).
 - **At 16, the realistic operating point, none clearly does, and the arms are within noise of each other.** The best stock cell, `--max-num-seqs 12`, SMG and the static cap of 2 land at 2,104–2,215 ms, 100–220 ms above the SLO; `--max-num-queued-tokens` lands under it only by refusing work, voice turns included. No gateway policy or engine knob separates itself from tuned stock here.
 - **The step cap shows in the realtime first byte, not in V2V.** At 24 session trees, priority scheduling alone gives a first-byte p95 of 2,243 ms and the 512/256 step cap 542 ms, but V2V p95 is 4,360 against 3,865 ms: the rest of the turn, decoding to the first sentence and TTS, still shares the GPU with agent prefills. No arm holds the SLO at 24.
 - **SGLang's deficit was its missing host tier.** Without one it is the worst arm at every load; with HiCache, written through like vLLM's CPU tier, it matches vLLM: 1,822 ms at 8 session trees and 2,218 ms at 16, against the frozen box's 2,215 ms.
 - **Preemptive generation off** changes nothing measurable (2,278 against 2,215 ms), and **more callers** cost what they cost alone and some: four callers beside 16 session trees reach 2,599 ms against 2,017 ms alone.
 
-**The discriminating scenario** (W2's third batch, 2026-10-23): 24 session trees of the 48 traces with the largest contexts (`weka-x32-long`, a median of 13.3k tokens a request), beside the same two callers, one run per point. The pool holds two or three of these contexts, and the agents' working set is far beyond both tiers: under the frozen box 98% of their prompt tokens are computed, and agents wait about a minute for a first token under every arm. It is the regime where running agent KV fills the pool. V2V p50 / p95 / p99 and the realtime first byte p95 in ms; background tokens/s:
+**The discriminating scenario** (W2's third batch, 2026-10-23, on the W3 build like everything after it): 24 session trees of the 48 traces with the largest contexts (`weka-x32-long`, a median of 13.3k tokens a request), beside the same two callers, one run per point. The pool holds two or three of these contexts, and the agents' working set is far beyond both tiers: under the frozen box about 95% of their prompt tokens are computed, and agents wait about a minute for a first token under every arm. It is the regime where running agent KV fills the pool. V2V p50 / p95 / p99 and the realtime first byte p95 in ms; background tokens/s:
 
 | Arm | Point | V2V p50 / p95 / p99 | First byte p95 | Background tokens/s | Notes |
 |---|---|---:|---:|---:|---|
@@ -182,7 +182,7 @@ What the discriminating scenario says:
 | Static reservation, 2,048 tokens | 5 | 3,127 / 5,671 / 6,681 | 4,906–5,798 | 3,190 | 3,564 | 102 s |
 | SGLang with HiCache | 5 | 4,705 / 11,948 / 18,063 | 9,394–16,702 | 8,012 | 4,723 | 82 s |
 | Preempt-resubmit before the first byte | 5 | 1,960 / 2,591 / 2,684 | 2,110–2,663 | 374 | 3,630 | 160 s |
-| **Arm 9** | 5 | 1,825 / **2,057** / 2,139 | 1,980–2,134 | 290 | 3,411 | 103 s |
+| **Arm 9**, every reply capped at 16 tokens | 5 | 1,825 / **2,057** / 2,139 | 1,980–2,134 | 290 | 3,411 | 103 s |
 | #63350 alone (KV preemption) | 3 | 3,246 / 5,773 / 8,110 | 5,612–6,063 | 2,785 | 3,633 | 97 s |
 | #63350 + #63351 (the budget cap, 16 tokens) | 3 | 1,986 / 3,229 / 4,135 | 3,220–4,772 | 338 | 3,568 | 100 s |
 | **#63350 + #63351, a 48-token window** | 3 | 1,943 / **2,193** / 2,281 | 2,168–2,286 | 372 | 3,493 | 97 s |
@@ -198,6 +198,20 @@ The PR configurations run the engine as the PRs propose it, without the reserve,
 | (budget 0 ms / 500 ms) | 2,109 / 2,060 | 2,094–2,166 / 1,990–2,080 | | the reserve | 2,116 | 2,115–2,155 |
 | | | | | the budget cap | 5,295 | 5,063–6,115 |
 | | | | | the engine change (gateway only) | 10,993 | 10,028–11,958 |
+
+What the gateway's policy did in each run, as its counters at the end of the calls (60 realtime requests a run, preemptive generation included):
+
+| Configuration | Runs | Headroom deferrals | Critical-window deferrals | Realtime requests degraded |
+|---|---:|---:|---:|---:|
+| Arm 9 | 5 | 31–45 | 0 | 60 |
+| Without the throttle | 3 | 38–52 | — | 60 |
+| Throttle budget 0 / 500 ms | 3 each | 39–49 / 39–48 | 0 / 0 | 60 |
+| Without the headroom | 3 | — | 1–3 | 60 |
+| Headroom armed by the request | 3 | 9–11 | 0 | 60 |
+| Without the lifecycle events | 3 | 4–6 | 0 | 60 |
+| Without degrade, a 48-token window | 3 | 41–50 | 0 | — |
+| The gateway only (stock engine) | 3 | 71–86 | 0 | 60 |
+| Standard scenario, 16 / 24 session trees | 3 / 1 | 5–10 / 41 | 0–4 / 27 | 0 / 1 |
 
 The voice turn by stage (means over each configuration's replies, ms):
 
@@ -216,16 +230,16 @@ The voice turn by stage (means over each configuration's replies, ms):
 The same stages as bars (`make e2-figures`), a row per point of the records: `a1-voice` is voice alone (four runs: its W2 run predates the worker's stage times), `disc-frozen-s24` the frozen box, `a6-reserve2048` the static reservation, `a8c-resubmit` preempt-resubmit, `a9` arm 9 and `pr-ab48` the PRs with a 48-token window. The grey bar is the LLM's first token, from its request.
 
 What the repeats say:
-- **The engine change takes the voice tail to the SLO's edge.** Arm 9's p95 is 2,057 ms against the frozen box's 10,138 and preempt-resubmit's 2,591; two of its five runs are under the SLO and its median is 40 ms over it, within one point's spread. No configuration without the engine change has a run under the SLO.
+- **The engine change takes the voice tail to the SLO's edge.** With full replies and a 48-token window, the PRs' configuration reaches 2,193 ms (2,168–2,286), 176 ms over the SLO, against the frozen box's 10,138 and preempt-resubmit's 2,591. Arm 9, whose gateway capped every reply at 16 tokens, reaches 2,057 ms: two of its five runs are under the SLO, and its median is 40 ms over it, within one point's spread. No configuration without the engine change has a run under the SLO with every turn answered; vLLM's queued-token limit gets under it by refusing 48 of 50 voice turns.
 - **Its budget cap is necessary, and either KV preemption or the reserve suffices.** Without the budget cap the p95 stays at 5.3 s even with KV preemption and the reserve; without KV preemption, or without the reserve, it is within the spread of arm 9's runs. #63350 alone halves the frozen box's tail (5.8 s); with #63351 the turn's first token comes in 338 ms at p95 (frozen 7,834).
 - **The reply has to fit the window.** With the 16-token window a full reply's first sentence (20 tokens at the median, 39 at most) outruns it and decodes beside agent prefill again: 3.2–4.0 s whether the gateway runs or not. Degrade, which caps the reply at 16 tokens when the headroom is not there, capped every reply here; a 48-token window covers full replies instead, at 2,193 ms for the PRs alone and 2,205 ms with arm 9's gateway policy and reserve, about 140 ms over arm 9's capped replies: the price of a full reply's longer first sentence (526 against 429 ms).
-- **Timing the protection from the conversation adds nothing.** Beside the engine change, every lifecycle-timed mechanism of the gateway's policy (the headroom from speech onset, the critical-window throttle and its budget, the events, the onset trigger against the request) is within the spread of arm 9's own runs; without the engine change the policy leaves voice where stock vLLM does (10,993 ms). Here the engine, not the control plane, decides the voice turn.
+- **The gateway's lifecycle-timed mechanisms could not act here** (their counters are in the table above). Running agent requests held the pool, which the headroom can protect only by deferring new requests, so it never had its room: degrade capped 60 of 60 realtime requests in every run of arm 9. The critical-window throttle, checked after the headroom, deferred nothing while the headroom ran, even at a 0 ms budget. Room for a voice turn came from the engine alone: without the engine change, the policy leaves voice where stock vLLM does (10,993 ms). So E2 shows that a control plane in front cannot make room while running work holds the KV. Whether lifecycle timing helps where its mechanisms engage (in the standard scenario at 24 session trees the throttle deferred 27 requests) was not isolated.
 - **The cost to the agents.** Arm 9 keeps 92% of the frozen box's background goodput and the PRs alone 94%, with the agents' TTFT p99 unchanged (97–103 s against 99 s). Preempt-resubmit keeps 98% but its resubmissions take the agents' p99 to 160 s.
 - **Spread.** A configuration near the SLO moves by about 150 ms in p95 from run to run; one that misses it moves by up to 1.5 s (#63350 + #63351 at 16 tokens, 3,220–4,772 ms) and SGLang by 7 s. One run cannot rank configurations that miss.
 
-**The standard scenario, repeated** (the whole corpus, three runs of each at the realistic load of 16 session trees): arm 9's p95 is 2,196 ms (2,193–2,446) against the frozen box's 2,323 (2,215–2,530), both over the SLO, at 5,244 and 5,167 tokens/s. One run each at 8 and 24 session trees: 2,060 and 2,375 ms, against 1,871 (priority alone) and 3,865 ms (the frozen box) in W2. Where the pool is not full the engine change has nothing to do, and the first sentence of a full reply outruns the 16-token window as in the discriminating scenario; at 24 session trees, where it fills, the change takes 1.5 s off the tail.
+**The standard scenario, repeated** (the whole corpus, three runs of each at the realistic load of 16 session trees; the frozen box's third run is W2's): arm 9's p95 is 2,196 ms (2,193–2,446) against the frozen box's 2,323 (2,215–2,530), both over the SLO and within noise of each other, at 5,244 and 5,167 tokens/s. Each call's first turn is slower under load (a mean of 2.4–2.5 s against 1.8 s for the later turns) and sets part of this p95: without it, 2,037 and 2,186 ms. Where the pool is not full the engine change has nothing to do, and the gateway rarely degrades a reply here, so a full reply's first sentence outruns the 16-token window as in the discriminating scenario. One run each at 8 and 24 session trees gives 2,060 and 2,375 ms; W2's single runs there, on the W2 build, were 1,871 (priority alone) and 3,865 ms (the frozen box), so the 1.5 s at 24, where the pool fills, is indicative only.
 
-**Instrument notes.** Background goodput counts the agent requests that completed during the calls, so its window is the calls' duration, which differs by configuration (about 280 s for arm 9, whose calls are fastest, to 430 s for the frozen box) against agent requests of about 75 s: edge effects differ by a few percent. vLLM counts a preemption when the victim next produces output, so per-point preemption counts are lower bounds.
+**Instrument notes.** Background goodput counts the agent requests that completed during the calls, so its window is the calls' duration, which differs by configuration (about 280 s for arm 9, whose calls are fastest, to 430 s for the frozen box) against agent requests of about 75 s: edge effects differ by a few percent. vLLM counts a preemption when the victim next produces output, so per-point preemption counts are lower bounds. SGLang's KV pool came out at 33,683–34,679 tokens against vLLM's 36,400, 5–7% smaller: its static memory fraction sets it.
 
 ## The control plane: lh-gateway in front of the engine
 
