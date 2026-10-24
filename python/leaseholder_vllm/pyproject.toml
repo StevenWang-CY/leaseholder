@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "leaseholder-vllm"
 version = "0.3.0"
-description = "Leaseholder's engine-side plugins for vLLM 0.32: a lease-aware CPU-tier cache policy and an offloading connector with per-request hit receipts"
+description = "The tests of Leaseholder's engine variants for vLLM 0.32: their builds against vLLM's scheduler source, and make-room on the real scheduler"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -13,8 +13,7 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-# The vLLM dependencies the offload manager imports when it is loaded from source.
-test = ["pytest>=8", "msgspec", "numpy", "typing-extensions>=4.12"]
+test = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

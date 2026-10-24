@@ -4,7 +4,7 @@
 RUFF := uvx ruff@0.17.1
 VLLM_REF := v0.32.0
 VLLM_SRC ?= $(HOME)/.cache/leaseholder/vllm-$(VLLM_REF)
-# Every Python package except the engine plugins (tested by test-vllm); each one has a `test` extra.
+# Every Python package except the engine variants' tests (test-vllm); each one has a `test` extra.
 PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,%,$(wildcard python/*/pyproject.toml)))
 # The Python that make lint checks: the packages, and the scripts of lh-sim, E2 and the engine variants (not the
 # recorded runs' own scripts under benchmarks/results).
@@ -39,7 +39,7 @@ test: test-rust test-vllm test-python
 test-rust:
 	cargo test --locked
 
-# The offload manager is plain Python, so the plugin tests load it from a vLLM source checkout: no GPU or torch.
+# The engine variants' build tests read vLLM's scheduler from a source checkout: no GPU or torch.
 $(VLLM_SRC):
 	git -c advice.detachedHead=false clone -q --depth 1 --branch $(VLLM_REF) --filter=blob:none --sparse https://github.com/vllm-project/vllm $@
 	git -C $@ sparse-checkout set vllm

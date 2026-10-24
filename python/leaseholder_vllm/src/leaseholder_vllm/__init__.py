@@ -1,6 +1,6 @@
-"""Leaseholder's engine-side plugins for vLLM 0.32.
+"""The tests of Leaseholder's engine variants for vLLM 0.32 (deploy/phastform/variants).
 
-- ``leaseholder_vllm.policy.LeasePolicy``: lease-aware eviction for the native CPU offload tier.
-- ``leaseholder_vllm.connector.LeaseConnector``: the native offloading connector, plus session-id mirroring and
-  per-request hit receipts.
+The package holds no runtime code: each variant builds its scheduler module from the engine's own vLLM at engine
+start. The engine plugins it held, LeasePolicy and LeaseConnector, were built for the lease design and removed
+after v0.3 (ADR-0006).
 """

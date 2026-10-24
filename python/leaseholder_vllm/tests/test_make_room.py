@@ -3,19 +3,16 @@ requests, no model and no GPU, as vLLM's own tests/v1/core build a scheduler.
 
 The module under test is built from the installed vLLM's source, as the variant builds it at engine start, so these
 tests need vLLM with torch: the engine environment on a GPU node (python/leaseholder_vllm/README.md says how to run
-them there). They skip under VLLM_SRC, where conftest stands torch in.
+them there). Without them, as in CI, they skip.
 """
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-if os.environ.get("VLLM_SRC"):
-    pytest.skip("needs the installed vLLM with torch, not VLLM_SRC", allow_module_level=True)
 pytest.importorskip("torch")
 pytest.importorskip("vllm.v1.core.sched.scheduler")
 
