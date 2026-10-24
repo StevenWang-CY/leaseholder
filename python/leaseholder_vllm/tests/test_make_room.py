@@ -82,13 +82,15 @@ class Connector:
     """A KV connector's scheduler side, as far as the scheduler calls it: it finds ``matched[req_id]`` tokens of a
     request outside the GPU and loads them asynchronously, reported done by ``step(finished_recving=...)``; for a
     request in ``delayed`` it needs more time and answers None, as the CPU tier's connector answers for a request
-    whose earlier transfers are still in flight."""
+    whose earlier transfers are still in flight. While ``pending_frees`` is set, its transfers have blocks to free.
+    """
 
     supports_divergent_local_hybrid_hits = False
 
     def __init__(self, matched: dict[str, int] | None = None):
         self.matched = dict(matched or {})
         self.delayed: set[str] = set()
+        self.pending_frees = False
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         if request.request_id in self.delayed:
@@ -97,7 +99,7 @@ class Connector:
         return num_tokens, num_tokens > 0
 
     def has_pending_block_frees(self):
-        return False
+        return self.pending_frees
 
     def has_pending_push_work(self):
         return False
@@ -446,14 +448,14 @@ def test_a_victim_is_not_resumed_in_the_step_that_preempted_it(module, model):
 
 def test_the_room_includes_the_watermark(module, model):
     """With a watermark of 2 blocks, the priority-0 request of 7 blocks needs 9 free: with 2 free, preempting the
-    runner of 2 is not enough, so the runner of 6 goes too, and the request runs."""
+    runner of 6, the latest arrival, is not enough, so the runner of 2 goes too, and the request runs."""
     sched = scheduler(module.Scheduler, model, 33, {"max_preemptions_per_step": 2}, watermark=0.07)
     assert sched.kv_cache_manager.watermark_blocks == 2
     run(
         sched,
         request("rt", blocks(22), priority=0, arrival=0),
-        request("bg", blocks(6), priority=2, arrival=1),
-        request("bg2", blocks(2), priority=2, arrival=2),
+        request("bg", blocks(6), priority=2, arrival=2),
+        request("bg2", blocks(2), priority=2, arrival=1),
     )
     assert free_blocks(sched) == 2
 
@@ -544,19 +546,18 @@ def test_no_preemption_when_it_would_not_make_room(module, model):
 
 def test_a_victim_holding_the_requests_prefix_releases_none_of_it(module, model):
     """The priority-0 request shares an 18-block prefix that a priority-2 runner holds: those blocks cost it nothing
-    while the runner holds them, and preempting the runner would only put them in the free queue, which the request
-    takes them from as hits. So the room it lacks (5 blocks of its own, 2 free) comes from the other runner, the
-    latest arrival anyway, and it is admitted at once beside the runner that holds its prefix."""
+    while the runner holds them, and preempting the runner only puts them in the free queue, which the request takes
+    them from as hits, a free block each. So the runner, the latest arrival and first to go, releases only its own
+    block toward the 3 the request lacks (5 of its own, 2 free), and the other runner goes too."""
     sched = scheduler(
         module.Scheduler, model, 33, {"max_preemptions_per_step": 2}, prefix_caching=True
     )
     prefix = [5] * (18 * BLOCK)
-    holder = request("holder", 0, priority=2, arrival=1, prompt=prefix + [6] * 8)
     run(
         sched,
         request("rt", blocks(5), priority=0, arrival=0, token=1),
-        holder,
-        request("bg", blocks(6), priority=2, arrival=2, token=2),
+        request("bg", blocks(6), priority=2, arrival=1, token=2),
+        request("holder", 0, priority=2, arrival=2, prompt=prefix + [6] * 8),
     )
     assert free_blocks(sched) == 2
 
@@ -564,9 +565,8 @@ def test_a_victim_holding_the_requests_prefix_releases_none_of_it(module, model)
     sched.add_request(voice)
     out = step(sched)
 
-    assert out.preempted_req_ids == {"bg"}
+    assert out.preempted_req_ids == {"holder", "bg"}
     assert "voice" in scheduled(out) and voice.num_computed_tokens == len(prefix) + 72
-    assert holder.status == RequestStatus.RUNNING
 
 
 def test_victims_sharing_a_prefix_release_it_together(module, model):
@@ -619,16 +619,16 @@ def test_with_deferred_frees_the_request_runs_one_step_later(module, model):
 
 def test_with_deferred_frees_the_room_counts_the_decodes_growth_until_they_land(module, model):
     """With deferred frees the request is admitted a step after its victims are preempted, so the room counts the
-    running decodes' blocks for both steps. Here rt's next block starts in the second: the request takes both
-    runners in one round and runs in the next step, rather than a block short then, which a second round would fix
-    a step later still."""
+    running decodes' blocks for both steps. Here rt's next block starts in the second: the latest arrival's 6 blocks
+    cover the 6 the request lacks now but not the 7 it lacks then, so it takes both runners in one round and runs in
+    the next step, rather than a block short then, which a second round would fix a step later still."""
     sched = scheduler(module.AsyncScheduler, model, 33, {"max_preemptions_per_step": 2})
     engine = Pipelined(sched)
     rt = request("rt", 20 * BLOCK - 8, priority=0, arrival=0, max_tokens=400)
     for req in (
         rt,
-        request("bg", 6 * BLOCK - 15, priority=2, arrival=1, max_tokens=400),
-        request("bg2", 2 * BLOCK - 15, priority=2, arrival=2, max_tokens=400),
+        request("bg", 6 * BLOCK - 15, priority=2, arrival=2, max_tokens=400),
+        request("bg2", 2 * BLOCK - 15, priority=2, arrival=1, max_tokens=400),
     ):
         sched.add_request(req)
     for _ in range(8):
@@ -646,6 +646,76 @@ def test_with_deferred_frees_the_room_counts_the_decodes_growth_until_they_land(
             admitted = n
             break
     assert rounds == [(0, {"bg", "bg2"})] and admitted == 1
+
+
+def test_with_deferred_frees_a_request_that_fits_now_takes_no_room(module, model):
+    """The room counts the decodes' growth until the victims' frees land only for a request that lacks blocks now:
+    one that fits in this step, after the running loop, runs at once, though rt's next block starts in the next step
+    and it would then lack one."""
+    sched = scheduler(module.AsyncScheduler, model, 33, {"max_preemptions_per_step": 2})
+    engine = Pipelined(sched)
+    rt = request("rt", 20 * BLOCK - 8, priority=0, arrival=0, max_tokens=400)
+    for req in (
+        rt,
+        request("bg", 6 * BLOCK - 15, priority=2, arrival=1, max_tokens=400),
+        request("bg2", 2 * BLOCK - 15, priority=2, arrival=2, max_tokens=400),
+    ):
+        sched.add_request(req)
+    for _ in range(8):
+        engine.step()
+    assert (rt.num_tokens + rt.num_output_placeholders) % BLOCK == 0 and free_blocks(sched) == 4
+
+    sched.add_request(request("voice", 4 * BLOCK, priority=0, arrival=3))
+    out = engine.step()
+    assert not out.preempted_req_ids and "voice" in scheduled(out)
+
+
+def test_with_deferred_frees_the_blocks_of_an_aborted_request_make_room(module, model):
+    """A request aborted while its step is in flight frees its blocks once that step is processed, as a victim's
+    are: they count as free. The priority-0 request, which lacks 3 blocks and finds 4 on their way, preempts
+    nothing and runs in the next step."""
+    sched = scheduler(module.AsyncScheduler, model, 33, {"max_preemptions_per_step": 2})
+    engine = Pipelined(sched)
+    for req in (
+        request("rt", 20 * BLOCK - 15, priority=0, arrival=0, max_tokens=400),
+        request("bg", 6 * BLOCK - 15, priority=2, arrival=1, max_tokens=400),
+        request("gone", 4 * BLOCK - 15, priority=1, arrival=2, max_tokens=400),
+    ):
+        sched.add_request(req)
+    for _ in range(3):
+        engine.step()
+    sched.finish_requests("gone", RequestStatus.FINISHED_ABORTED)  # its step in flight
+    assert sched.deferred_frees and free_blocks(sched) == 2
+
+    voice = request("voice", 5 * BLOCK, priority=0, arrival=3)
+    sched.add_request(voice)
+    out = engine.step()
+    assert not out.preempted_req_ids and "voice" not in scheduled(out)
+    out = engine.step()
+    assert not out.preempted_req_ids and "voice" in scheduled(out)
+
+
+def test_no_room_while_the_connector_has_block_frees_pending(module, model):
+    """While the KV connector's transfers have blocks to free, make-room preempts nothing, as the running loop waits
+    for those blocks rather than preempt; once none are pending, it makes room."""
+    connector = Connector()
+    sched = scheduler(
+        module.Scheduler, model, 33, {"max_preemptions_per_step": 2}, connector=connector
+    )
+    run(
+        sched,
+        request("rt", blocks(22), priority=0, arrival=0),
+        request("bg", blocks(8), priority=2, arrival=1),
+    )
+    connector.pending_frees = True
+    sched.add_request(request("voice", 100, priority=0, arrival=2))
+    for _ in range(2):
+        out = step(sched)
+        assert not out.preempted_req_ids and "voice" not in scheduled(out)
+
+    connector.pending_frees = False
+    out = step(sched)
+    assert out.preempted_req_ids == {"bg"} and "voice" in scheduled(out)
 
 
 def test_a_victim_with_cached_blocks_waits_for_the_prefill_it_made_room_for(module, model):
@@ -902,8 +972,8 @@ def test_a_lower_priority_request_holding_kv_sits_out_a_requests_first_tokens(
 ):
     """The waiting loop drains first the requests that hold KV, as one does whose load from the CPU tier is done. A
     priority-2 one sits out the priority-0 request's first tokens like any lower-priority prefill, and it is skipped
-    rather than waited on, so the loop goes on to the others; once the first 16 tokens are out, it prefills. Stock
-    vLLM (the control) prefills it at once."""
+    rather than waited on, so the loop goes on to the priority-0 request behind it, which runs in the same step; once
+    its first 16 tokens are out, the priority-2 one prefills. Stock vLLM (the control) prefills it at once."""
     sched = scheduler(
         module.Scheduler,
         model,
@@ -913,23 +983,21 @@ def test_a_lower_priority_request_holding_kv_sits_out_a_requests_first_tokens(
         max_model_len=4096,
     )
     run(sched, request("decode", 40, priority=2, arrival=0))
-    voice = request("voice", 100, priority=0, arrival=1)
-    sched.add_request(voice)
-    step(sched)  # its whole prompt
-    late = request("late", 3000, priority=2, arrival=2)
+    late = request("late", 3000, priority=2, arrival=1)
     assert sched.kv_cache_manager.allocate_slots(late, 256) is not None  # 256 tokens loaded
     late.num_computed_tokens = 256
     sched.add_request(late)
     assert late in sched.kv_holding_waiting
+    sched.add_request(request("voice", 100, priority=0, arrival=2))
 
-    steps = [step(sched).num_scheduled_tokens for _ in range(16)]
+    steps = [step(sched).num_scheduled_tokens for _ in range(17)]
 
     if make_room:
-        # The prompt's step gave the first token, these 15 the rest of the first 16.
-        assert steps[:15] == [{"decode": 1, "voice": 1}] * 15
-        assert steps[15] == {"decode": 1, "voice": 1, "late": 256}
+        # The prompt's step gives the first token, the next 15 the rest of the first 16.
+        assert steps[:16] == [{"decode": 1, "voice": 100}] + [{"decode": 1, "voice": 1}] * 15
+        assert steps[16] == {"decode": 1, "voice": 1, "late": 256}
     else:
-        assert all(tokens["late"] == 256 for tokens in steps[:3])
+        assert steps[0] == {"decode": 1, "late": 256, "voice": 100}
 
 
 def loading(module, model, make_room, max_num_seqs: int = 16):
@@ -987,6 +1055,35 @@ def test_the_hold_starts_in_the_step_a_load_completes(module, model, make_room):
         assert step(sched).num_scheduled_tokens["prefill"] == 256
     else:
         assert tokens == {"decode": 1, "prefill": 256, "voice": 44}
+
+
+def test_a_completed_load_holds_prefill_back_while_a_request_that_does_not_fit_waits(module, model):
+    """A request whose load is done holds lower-priority prefill back from the step the waiting loop promotes it,
+    whichever waiting request make-room serves: here a priority-0 request of 38 blocks, with fewer free, waits ahead
+    of the priority-1 one whose load is done, and the priority-2 prefill still sits out the promotion's step."""
+    sched = scheduler(
+        module.Scheduler,
+        model,
+        60,
+        {"budget_cap": True, "budget_cap_tokens": 4},
+        long_prefill_token_threshold=4 * BLOCK,
+        max_model_len=40 * BLOCK,
+        connector=Connector({"load": 256}),
+    )
+    run(sched, request("decode", 40, priority=2, arrival=0, max_tokens=400))
+    sched.add_request(request("prefill", 30 * BLOCK, priority=2, arrival=1))
+    step(sched)
+    load = request("load", 300, priority=1, arrival=2)
+    sched.add_request(load)
+    step(sched)
+    assert load.status == RequestStatus.WAITING_FOR_REMOTE_KVS
+    big = request("big", 38 * BLOCK, priority=0, arrival=3)
+    sched.add_request(big)
+    assert step(sched).num_scheduled_tokens == {"decode": 1, "prefill": 4 * BLOCK}
+    step(sched, finished_recving={"load"})  # the step in which the load is reported done
+
+    assert step(sched).num_scheduled_tokens == {"decode": 1, "load": 44}
+    assert big.status == RequestStatus.WAITING and free_blocks(sched) < 38
 
 
 def test_with_every_running_slot_taken_a_completed_load_holds_nothing_back(module, model):
