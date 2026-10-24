@@ -302,7 +302,7 @@ lh-bench scale-traces cc-traces-weka-062126/traces.jsonl weka-x64 --factor 64
 # A quick-check subset; sub16.ids lists 16 short traces, one id per line (8 with subagents)
 lh-bench scale-traces cc-traces-weka-062126/traces.jsonl weka-x32-sub16 --factor 32 --ids sub16.ids
 
-# Mock on loopback (keep clear of cyan's deployed ports 18000, 18080, 18100, 18880, 15558 and 17880-17882)
+# Mock on loopback (keep clear of cyan's deployed ports 18000, 18080, 18100, 18880 and 17880-17882)
 mkdir -p ~/leaseholder/runs/w0-e2e && cd ~/leaseholder/runs/w0-e2e
 setsid nohup lh-bench mock-server --port 19180 --log $PWD/mock-aiperf.jsonl < /dev/null > mock.out 2>&1 &
 echo $! > mock.pid

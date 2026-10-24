@@ -46,7 +46,7 @@ stage "tts reply (first/total)" "${t}s, $(wc -c <"$work/reply.pcm") bytes"
 if command -v nvidia-smi >/dev/null; then
   stage "gpu memory" "$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader)"
   if command -v ss >/dev/null; then
-    exposed=$(ss -Hlntu | awk '{print $5}' | grep -E ':(8000|8100|8880|5557|5558)$' |
+    exposed=$(ss -Hlntu | awk '{print $5}' | grep -E ':(8000|8100|8880)$' |
       grep -v -E '^(127\.0\.0\.1|\[::1\]):' || true)
     [[ -z $exposed ]] || { echo "smoke: service ports listen beyond loopback: $exposed" >&2; exit 1; }
     stage "port audit" "loopback only"

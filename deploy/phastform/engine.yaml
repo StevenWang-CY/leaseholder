@@ -28,18 +28,12 @@ scheduling-policy: priority
 max-num-batched-tokens: 512
 long-prefill-token-threshold: 256
 
-# Observability: per-request cached tokens, sampled KV residency histograms, and KV cache events for lh-node.
-# vLLM binds wildcard and ipc event endpoints but *connects* to a specific TCP address, so lh-node binds the SUB
-# side on 127.0.0.1:5557 and the engine connects to it; the replay endpoint (ROUTER) is bound by the engine.
+# Observability: per-request cached tokens and sampled KV residency histograms. No KV cache events: they carry
+# every cached block's token ids and session id, vLLM's publisher sends them to whoever binds its TCP endpoint
+# and replays them to anyone who asks, and nothing here reads them.
 enable-prompt-tokens-details: true
 kv-cache-metrics: true
 kv-cache-metrics-sample: 0.05
-kv-events-config:
-  enable_kv_cache_events: true
-  publisher: zmq
-  endpoint: tcp://127.0.0.1:5557
-  replay_endpoint: tcp://127.0.0.1:5558
-  topic: kv
 
 # Host tier: vLLM's native CPU offload, write-through (generated tokens are stored as well), sized at 20 GiB,
 # four times the GPU pool. E1 sweeps 2x, 4x and 8x.

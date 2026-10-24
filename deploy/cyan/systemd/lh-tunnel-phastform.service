@@ -14,7 +14,6 @@ ExecStart=/usr/bin/ssh -N -T -i %h/.ssh/lh_tunnel_ed25519 \
   -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StreamLocalBindUnlink=yes \
   -L 127.0.0.1:18000:127.0.0.1:8000 -L 127.0.0.1:18100:127.0.0.1:8100 -L 127.0.0.1:18880:127.0.0.1:8880 \
-  -L 127.0.0.1:15558:127.0.0.1:5558 \
   -L %t/lh/phastform-engine.sock:127.0.0.1:8000 -L %t/lh/phastform-stt.sock:127.0.0.1:8100 \
   -L %t/lh/phastform-tts.sock:127.0.0.1:8880 \
   ${LH_TUNNEL_TARGET}
