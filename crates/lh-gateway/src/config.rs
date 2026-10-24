@@ -1652,22 +1652,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_deploy_example_is_valid_once_its_placeholders_are_filled_in() {
-        let example = include_str!("../../../deploy/cyan/gateway.example.toml");
-        let err = Config::from_toml(example).unwrap_err().to_string();
-        assert!(err.contains("64 hex"), "placeholders are refused: {err}");
+    const DEPLOY_EXAMPLE: &str = include_str!("../../../deploy/cyan/gateway.example.toml");
 
+    /// The deploy example with its placeholders filled in.
+    fn deploy_example() -> String {
         // SHA-256 of "bar".
         let other = "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9";
-        let filled = example
+        DEPLOY_EXAMPLE
             .replace("<sha256 of the agents key>", KEY)
             .replace("<sha256 of the bench key>", other)
             .replace(
                 "<home>/.config/leaseholder/cache-salt-secret",
                 &SECRET_FILE.display().to_string(),
-            );
-        let config = Config::from_toml(&filled).unwrap();
+            )
+    }
+
+    #[test]
+    fn the_deploy_example_is_valid_once_its_placeholders_are_filled_in() {
+        let err = Config::from_toml(DEPLOY_EXAMPLE).unwrap_err().to_string();
+        assert!(err.contains("64 hex"), "placeholders are refused: {err}");
+
+        let config = Config::from_toml(&deploy_example()).unwrap();
         let unix = ListenAddr::Unix("/run/user/1007/lh/gateway.sock".into());
         assert_eq!(config.listeners[1].addr, unix);
         assert_eq!(config.listeners[1].tenant.as_deref(), Some("voice"));
@@ -1685,5 +1690,45 @@ mod tests {
                 ("voice", true, Realtime, Realtime),
             ]
         );
+    }
+
+    /// The review's probe P5: every committed arm file's `[gateway]` table, merged into the deploy example as
+    /// `lh-bench e2 run` merges it into cyan's gateway.toml, is a configuration this build takes. A key renamed
+    /// here would otherwise show only when the gateway failed to start on cyan.
+    #[test]
+    fn every_arm_files_gateway_table_is_valid_over_the_deploy_example() {
+        // Tables merge key by key, and any other value replaces.
+        fn merge(base: &mut toml::Table, overlay: &toml::Table) {
+            for (key, value) in overlay {
+                match (base.get_mut(key), value) {
+                    (Some(toml::Value::Table(base)), toml::Value::Table(overlay)) => {
+                        merge(base, overlay)
+                    }
+                    _ => {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        let arms = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/e2/arms");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&arms).unwrap() {
+            let path = entry.unwrap().path();
+            let arm: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+            let Some(toml::Value::Table(overlay)) = arm.get("gateway") else {
+                continue;
+            };
+            let mut config: toml::Table = deploy_example().parse().unwrap();
+            // An arm's nodes replace the one engine.
+            if overlay.contains_key("nodes") {
+                config.remove("upstream");
+            }
+            merge(&mut config, overlay);
+            if let Err(err) = Config::from_toml(&toml::to_string(&config).unwrap()) {
+                panic!("{}: {err}", path.display());
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "no arm file has a [gateway] table");
     }
 }
