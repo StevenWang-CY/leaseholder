@@ -1,130 +1,109 @@
 # Experiments
 
-Four questions decide whether Leaseholder earns its place in front of stock vLLM. Each experiment compares against tuned stock vLLM, and against what engines and routers already ship, on the same frozen box (same model, precision, memory split and SLO), and every plot is regenerated from scripted runs.
+How Leaseholder's measurements were made. Every experiment runs on one frozen box (the same model, precision, memory split and SLO) and compares against tuned stock vLLM and against what engines and routers already ship. The numbers are in [BENCHMARKS.md](BENCHMARKS.md), the story in [METHODS.md](METHODS.md).
 
-| # | Experiment | Question |
-|---|---|---|
-| E2 | **Voice under agent load** (the headline) | How much background goodput can one GPU harvest while its realtime tier holds a voice SLO, and when does lifecycle timing beat static reservation and engine priority? |
-| E1 | **Parking** | How much of the gap between LRU plus CPU offload and a clairvoyant reference does each level of lifecycle information close, on resume latency? |
-| E3 | **Ledger and contracts** | Can every recomputed token be attributed to a cause, and can Anthropic `cache_control` TTLs be honored? |
-| — | **Reliability drills** | Node loss, an engine killed mid-stream, CPU-tier exhaustion, control-plane restart: each produces a recovery time |
+| # | Experiment | Question | State |
+|---|---|---|---|
+| E0 | **The tier cost model** | What does resuming an agent turn cost from the GPU cache, from host RAM and recomputed? | Done ([BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0)); `lh-core` carries the fits |
+| E2 | **Voice under agent load** | How close does each configuration an operator can deploy bring the voice tail to its SLO, at what cost to background agents, and what does each mechanism of Leaseholder's arm 9 contribute? | Done on one GPU node; the two-node points wait for a window on the second |
+| E1 | **Parking** | How much of the gap between LRU plus CPU offload and a clairvoyant reference does each level of lifecycle information close, on resume latency? | Done in the simulator: a negative result |
+| E3 | **The background tier's cost of make-room** | How much of a preempted agent's prompt is restored from the CPU tier, and how much recomputed? | Planned, from the engine counters every E2 point keeps |
 
-E0 comes first. It re-measures the tier cost model on the frozen box and checks that `lh-sim` reproduces 2–3 GPU operating points within 10–15% on resume TTFT and recompute.
-- **Cost model: done in W1.** The table and fits are in [BENCHMARKS.md](BENCHMARKS.md#tier-cost-model-resuming-an-agent-turn-e0), and `lh-core` carries them.
-- **Simulator: done in W2, at two of three operating points.** Driven by the measured request times, its engine model matches the W0 replay's GPU and CPU shares ([`lh-sim` README](../crates/lh-sim/README.md#validation-against-w0-v0-the-idle-service)). With the contention model (W2), its own replay reproduces resume TTFT p50/p90 within 8% at 8 and 16 session trees and is 18–30% optimistic at 24 ([`lh-sim` README](../crates/lh-sim/README.md#calibration-against-the-gpu-operating-points)).
+The original E3, a recompute ledger validated by injected causes with cache contracts as an SLI, was dropped with leases ([ADR-0006](adr/0006-the-engine-change-carries-the-realtime-tier.md)).
 
 ## E2: voice under agent load
 
-- **Workload.**
-  - 2–4 voice callers through LiveKit (`lh-voice bots`): scripted lines with known end-of-speech times, barging in on 0% or 25% of turns; then a calls-per-GPU sweep to the knee.
-  - 0–24 background agent sessions, replayed closed-loop from the Claude Code traces.
-- **Placements.** Audio co-located on the 16 GB card (the edge pattern, as in NVIDIA's single-GPU voice-agent profile).
+**A point** is one run of an arm file ([`benchmarks/e2`](../benchmarks/e2/README.md)):
+- **Voice.** Two callers (`lh-voice bots`) call the voice agent through LiveKit, 25 turns each, with scripted lines of known end times and a barge-in on a quarter of the turns: 50 turns a point. V2V runs from the end of the caller's speech to the agent's first audio, read from waveforms on one clock, with fixed endpointing.
+- **Agents.** AIPerf replays the SemiAnalysis Claude Code traces closed-loop through the gateway as background requests, block-scaled 32× so that every request fits the 32k context, with their subagents and think times capped at 120 s.
+- **Scenarios.**
+  - The standard scenario replays the whole corpus at 8, 16 and 24 session trees.
+  - The discriminating scenario replays the 48 traces with the largest contexts (a median of 13.3k tokens a request) at 24 session trees. Their KV fills the pool, the regime where a waiting voice turn cannot take KV from running work.
+- **Before each point** the engine's prefix cache is reset (`POST /reset_prefix_cache?reset_external=true`), and the harness checks the engine and each flag it reports against the arm file.
 
-| # | Arm | Represents |
+**The arms**, as run:
+
+| # | Arm | Configurations |
 |---|---|---|
-| 1 | Voice alone | The floor |
-| 2 | Stock defaults (FCFS, 2,048-token chunks) | Out of the box |
-| 3 | Stock + priority scheduling, voice high | The first thing an operator tries |
-| 4 | Arm 3 + `--long-prefill-token-threshold` ∈ {256, 512, 1024} × `--max-num-batched-tokens` ∈ {512, 1024}; `prefill_schedule_interval` ∈ {2, 4} on a build with #54627 (v0.32.0 applies it only to the data-parallel MoE engine) | Tuned engine |
-| 5 | Arm 4 + `watermark` ∈ {0.05, 0.1, 0.2} and `max_num_queued_tokens` | vLLM's own headroom and TTFT knobs |
-| 6 | Arm 5 + an equal-size static reservation; separately, a static background-concurrency cap | The simple operator answers |
-| 7 | vLLM with #54530 applied; SGLang priority preemption on the same model | What the engines ship or are shipping |
-| 8 | llm-d flow control (priority bands, holdback, SLO-deadline ordering, in-flight eviction), emulated and labeled; SMG's priority scheduler, as shipped; abort-and-resubmit of background work on a voice turn | What routers ship |
-| 9 | Leaseholder: the engine "make room" patch, class-aware admission (never shed, degrade instead), headroom timed by lifecycle events and the critical-window prefill throttle; each also alone (*Arm 9 as built*, below) | This project |
-| 10 | MPS with an active-thread split; audio off the GPU | Equal-hardware partitioning |
+| 1 | Voice alone | Two callers, no agents: the SLO's reference |
+| 2 | Stock defaults | FCFS, 2,048-token chunks |
+| 3 | Priority scheduling | Voice at priority 0, agents at 2 |
+| 4 | Arm 3 tuned | Step cap 512 or 1,024 tokens with a long-prefill threshold of 0, 256 or 512 (five cells); the frozen box is 512/256 |
+| 5 | vLLM's own knobs | `--watermark 0.1`; `--max-num-queued-tokens 8192` |
+| 6 | Static answers | A background concurrency cap of 2 or 8; a static 2,048-token KV reservation |
+| 7 | What engines ship | `--max-num-seqs 12`, with and without #54530 ported to 0.32.0; SGLang 0.5.22's priority preemption, with and without its host tier (HiCache) |
+| 8 | What routers ship | llm-d's flow control, emulated in the gateway (ceilings 6/6/6); SMG 1.13.0's priority scheduler, as shipped; abort-and-resubmit of background work before its first byte (preempt-resubmit) |
+| 9 | Leaseholder | The engine change and the gateway's `leaseholder` policy, below, with single-mechanism ablations |
 
-**Arm 9 as built** (W3, its engine half final in W4; [`disc-a9-s24.toml`](../benchmarks/e2/arms/disc-a9-s24.toml), [`a9.campaign`](../benchmarks/e2/a9.campaign)):
-- **The gateway** runs the `leaseholder` admission policy ([ARCHITECTURE.md §4.3](ARCHITECTURE.md#43-turn-imminent-headroom)): 1,024 tokens of KV headroom per armed session (a voice turn at its longest in arm 1; with two callers, the size of arm 6's 2,048-token reservation, but arm 9 also differs from arm 6 in its engine, so the timing is measured by its headroom and trigger ablations, not against arm 6), armed from speech onset; 150 ms of predicted background prefill per critical window; replies capped at 16 tokens when the headroom was not there; aging after 10 s.
-- **The engine** runs the `make-room` variant ([ARCHITECTURE.md §4.6](ARCHITECTURE.md#46-engine-side-policy)): at most two preemptions a step for a waiting request that lacks KV, the budget cap (lower-priority prefill sits out a realtime turn's admission, KV load and first 16 tokens), and a 2,048-token reserve that requests of a positive priority leave free. The budget cap took two changes in W4 before the repeat rounds, each found from a point's stage waterfall and reproduced on a probe; the earlier modules' points are kept apart and not placed on the frontier ([BENCHMARKS.md](BENCHMARKS.md#the-kv-case-make-room)).
+Arm 10 of the plan (MPS with an active-thread split, audio off the GPU) was not run in E2: W1's MPS comparison had already shown that the interference that matters is inside the engine ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)).
+
+**Arm 9** ([`disc-a9-s24.toml`](../benchmarks/e2/arms/disc-a9-s24.toml)):
+- **The engine** runs the `make-room` variant ([ARCHITECTURE.md §2](ARCHITECTURE.md#2-the-engine-change)): at most two preemptions a step for a waiting request that lacks KV, the budget cap with a 16-token window, and a 2,048-token reserve. The budget cap took two changes before the repeat rounds, each found from a point's stage waterfall and reproduced on a probe; the earlier versions' points are kept apart and not placed on the frontier.
+- **The gateway** runs the `leaseholder` admission policy ([ARCHITECTURE.md §6](ARCHITECTURE.md#6-tested-and-not-adopted)): 1,024 tokens of KV headroom per armed call, armed from speech onset; 150 ms of predicted background prefill per critical window; replies capped at 16 tokens when the headroom was not there (degrade); aging after 10 s.
 - **The voice worker** posts its lifecycle events.
-- **Single-mechanism ablations**, each arm 9 without one part: the throttle, the headroom, degrade, the events (`[voice] events = false`), the gateway policy (engine only), the engine change (gateway only), and each engine switch (KV make-room, the budget cap, the reserve). The trigger factor runs as `trigger = "request"`, and the throttle's budget at 0, 150 and 500 ms. Beyond the plan, arm 9 runs in the standard scenario at 8, 16 and 24 session trees (the realistic operating point, 16, three times, with the frozen box), and without degrade but with a 48-token first-tokens window, to price full replies, three times (`a9-window`, `upstream-r1` and `upstream-r2`). The engine as the vLLM PRs propose it ([#63350](https://github.com/vllm-project/vllm/pull/63350) and [#63351](https://github.com/vllm-project/vllm/pull/63351): no reserve, and no gateway policy) runs with the KV preemption alone, with the budget cap, and with a 48-token window, three times each ([`upstream.campaign`](../benchmarks/e2/upstream.campaign) and its two repeats).
+- **Ablations**, each arm 9 without one part: the throttle, the headroom, degrade, the events, the gateway policy (the engine only), the engine change (the gateway only), and each engine switch. The headroom is also armed by the request instead of speech onset, and the throttle's budget run at 0 and 500 ms.
+- **Beyond the plan:**
+  - arm 9 without degrade but with a 48-token window;
+  - the engine as the vLLM PRs propose it (no reserve, no gateway policy), with the KV preemption alone, with the budget cap, and with a 48-token window;
+  - arm 9 and the frozen box in the standard scenario.
 
-**Factors.** LiveKit preemptive generation on and off (on by default in 1.8.8); the headroom trigger (`trigger = "onset"`, speech onset; or `"request"`, the realtime request, which preemptive generation sends at the final transcript and which otherwise follows the end of the turn); MPS vs time-slicing. VAD, turn detection and interruption handling are otherwise fixed. The stock pause-then-interrupt handling keeps the LLM stream open through a barge-in, where interrupting on speech cuts the reply after 0.5 s of speech ([BENCHMARKS.md](BENCHMARKS.md#voice-on-the-shared-gpu)); reporting the difference as wasted tokens is planned, since `lh-bench e2` counts only the prompt tokens preempt-resubmit drops.
+**Factors**, at 16 session trees in the standard scenario: LiveKit's preemptive generation off (on by default), and four and six callers.
 
-**Metrics.**
-- Voice V2V p50, p95 and p99 from waveforms, server-side and end-to-end (including endpointing).
-- Barge-in to silence; audio gaps of 100 ms or more.
-- LLM time to first sentence and the stage waterfall, separating compute interference (step time) from KV admission blocking.
-- Abort latency and wasted tokens, including discarded preemptive generations.
-- Harvested background goodput, counting shed and aborted work as lost; goodput per GPU-hour and $/M tokens at the SLO.
-- Under `leaseholder`: background deferrals by reason and their time, aged and oversize admissions, degraded replies, state timeouts, and the false-alarm cost of headroom held without a following turn (token-seconds of background work held back).
+**Metrics** the report computes, per point:
+- **Voice.** V2V p50, p95 and p99, and failed turns. Barge-in to silence.
+- **The voice worker's stage times** (endpointing, the reply's first sentence, TTS's first audio, transport and playout) and the realtime first byte, exact from the gateway's request log.
+- **Agents.** Background goodput (the prompt and completion tokens of the agent requests completed during the calls, over the calls' duration) and the agents' TTFT p50 and p99.
+- **The engine.** Prompt tokens by source (computed, cached, restored from the CPU tier) and preemptions.
+- **The gateway.** Its decisions: deferrals by reason, degraded replies, false alarms and resubmissions.
+- **The GPU.** Its clocks and temperature.
 
-**Plot.** Harvested background goodput on x, voice V2V p95 on y, one frontier per arm, with the regimes where tuned stock or engine preemption is already enough marked.
+Audio gaps, abort latency, wasted tokens and cost per token were in the plan and are not computed.
 
-**Discriminating scenario.** Background agents with large contexts fill the KV pool while voice turns keep arriving. Tuned stock vLLM should still spike there, because a waiting high-priority request cannot preempt running work.
+**Volume and builds.**
+- **Runs.** W2 measured each baseline once (50 turns). W3–W4 repeated the discriminating scenario in rounds, rotating the order of the engine groups so that no configuration always runs at the same hour. Each headline configuration has five runs (250 turns); each ablation and PR configuration has three (150).
+- **Builds.** W2's first two campaigns (`w2`, `w2b`) ran the W2 gateway and voice worker; everything else ran the W3 build, with lifecycle events, and later versions of the variant where noted.
+- **The SLO's reference** is the median of five runs of voice alone, 1,767 ms, so the SLO is 2,017 ms. One of those runs is from the W2 build; the four on the W3 build give 1,768.5 ms.
+- **Every turn counts,** the first of each call included. Under load, the first turn is slower than the rest (a mean of 2.4–2.5 s against 1.8 s in the standard scenario at 16 session trees). Without it, that scenario's p95 is 2,186 ms for the frozen box and 2,037 for arm 9, against 2,323 and 2,196. The discriminating scenario is unaffected (arm 9: 2,058 against 2,057).
+- **Goodput windows differ.** Background goodput is counted over the calls, whose duration differs by configuration (about 280 s for arm 9, about 430 s for the frozen box), against agent requests of about 75 s.
+- **Load generator health.** The callers record how late they play their lines: at most 116 ms, at six callers, and under 60 ms elsewhere. The report does not use it to reject points.
 
-**Volume.** 500–1,000 turns per arm; at least five repeats in the discriminating scenario, reported per run.
+**Results** ([BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2)):
+- **The engine change takes the voice tail to the SLO's edge.** In the discriminating scenario every stock, engine and router baseline leaves the p95 between 5.7 and 12.1 s, except preempt-resubmit (2.6 s, at the agents' tail). Arm 9 reaches 2,057 ms with every reply capped at 16 tokens. The PRs' configuration reaches 2,193 ms with full replies and a 48-token window.
+- **The gateway's lifecycle-timed mechanisms could not act there.** Running agent requests held the pool, and the headroom can protect it only by deferring new requests, so it never had its room: degrade capped 60 of 60 replies in every run. The throttle, checked after the headroom, deferred nothing while the headroom ran. Room came from the engine alone: the policy in front of stock vLLM leaves the tail where stock does (10,993 ms). Where the mechanisms engage, in the standard scenario, they were not isolated.
+- **Where the pool has room, there is nothing to fix.** At the standard scenario's realistic load, arm 9 and the frozen box are within noise of each other.
 
-**Other hardware.** E2 runs on the frozen box, and a second RTX 5060 Ti in booked windows adds dedicate vs pool: that card, Gray, has been held by another user's work since 2026-10-23, so those rounds wait for a free window. What transfers is stated in hardware-free terms: each arm's behavior against KV pressure, π and ρ, and the engine logic (a waiting request cannot preempt running work under KV pressure on any GPU). `lh-sim hardware` places an L4 and an H100 SXM on the same map, with the box's measured costs scaled by the ratios of their published peaks, labeled as modeled ([its README](../crates/lh-sim/README.md#other-hardware-modeled)). The KV-blocking regime follows how long the agents' contexts are against the pool, and how much of the pool the realtime tier needs, not the consumer card. On the 32× replay, running agents leave two calls short of KV 12% of the time at 24 sessions on the box, never up to 24 sessions on the L4, and never on the H100. Replayed at each GPU's own scaling (the L4 at 16×, the H100 at 4×), the L4 is short 9–23% of the time at 16–32 sessions and the H100 0–7%, or 25–65% for a realtime tier sized to the box's share of the pool.
+**Other hardware.** E2 runs on the frozen box. What transfers is stated in hardware-free terms:
+- **The coordinates:** each arm's behavior against KV pressure, π and ρ, and the engine logic (on any GPU, a waiting request cannot preempt running work under KV pressure).
+- **The model.** `lh-sim hardware` places an L4 and an H100 SXM on the same map, with the box's measured costs scaled by the ratios of their published peaks, labeled as modeled ([its README](../crates/lh-sim/README.md#other-hardware-modeled)).
+- **The regime follows the workload, not the card.** The KV-blocking regime depends on how long the agents' contexts are against the pool, and on how much of the pool the realtime tier needs.
+  - On the 32× replay, running agents leave two calls short of KV 12% of the time at 24 sessions on the box, never up to 24 sessions on the L4, and never on the H100.
+  - Replayed at each GPU's own scaling (the L4 at 16×, the H100 at 4×), the L4 is short 9–23% of the time at 16–32 sessions. The H100 is short 0–7%, or 25–65% for a realtime tier sized to the box's share of the pool.
 
-**Status (W2, 2026-10-23): the baselines are measured**, one run a point ([BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2)).
-- **Standard scenario.** Every vLLM arm holds the voice SLO at 8 session trees. None clearly does at 16, where the best land 100–220 ms above it and within noise of each other, and none does at 24. SGLang matches vLLM only with its host tier.
-- **Discriminating scenario.** Every stock, engine and router arm collapses (V2V p95 5.7–12.1 s) except preempt-resubmit before the first byte (2.6 s), which frees background KV at once and restores the aborted prefixes from the CPU tier. vLLM's queued-token limit meets the SLO only by refusing voice turns.
+**Two GPU nodes: dedicate or pool** ([`benchmarks/e2`](../benchmarks/e2/README.md#two-gpu-nodes-dedicate-vs-pool)). Built and deployed, measured when the second node is free. Two GPUs of equal hardware run at equal load: 4 callers and 32 agent session trees, twice one node's 16, three repeats each.
+- **A, dedicate:** placement `dedicated`, one node serving the calls and the other the agents, both on the frozen box.
+- **B, pool under tuned stock:** placement `least-loaded`, both nodes on the frozen box.
+- **C, pool under Leaseholder:** placement `leaseholder`, both nodes running arm 9. A new call goes to the node with the fewest calls, then the fewest armed for a turn, then the most free KV. A new agent session goes to the node holding the least background KV.
 
-**Status (W4, 2026-10-24): E2 is complete on one node. The engine change takes the voice tail to the SLO's edge, and lifecycle timing adds nothing measurable beside it** ([BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2) has every run; the 129 points' records are in [`benchmarks/results`](../benchmarks/results/2026-10-23-e2/README.md), and `make reproduce-e2` rebuilds the report from them).
-- **Arm 9 against the best of each arm** (five runs each, V2V p95 median): arm 9 2,057 ms (1,980–2,134), against the SLO of 2,017 ms (voice alone five times: 1,767); preempt-resubmit 2,591; the best step cap 8,789; SGLang with HiCache 11,948; the frozen box 10,138. Arm 9 is the only arm with runs under the SLO (two of five), at 92% of stock's goodput and stock's agent tail; preempt-resubmit keeps 98% of the goodput but takes the agents' TTFT p99 from 99 s to 160 s, so neither dominates the other.
-- **The ablations** (three runs each): the budget cap is necessary (5,295 ms without it); KV preemption or the reserve either suffices; the reply must fit the first-tokens window, by degrade's 16-token cap or a 48-token window (3,837 ms without either, 2,205 with the window). Every lifecycle-timed mechanism of the gateway's policy is within the spread of arm 9's own runs, and the policy alone on the stock engine is stock (10,993 ms): lifecycle timing measured no gain in this regime.
-- **The engine as the vLLM PRs propose it** (three runs each, no reserve, no gateway policy): #63350 alone 5,773 ms, with #63351 3,229, and with a 48-token window 2,193 at 94% of stock's goodput: the configuration [PRODUCTION.md](PRODUCTION.md) recommends.
-- **The standard scenario** at its realistic load (three runs each): arm 9 2,196 ms and the frozen box 2,323, within noise of each other where the pool has room.
-- **Two nodes** (dedicate vs pool): built, deployed on cyan and unit-tested; measured in the W8 Gray window, since another user's work held Gray on 2026-10-23.
+Each point is reported in total and by node. A node killed in the same window measures what its sessions' moves cost: re-placement, re-prefill time and the SLO.
 
 ## E1: parking
 
-Parking KV during a tool call and prefetching it before the return is published (see [PRIOR-ART.md](PRIOR-ART.md)), so E1 is a measurement: how much of the gap between LRU plus CPU offload and a clairvoyant reference each level of lifecycle information closes (none, session history, an oracle), per regime, with resume latency as the objective.
+Parking KV during a tool call and prefetching it before the return is published ([PRIOR-ART.md](PRIOR-ART.md)), so E1 measures how much of the gap between LRU plus CPU offload and a clairvoyant reference each level of lifecycle information closes (none, session history, an oracle), per regime, with resume latency as the objective. It runs in the simulator first, and the GPU runs only the arms the simulator says matter.
 
-- **Workload.**
-  - Block-scaled Claude Code traces, replayed as AIPerf's `agentic_replay` sends them, with recorded think time; gaps are capped at 10–30 minutes.
-  - Session count is swept to reach KV pressure of 1–8×, with the CPU tier at 2×, 4× and 8× the GPU pool.
-- **Order.** Simulator first: `lh-sim` runs every arm and the clairvoyant reference. The GPU runs the arms the simulator says matter.
-- **Arms.**
-  - GPU-only LRU; LRU + CPU tier; S3-FIFO + CPU tier (these three are in `lh-sim` v0);
-  - a fixed-TTL hold (Continuum);
-  - LRU + CPU with prefetch timed from session history; the same with prefetch timed by an oracle;
-  - predictive upload (Tokencake), idleness ranking (MORI) and min-waste preserve, discard or swap (InferCept);
-  - lease-aware CPU eviction;
-  - active-session admission (against stock `max_num_active_seqs`);
-  - the clairvoyant reference (simulated only; in `lh-sim` v0): Belady's MIN in each tier, replayed on the LRU + CPU timeline. MIN is optimal only for one tier's hit count over unit-size blocks; with prefix hits across two tiers it is a reference, not a bound.
-- **Metrics.** Resume TTFT p50, p90 and p99 by source tier, and stalls; avoidable recompute; PCIe bytes; sessions within SLO; the ledger's cause breakdown.
-- **Plot.** A regime map over KV pressure (live working set over the pool), π (median pause over restore time) and ρ (restore over recompute time at the median prompt). Each cell shows the share of the gap to the clairvoyant reference that each information level closes.
-- **Gate (G-sim).** If even the oracle level closes under about 10% of resume TTFT over LRU + CPU in the realistic regime (the clairvoyant gap reported beside it), E1 is published as a regime map with a negative result, and the `CachePolicy` plugin stays off.
+- **Workload.** The block-scaled Claude Code traces, replayed as AIPerf's `agentic_replay` sends them, with recorded think times (capped at 10–30 minutes) or TraceLab's tool latencies. Session counts are swept to KV pressures of 1–8×, with the CPU tier at 2×, 4× and 8× the GPU pool.
+- **Arms.** GPU-only LRU; LRU + CPU tier; S3-FIFO + CPU tier; a fixed-TTL hold (Continuum); prefetch timed by session history and by an oracle; simplified Tokencake, MORI and InferCept; the clairvoyant reference (Belady's MIN in each tier, replayed on the LRU + CPU timeline: a reference, not a bound).
+- **Metrics.** Resume TTFT p50, p90 and p99 by source tier, and stalls; avoidable recompute; PCIe bytes.
+- **The gate.** If even the oracle closes under about 10% of resume TTFT over LRU + CPU in the realistic regime, E1 is a regime map with a negative result, and no lease-aware policy runs on the GPU.
 
-**Status (W2, 2026-10-23): G-sim took the negative branch.** Everything below is in [`crates/lh-sim`](../crates/lh-sim/README.md), with the commands that regenerate it.
-- **The contention model.** `lh-sim` now serves requests through a model of vLLM 0.32's step loop (the 512/256 step cap, chunked prefill, priority-then-arrival order), with a step time fitted to the E0 cells and to three operating points of the frozen box (AIPerf at 8, 16 and 24 session trees, each on a freshly started engine). Resume TTFT p50/p90 is within 8% at 8 and 16 sessions, including a leave-one-out fit. At 24 sessions the model is 18% (p50) and 30% (p90) fast: restores there take 163 ms longer than modeled, growing with the number of overlapping restores, most likely because vLLM waits for a pending store before reusing a block, which the model omits. `--service idle` keeps v0's idle-box service.
-- **The arms.** `ttl-hold` (Continuum), `history-prefetch`, `oracle-prefetch`, `tokencake`, `mori` and `infercept`, each a documented simplification of its paper, beside v0's `gpu-lru`, `lru-cpu`, `s3fifo-cpu` and `clairvoyant`. Pauses come from the traces' think times or from TraceLab's tool latencies (`--pauses tracelab`, π about 1). Leaseholder's own lease-aware eviction and active-session admission are not built: the gate below decides them.
-- **The result.** In the realistic regime (the traces' think times, the CPU tier at 4×, 20 seeds), the oracle level gains under 7% of resume TTFT p50 at every pressure, because the median resume is already a GPU hit or a short restore. It gains 11–23% at p90 at pressures 1.6–2.4, 8% on average at the box's 16 sessions (pressure 3.2, with a wide spread across seeds), and loses 17% at 24 sessions, where its prefetches queue with demand restores on the single load stream. The history level does worse than LRU + CPU from 12 sessions on, and TTL holds are neutral. With TraceLab's pauses (π about 1) the oracle gains at most 6%.
-- **Other hardware, modeled.** At their own scalings the result holds on an L4 and an H100: lifecycle information buys at most 18% of resume TTFT p90 on the L4 and 8% on the H100 ([`lh-sim` README](../crates/lh-sim/README.md#other-hardware-modeled)).
-- **What follows.** The `CachePolicy` plugin stays off; E1's regime map and this result go to vLLM #57103 and router #428. The high-pressure cells are bounds on prefetch, not calibrated values, until the model prices stores.
-
-## E3: ledger
-
-| Part | What it does |
-|---|---|
-| Injected-cause suite | Triggers the key causes deliberately and requires at least 95% correct attribution, with the `unknown` share reported: a timestamp that breaks the prefix, a forced eviction, a preemption, an engine restart |
-| Recompute anatomy | The share of recomputed tokens by cause on E1 and E2 replays: cold first turns, prefix breaks (chat templates re-rendering tool-call JSON, context edits), subagent forks, eviction, preemption |
-| Cache contracts as an SLI | Anthropic `cache_control` TTLs (renewed on each use) become lease floors. The honor rate inside the TTL ([SLO.md](SLO.md#indicators-and-targets)) is measured under a deliberately small CPU tier where honoring can fail, with usage in Anthropic's fields and a cache read reported only for a real hit |
-| Real harness | Claude Code through agentic-api and Leaseholder, with ledger output |
-
-## Reliability drills and the two-node window
-
-| Drill | Measured outcome |
-|---|---|
-| vLLM killed mid-stream | A typed error to the client, epoch revocation, recovery time |
-| Control-plane restart under load | Lease table rebuilt from KV-event replay, with no stale-holder routing |
-| Node loss (in the Gray window) | Sessions moved (the gateway's `node_down` placements), re-prefill time, SLO impact |
-
-CPU-tier exhaustion is a test: grants degrade to `floor = NONE`, violations are counted, nothing runs out of memory.
-
-**Dedicate vs pool** (W4; [`benchmarks/e2`](../benchmarks/e2/README.md#two-gpu-nodes-dedicate-vs-pool)). Two GPUs of equal hardware, Phastform and Gray, at equal load: 4 callers and 32 agent session trees of the 32× replay, twice one node's 16; 3 repeats each.
-- **A, dedicate:** placement `dedicated`, Phastform serving the calls and Gray the agents, both on the frozen box (tuned stock).
-- **B, pool under tuned stock:** placement `least-loaded`, both nodes on the frozen box: sticky sessions, each new session on the node with the fewest requests in flight.
-- **C, pool under Leaseholder:** placement `leaseholder`, both nodes running arm 9 (the gateway's `leaseholder` admission policy on each node, the engine's `make-room`): a new call goes to the node with the fewest calls, then the fewest armed for a turn, then the most free KV; a new agent session to the node holding the least background KV.
-
-Each point is placed on the frontier by its totals (every call's V2V, every agent request's goodput, the engines' counters added up) and reported by node as well: the calls placed there and their V2V, the agent goodput the gateway sent there, each engine's counters and each GPU's clocks. KV never moves between nodes, so the 1 GbE link does not matter. A node that fails readiness takes no new session, and its sessions are placed again on their next request (`lh_gateway_placements_total{reason="node_down"}`): the node-loss drill measures those moves.
+**Result: the negative branch** ([`crates/lh-sim`](../crates/lh-sim/README.md), with the commands that regenerate it).
+- **The model.** `lh-sim` serves requests through a model of vLLM 0.32's step loop, fitted to the E0 cells and to three operating points of the frozen box. It reproduces resume TTFT p50 and p90 within 8% at 8 and 16 sessions. At 24 it is 18–30% fast, because restores there take longer than modeled.
+- **The realistic regime** (the traces' think times, the CPU tier at 4×, 20 seeds). The oracle gains under 7% of resume TTFT p50 at every pressure, because the median resume is already a GPU hit or a short restore. It gains 11–23% at p90 at pressures of 1.6–2.4, 8% on average at the box's 16 sessions, and loses 17% at 24, where its prefetches queue behind demand restores. The history level does worse than LRU + CPU from 12 sessions on, and TTL holds are neutral. With TraceLab's pauses the oracle gains at most 6%.
+- **Modeled on an L4 and an H100,** at their own scalings, lifecycle information buys at most 18% and 8% of resume TTFT p90.
+- **What follows.** The lease-aware CPU-tier policy built for E1, `LeasePolicy`, stays off. E1's regime map goes to vLLM #57103 and router #428.
 
 ## How runs are made
 
-- **One frozen box** for every experiment ([`deploy/phastform`](../deploy/phastform)). Variants are engine drop-ins ([RUNBOOK.md](../ops/RUNBOOK.md#engine-variants)). Runs are batched by engine configuration, because a restart costs minutes.
-- **Repeats.** Three repeats, at least five in E2's discriminating scenario, reported per run; warm-up trimmed; the prefix cache reset between load levels with `POST /reset_prefix_cache?reset_external=true`, once in-flight stores finish.
-- **Load generator health.** Every run checks that the load generator is not saturated. Admission rejections are reported separately. Agents are replayed closed-loop; open-loop arrivals come from multiple processes, to avoid coordinated omission.
-- **Run logs.** Each run directory holds the configuration, host and load, start and end times, raw samples and the plot inputs. A compact record of each E2 point (`lh-bench e2 export`) is committed under `benchmarks/results/`, from which `make reproduce-e2` regenerates the frontiers, the tables and the stage waterfall; the raw run directories are a release asset.
-- **Repeats** are reported per run, with each configuration's median and range beside them.
+- **One frozen box** for every experiment ([`deploy/phastform`](../deploy/phastform)). Engine variants are drop-ins ([RUNBOOK.md](../ops/RUNBOOK.md#engine-variants)), and runs are grouped by engine, because a restart costs minutes.
+- **Campaigns** list arm files. [`campaign.sh`](../benchmarks/e2/campaign.sh) measures them in order from a workstation and fetches each run directory, and a stopped campaign resumes at its first incomplete point. While a campaign measures, only the box's own units may hold the GPU; a point measured beside another process is measured again ([RUNBOOK.md](../ops/RUNBOOK.md#checks-before-heavy-work-on-a-shared-host)).
+- **Records.** Each run directory holds the arm file as run, the engine's `/server_info`, the gateway's request log, AIPerf's exports, the worker's journal, the GPU's samples and the metrics around the calls. A compact record of each point (`lh-bench e2 export`) is committed under [`benchmarks/results`](../benchmarks/results/2026-10-23-e2/README.md), from which `make reproduce-e2` rebuilds the report. The raw run directories are an asset of the v0.3 release.
+- **Reporting.** Each configuration is reported per run, with the median and the range of its runs, never as a mean alone.

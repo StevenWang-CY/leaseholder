@@ -4,7 +4,7 @@ How to deploy, check, operate and recover the Leaseholder hosts. Every service r
 
 | Host | Units | Ports (all loopback) |
 |---|---|---|
-| Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV-event subscriber 5557 (to be bound by `lh-node`, from W5; the engine connects to it), KV-event replay 5558 |
+| Phastform (GPU) | `leaseholder.target` → `lh-stt`, `lh-tts`, `lh-engine` | engine 8000, STT 8100, TTS 8880, KV events published to 5557, where nothing listens since `lh-node` was dropped; KV-event replay 5558 |
 | Gray (second GPU node, booked windows; held by another user's work since 2026-10-23) | The same units as Phastform, with Gray's drop-ins (`deploy/gray/systemd/`: the CUDA compiler from the engine venv, the engine on cores 0–7 of NUMA node 0, the GPU's, and the audio servers on cores 8–15 of node 1). `leaseholder.target` is not enabled at boot | As on Phastform |
 | cyan (control) | `lh-tunnel-phastform`, `lh-gateway`, `lh-voicenet`, `lh-livekit`, `lh-voice-worker`; `lh-smg` for E2 arm 8b only; `lh-tunnel-gray` for two-node points only | tunnel 18000 → 8000, 18100 → 8100, 18880 → 8880, 15558 → 5558, and to Gray 28000, 28100, 28880, 25558; gateway 18080; Unix sockets in `/run/user/$UID/lh/` (the gateway's is `gateway.sock`). LiveKit 17880 (TCP) and 17882 (UDP), inside the voice-plane namespace only; SMG 18090, its metrics 18091 |
 

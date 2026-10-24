@@ -2,6 +2,8 @@
 
 Leaseholder's engine-side plugins for vLLM 0.32. They are loaded by vLLM's own extension points, so the engine stays stock.
 
+**Not used.** They were built for E1's lease-aware CPU-tier policy, and E1 found no regime that needs it (a negative result), so the frozen box runs the stock `OffloadingConnector`. They were tested against vLLM's real offload manager and checked live on the GPU, and are removed after v0.3 ([ADR-0006](../../docs/adr/0006-the-engine-change-carries-the-realtime-tier.md)).
+
 | Module | Plugs into | What it does |
 |---|---|---|
 | `leaseholder_vllm.policy.LeasePolicy` | the native CPU offload tier (`cache_policy_module_path`) | Soft leases over LRU. Chunks without a live lease are evicted first; leased chunks go only when nothing else is evictable, lowest class first. A store is refused only where plain LRU would refuse it too |

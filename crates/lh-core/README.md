@@ -1,6 +1,6 @@
 # lh-core
 
-The deterministic policy core the simulator and the gateway share. Pure code: no I/O and no clock. Callers pass token counts and events, and get durations and decisions back.
+Pure, deterministic code with no I/O and no clock: callers pass token counts and events, and get durations and decisions back. It holds two things: the cost, step and KV-geometry models, which the simulator and the gateway's throttle share, and the admission and placement policies, which only the gateway runs.
 
 | Module | What it holds | Used by |
 |---|---|---|
@@ -16,7 +16,7 @@ The deterministic policy core the simulator and the gateway share. Pure code: no
 - *degrade*: a realtime request that arrives while the background requests in flight leave less than one turn's headroom free has its reply capped;
 - *aging*: a request the caller has let wait long enough is admitted regardless (`Admission::age`), and is `oversize` if its estimate alone is over what the headroom leaves.
 
-`Admission::held_back` gives the estimated background tokens the headroom holds back at the moment, which the gateway integrates over time to price false alarms. Leaseholder's leases, prefetch and the ledger's attribution are to follow ([ARCHITECTURE.md](../../docs/ARCHITECTURE.md#41-crates)).
+`Admission::held_back` gives the estimated background tokens the headroom holds back at the moment, which the gateway integrates over time to price false alarms. What E2 measured of the policy is in [ARCHITECTURE.md §6](../../docs/ARCHITECTURE.md#6-tested-and-not-adopted); the leases, prefetch and ledger attribution planned here were dropped ([ADR-0006](../../docs/adr/0006-the-engine-change-carries-the-realtime-tier.md)).
 
 **Placement** chooses the node of a session that has none; KV never moves between nodes, so the caller keeps each session on its node and asks again only for a new session, one that idled out, or one whose node stopped answering. `placement::Policy::place` decides from a snapshot of each node (`placement::Node`: whether it is ready, the classes it serves, its requests in flight, its realtime sessions and how many are armed, and the estimated background KV it holds and leaves free), pure and without a clock like admission. A node that is not ready takes nothing, and ties go to the earlier node:
 - `dedicated`: a node that serves the session's class, of several the one with the fewest requests in flight;

@@ -1,6 +1,6 @@
 # ADR-0004: The host tier is vLLM's native CPU offload; lease-aware eviction only where it binds
 
-- **Status:** accepted, 2026-10-22
+- **Status:** accepted, 2026-10-22; the host tier stands, and the lease-aware split of work is not pursued ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md))
 - **Deciders:** Chuyue Wang
 
 ## Context
@@ -25,6 +25,6 @@ Idle sessions must park somewhere cheaper than the 36,400-token GPU pool. Restor
 - GPU residency after a prefetch is best-effort: restored blocks go back into the GPU LRU, so prefetch timing matters.
 - The CPU tier competes with other tenants for host RAM and `/dev/shm`. Lease grants are admission-controlled, so a floor is never promised beyond what the tier can hold.
 
-## Update (2026-10-23, W4)
+## Later
 
-Gate G-sim took its negative branch in W2: in the realistic regime even the oracle level of lifecycle information gains under 7% of resume TTFT p50 over LRU plus the CPU tier ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)). CPU-tier eviction stays LRU, and `LeasePolicy` stays off. The host tier stands as decided: the frozen box runs the native `OffloadingConnector`, written through.
+Gate G-sim took its negative branch: even the oracle level of lifecycle information gains under 7% of resume TTFT p50 over LRU plus the CPU tier ([EXPERIMENTS.md](../EXPERIMENTS.md#e1-parking)). CPU-tier eviction stays LRU; `LeasePolicy` and `LeaseConnector` stay off and are removed after v0.3 ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)). The frozen box runs the native `OffloadingConnector`, written through, as decided.

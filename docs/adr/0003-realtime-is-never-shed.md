@@ -1,6 +1,6 @@
 # ADR-0003: Realtime is never shed
 
-- **Status:** accepted, 2026-10-22
+- **Status:** accepted, 2026-10-22; the room is made in the engine ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md))
 - **Deciders:** Chuyue Wang
 
 ## Context
@@ -29,8 +29,6 @@ Background traffic absorbs the overload. It keeps a minimum share and ages, so i
 - Rejections exist only for `interactive` (a deadline can be missed) and for `background` (deferral beyond its age bound). Both are reported as their own metrics.
 - The decision binds Leaseholder's own admission policy. E2's baseline policies emulate what others ship (W2): llm-d's flow control, for one, can make a realtime request wait or refuse it when realtime and interactive requests fill its ceiling, and those outcomes are measured, not prevented.
 
-## Update (2026-10-23, W4)
+## Later
 
-The decision stands: under the `leaseholder` policy a realtime request is never queued or refused. What was built of the two steps, and what E2 measured in its discriminating scenario ([ARCHITECTURE.md §4.3](../ARCHITECTURE.md#43-turn-imminent-headroom)):
-- **Make room.** The gateway budgets background prefill in the critical window by predicted prefill time, not by tokens, and keeps KV headroom by deferring new background turns. Neither moved the voice tail measurably. The room is made in the engine, by the `make-room` change: lower-priority prefill sits out a realtime request's first tokens, with KV preemption or a class-aware reserve ([§4.6](../ARCHITECTURE.md#46-engine-side-policy)). Prefetching the speaking session's KV is not built.
-- **Degrade the reply.** A shorter `max_tokens` is built (16 tokens in E2); a filler phrase is not. In that scenario degrade capped every reply, and the tail depends on it: the engine protects a reply's first 16 tokens, which undegraded replies outrun. A 48-token window without degrade fits full replies instead, about 140 ms above degraded ones at p95 (2,193 and 2,205 ms against 2,057), and is what [PRODUCTION.md](../PRODUCTION.md) recommends.
+Under the `leaseholder` policy a realtime request is never queued or refused. Its make-room steps in the control plane (the prefill budget and the KV headroom) could not act in E2's discriminating scenario, where running agent requests held the pool; the room is made in the engine ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)). Degrade is built as a 16-token `max_tokens`, and a filler phrase and prefetch are not; a 48-token first-tokens window fits full replies instead, about 140 ms later at p95 (2,193 and 2,205 ms against 2,057), and is what [PRODUCTION.md](../PRODUCTION.md) recommends.

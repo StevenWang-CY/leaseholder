@@ -31,3 +31,7 @@ The GPU nodes are joined by 1 GbE, slower than recomputing a prompt on the card.
 - The voice plane cannot reach the internet or the host network directly. Joining a call from a browser would need an explicit bridge; the demo video needs none, since it is rendered from calls the measurement callers record (`lh-voice bots --save-audio`).
 - A tunnel adds a loopback hop on each side, sub-millisecond on this network. Every measured path to the engine crosses it, direct or through the control plane; the control-plane overhead in the SLO ends at the upstream write and leaves it out.
 - Losing a node costs a re-prefill of its sessions. The node-loss drill measures it.
+
+## Co-tenants (2026-10-24)
+
+The hosts' other users share their loopback, which this decision does not cover. On cyan, the tunnels' TCP ports (Phastform's 18000, 18100, 18880 and 15558, and Gray's 28000-series) are reachable by any local user, and the frozen box's engine runs with `VLLM_SERVER_DEV_MODE=1`, which serves development routes such as `/collective_rpc` and `/sleep`; the harness needs `/server_info` and the cache-reset routes. To come after v0.3: development mode only in a drop-in for measurements, and Unix-socket forwards only on cyan, so that only the deploying user can reach the engines.

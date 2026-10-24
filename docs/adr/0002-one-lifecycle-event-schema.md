@@ -1,6 +1,6 @@
 # ADR-0002: One lifecycle-event schema for every workload
 
-- **Status:** accepted, 2026-10-22
+- **Status:** accepted, 2026-10-22; the lease and prefetch consequences are not pursued ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md))
 - **Deciders:** Chuyue Wang
 
 ## Context
@@ -25,7 +25,6 @@ Separate mechanisms per workload would duplicate the prefetch and headroom logic
 - One example file, `crates/lh-proto/testdata/events.jsonl`, pins the wire format. The Rust tests read it; the Python emitters are to test against it once they send events (W3).
 - The schema is a public interface. Changes to it are additive, or they get a new event type.
 
-## Update (2026-10-23, W4)
+## Later
 
-- **What sends events.** Since W3 the voice worker posts its events to `/v1/events`, and its `tests/test_events.py` checks them against the generated `lifecycle_event.schema.json`; `events.jsonl` remains the Rust tests' example file. Under the `leaseholder` policy the gateway follows each realtime session's turn by them.
-- **The shared transitions are intended, not built.** A tool return and a speech onset drive the same lease transitions and the same prefetch only once leases and prefetch exist, and the gateway does not ingest tool-wait events yet. Today the voice events drive the gateway's headroom and critical window, whose timing E2 measured adding nothing in its discriminating scenario ([ARCHITECTURE.md §4.3](../ARCHITECTURE.md#43-turn-imminent-headroom)).
+Since 2026-10-23 the voice worker posts its events to `/v1/events`, checked against the generated `lifecycle_event.schema.json`, and the gateway's `leaseholder` policy follows each call's turn by them. Tool-wait events are not ingested, and the shared lease and prefetch transitions are not pursued ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)).

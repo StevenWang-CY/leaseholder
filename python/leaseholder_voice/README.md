@@ -1,6 +1,6 @@
 # leaseholder-voice
 
-Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](../../docs/ARCHITECTURE.md#7-realtime-voice-pipeline)). The package holds:
+Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §4.2](../../docs/ARCHITECTURE.md#42-the-voice-pipeline)). The package holds:
 - the production voice agent;
 - the lifecycle events it posts to the control plane, and its per-turn stage times;
 - a call's GPU node, which it asks the control plane for when that fronts several;
@@ -29,7 +29,7 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §7](.
 | `LH_LLM_UDS` | The control plane's socket (`gateway.sock`), or the engine's tunnel (`phastform-engine.sock`) |
 | `LH_STT_UDS`, `LH_TTS_UDS` | The tunnels to the STT and TTS servers |
 | `LH_IDLE_PROCESSES` | Pre-started job processes (default 2) |
-| `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30) |
+| `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30); a failed request is retried once |
 | `LH_TURN_DETECTION` | `model` (default) or `vad` |
 | `LH_PREEMPTIVE_GENERATION` | `true` (default) or `false` |
 | `LH_EVENTS` | `on` (default): lifecycle events to the control plane through `LH_LLM_UDS`; `off` |
