@@ -543,10 +543,18 @@ WORKER_COLUMNS = (
     "events_failed",
 )
 GPU_COLUMNS = ("gpu_sm_clock_p50_mhz", "gpu_temperature_max_c")
+ADMISSION_COLUMNS = (
+    "deferred_headroom",
+    "deferred_critical",
+    "degraded_replies",
+    "realtime_replies",
+    "degraded_share",
+)
 """Columns that only some points have, each group shown when one of them has it: the GPU nodes of a
 point on several, which every other column then totals; the voice worker's stage times and lifecycle
-events; and the GPU's median SM clock and highest temperature during the calls (over every node's
-GPU on several)."""
+events; the GPU's median SM clock and highest temperature during the calls (over every node's GPU on
+several); and under the gateway's policy ``leaseholder``, the background requests it deferred by
+what held them back and the realtime replies it capped, with their share of its realtime requests."""
 
 
 def load_points(run_dirs: Iterable[Path]) -> tuple[list[dict[str, Any]], list[Path]]:
@@ -646,6 +654,12 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         for q in ("p50", "p95")
     }
     row |= {f"events_{kind}": events.get(kind) for kind in ("sent", "dropped", "failed")}
+    policy = ((arm.get("gateway") or {}).get("admission") or {}).get("policy")
+    row |= (
+        leaseholder_counts(gateway.get("counters") or {})
+        if policy == "leaseholder"
+        else dict.fromkeys(ADMISSION_COLUMNS)
+    )
     # What frontier.csv leaves out: the corpus, which the workload names, and the stage waterfall's
     # inputs, the count and mean of each of the worker's stages and the callers' V2V samples.
     row["data"] = arm["agents"]["data"]
@@ -655,6 +669,26 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     row["nodes"] = " ".join(nodes) or None
     row["by_node"] = [_node_row(run_dir, node, share, window) for node, share in nodes.items()]
     return row | _gpu(run_dir, _gpu_samples(nodes), summary, window)
+
+
+def leaseholder_counts(counters: Mapping[str, int]) -> dict[str, int | float | None]:
+    """What policy ``leaseholder`` did over the window, from the gateway's counters (those that moved):
+    the background requests it deferred, by what held them back when they arrived (the KV headroom,
+    then the critical window's prefill budget), and the realtime replies it capped because the
+    headroom was not there, with their share of the realtime requests it admitted."""
+
+    def count(series: str) -> int:
+        return counters.get(series, 0)
+
+    degraded = count("lh_gateway_admission_degraded_total")
+    realtime = count('lh_gateway_admission_admitted_total{class="realtime"}')
+    return {
+        "deferred_headroom": count('lh_gateway_admission_deferred_total{reason="headroom"}'),
+        "deferred_critical": count('lh_gateway_admission_deferred_total{reason="critical"}'),
+        "degraded_replies": degraded,
+        "realtime_replies": realtime,
+        "degraded_share": round(degraded / realtime, 3) if realtime else None,
+    }
 
 
 def v2v_samples(turns: Path) -> list[float]:
@@ -944,7 +978,7 @@ def figure_name(data: str, callers: int) -> str:
 
 def _measured(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, ...]]:
     """The optional column groups that some point has."""
-    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS)
+    groups = (NODE_COLUMNS, WORKER_COLUMNS, GPU_COLUMNS, ADMISSION_COLUMNS)
     return [group for group in groups if any(r[c] is not None for r in rows for c in group)]
 
 
@@ -999,6 +1033,8 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         lines += _nodes(rows, gpu_columns)
     if WORKER_COLUMNS in measured:
         lines += _stages(rows)
+    if ADMISSION_COLUMNS in measured:
+        lines += _admission(rows)
     if cells := stage_waterfall(rows):
         lines += _waterfall_table(cells)
     return "\n".join(lines) + "\n"
@@ -1161,6 +1197,36 @@ def _stages(rows: Sequence[Mapping[str, Any]]) -> list[str]:
         events = " / ".join(_cell(r[f"events_{kind}"]) for kind in ("sent", "dropped", "failed"))
         name = f"{r['point']} ({r['campaign']})" if runs[_configuration(r)] > 1 else r["point"]
         lines.append(f"| {name} | {' | '.join(stages)} | {events} |")
+    return lines
+
+
+def _admission(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """What policy ``leaseholder`` did in each point that ran it."""
+    lines = [
+        "",
+        "## Policy leaseholder",
+        "",
+        "What the gateway's policy `leaseholder` did in each point that ran it: the background requests "
+        "its admission point deferred, by what held them back when they arrived (the KV headroom "
+        "first, then the critical window's prefill budget), and the realtime replies it capped at "
+        "`degrade_max_tokens` because the headroom was not there, of the realtime requests it "
+        "admitted. A mechanism that deferred or capped nothing did not act in that point.",
+        "",
+        "| Point | Deferred by the headroom | Deferred by the critical window | Degraded replies |",
+        "|---|---:|---:|---:|",
+    ]
+    runs = Counter(map(_configuration, rows))
+    for r in rows:
+        if r["deferred_headroom"] is None:
+            continue
+        name = f"{r['point']} ({r['campaign']})" if runs[_configuration(r)] > 1 else r["point"]
+        degraded = f"{_cell(r['degraded_replies'])} of {_cell(r['realtime_replies'])}"
+        if r["degraded_share"] is not None:
+            degraded += f" ({r['degraded_share']:.0%})"
+        lines.append(
+            f"| {name} | {_cell(r['deferred_headroom'])} | {_cell(r['deferred_critical'])} "
+            f"| {degraded} |"
+        )
     return lines
 
 

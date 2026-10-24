@@ -17,6 +17,7 @@ import pytest
 from leaseholder_bench.cli import main
 from leaseholder_bench.e2 import SECRETS, Agents, Voice
 from leaseholder_bench.frontier import (
+    ADMISSION_COLUMNS,
     CALLER_ROOM,
     COLUMNS,
     GPU_COLUMNS,
@@ -575,6 +576,37 @@ def test_a_failed_turn_is_censored_and_keeps_its_configuration_off_the_frontier(
     assert (
         "Failed turns: a5-queued-s24, 48 of 50, its V2V censored at 30 s, off the scale" in figure
     )
+
+
+def test_policy_leaseholder_shows_what_it_deferred_and_what_it_capped(tmp_path: Path) -> None:
+    a9 = point(tmp_path, "disc-a9-s24", "9", 3400, 2057)
+    run = json.loads((a9 / "run.json").read_text())
+    run["arm"]["gateway"] = {"admission": {"policy": "leaseholder", "headroom_tokens": 1024}}
+    (a9 / "run.json").write_text(json.dumps(run))
+    counters = {
+        'lh_gateway_admission_admitted_total{class="realtime"}': 60,
+        'lh_gateway_admission_deferred_total{reason="headroom"}': 41,
+        "lh_gateway_admission_degraded_total": 60,
+    }  # a counter that did not move is not kept: the critical window deferred nothing
+    rewrite(a9, lambda s: s["gateway"].update(counters=counters))
+    rows, _ = load_points([a9, point(tmp_path, "disc-frozen-s24", "4", 3700, 10138)])
+    by = {r["point"]: r for r in rows}
+    assert {column: by["disc-a9-s24"][column] for column in ADMISSION_COLUMNS} == {
+        "deferred_headroom": 41,
+        "deferred_critical": 0,
+        "degraded_replies": 60,
+        "realtime_replies": 60,
+        "degraded_share": 1.0,
+    }
+    assert all(by["disc-frozen-s24"][column] is None for column in ADMISSION_COLUMNS)
+    out = tmp_path / "report"
+    write_report(rows, out)
+    section = (out / "frontier.md").read_text().split("## Policy leaseholder")[1]
+    assert "| disc-a9-s24 | 41 | 0 | 60 of 60 (100%) |" in section
+    assert "disc-frozen-s24" not in section  # a point without the policy has no line
+    with (out / "frontier.csv").open() as f:
+        shares = {r["point"]: r["degraded_share"] for r in csv.DictReader(f)}
+    assert shares == {"disc-a9-s24": "1.0", "disc-frozen-s24": ""}
 
 
 def turn_lines(run_dir: Path, stages: dict[str, float], turns: int, v2v: list[dict]) -> None:
