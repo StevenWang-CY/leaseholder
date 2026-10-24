@@ -116,6 +116,21 @@ def test_summary_pools_v2v_samples_and_censors_the_replies_that_never_came():
     assert answered["v2v_ms"] == {"n": 5, "p50": 950.0, "p95": 1080.0, "p99": 1096.0}
 
 
+def test_the_summary_leaves_the_warm_up_turns_out():
+    rows = [
+        {"caller": 0, "turn": 0, "v2v_ms": 2500.0, "barge_in": False, "warmup": True},
+        {"caller": 0, "turn": 1, "v2v_ms": 800.0, "barge_in": False},
+        {"caller": 1, "turn": 0, "error": "the agent did not start speaking", "warmup": True},
+        {"caller": 1, "turn": 1, "v2v_ms": 900.0, "barge_in": False},
+    ]
+    summary = summarize(rows, [0.0])
+    assert (summary["turns"], summary["errors"]) == (2, 0)
+    assert summary["v2v_ms"] == {"n": 2, "p50": 850.0, "p95": 895.0, "p99": 899.0}
+    assert summary == summarize([rows[1], rows[3]], [0.0])
+    with pytest.raises(ValueError, match="warmup_turns cannot be negative"):
+        BotsConfig("ws://fake", "key", "secret", Path("."), warmup_turns=-1)
+
+
 def test_a_recorded_track_keeps_its_frames_together_and_its_pauses():
     recorder = Recorder(1000)  # 10-sample frames of 10 ms
     # Frames 0-2 come in one burst at 25 ms, 3 on time, 4 a millisecond late, 5 after a pause.
@@ -238,6 +253,52 @@ def test_a_saved_call_lines_up_what_the_caller_sent_with_what_it_heard(
     gaps = [(onset - last) / 24 for (_, last), (onset, _) in zip(sent, heard, strict=True)]
     assert gaps == pytest.approx(v2v, abs=25)  # the waveforms show the V2V the callers measured
     assert all(REPLY_S * 1000 <= ms <= REPLY_S * 1000 + 60 for ms in v2v)
+
+
+def test_a_call_opens_with_its_warm_up_turns_and_measures_the_same_turns_after_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bots, "QUIET_S", 0.2)
+    lines = [line_clip(f"turn-{n:02}", 0.2) for n in range(8)]
+    corpus = SimpleNamespace(turns=lines, barge_ins=[line_clip("barge", 0.2)])
+    config = BotsConfig("ws://fake", "key", "secret", tmp_path, turns=2, barge_in=1.0, seed=3)
+    config = dataclasses.replace(config, barge_in_delay=(0.05, 0.05), think=(0.0, 0.0))
+
+    def call(warmup_turns: int) -> list[dict[str, Any]]:
+        line = Line()
+        monkeypatch.setattr(audio.rtc, "AudioSource", line.source)
+        monkeypatch.setattr(audio.rtc, "AudioStream", line.stream)
+
+        async def play() -> list[dict[str, Any]]:
+            caller = Caller(dataclasses.replace(config, warmup_turns=warmup_turns), corpus, 0, "t")
+            tasks = [
+                asyncio.create_task(caller.microphone.run()),
+                asyncio.create_task(caller.agent_audio.consume(line)),
+            ]
+            await asyncio.sleep(0.2)
+            rows: list[dict[str, Any]] = []
+            with (tmp_path / f"turns-{warmup_turns}.jsonl").open("w") as log:
+                await caller.play(rows, log)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return rows
+
+        return asyncio.run(play())
+
+    plain, warmed = call(0), call(1)
+    # One warm-up turn first, a line and its reply without an interruption, marked as such.
+    assert [(row["turn"], row.get("warmup", False), row["barge_in"]) for row in warmed] == [
+        (0, True, False),
+        (1, False, True),
+        (2, False, True),
+    ]
+    assert REPLY_S * 1000 <= warmed[0]["v2v_ms"] <= REPLY_S * 1000 + 60
+    # The measured turns play the lines and interruptions of the same call without it.
+    script = [(row["clip"], row["barge_in_clip"]) for row in plain]
+    assert [(row["clip"], row["barge_in_clip"]) for row in warmed[1:]] == script
+    logged = (tmp_path / "turns-1.jsonl").read_text().splitlines()
+    assert [json.loads(line) for line in logged] == warmed
 
 
 class FirstReplyOnly(Line):

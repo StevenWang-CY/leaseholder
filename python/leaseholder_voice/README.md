@@ -92,6 +92,8 @@ When a session ends, one line (logger `leaseholder_voice.events`, message `sessi
 
 Every time comes from `time.monotonic()` in one process, so no clock offset enters. The run directory gets `run.json`, `turns.jsonl` and `summary.json`, which includes the microphone loop's worst lateness as a check that the caller kept up.
 
+With `--warmup-turns N` each call opens with N warm-up turns, played but not measured: a line and its reply, never interrupted, drawing their lines and pauses from a generator of their own, so that the measured turns after them are those of the same call without them. They are numbered first in `turns.jsonl`, with `"warmup": true`, and `summary.json` leaves them out.
+
 A turn fails when the agent does not answer within the reply timeout (30 s), or does not stop speaking. Its line in `turns.jsonl` has an `error` and keeps what the turn measured before it. In `summary.json` a sample the timeout cut short counts at the timeout, censored (`censored` gives how many), never as missing: a turn that was never answered raises the percentiles instead of leaving them.
 
 ```bash

@@ -36,6 +36,9 @@ class Voice:
     barge_in: float = 0.25
     """Share of turns on which the caller interrupts the reply."""
     seed: int = 0
+    warmup_turns: int = 0
+    """Turns that open each call before its ``turns``, played but not measured (``lh-voice bots
+    --warmup-turns``): a line and its reply, without an interruption."""
     preemptive_generation: bool = True
     """LiveKit's preemptive generation (``LH_PREEMPTIVE_GENERATION`` of the voice worker)."""
     events: bool = True
@@ -187,6 +190,7 @@ def load_arm(path: Path) -> Arm:
         (_ARM.fullmatch(arm.arm), "arm is E2's arm: 1 to 10, then a letter (7a) or a -suffix"),
         (arm.router in (None, "smg"), "router can only be smg"),
         (voice.callers >= 1 and voice.turns >= 1, "[voice] needs a caller and a turn"),
+        (voice.warmup_turns >= 0, "[voice] warmup_turns cannot be negative"),
         (0 <= voice.barge_in <= 1, "[voice] barge_in is a share of turns, 0 to 1"),
         (agents.sessions >= 0, "[agents] sessions cannot be negative"),
         (agents.think_cap > 0 and agents.warmup >= 0, "[agents] think_cap and warmup are seconds"),

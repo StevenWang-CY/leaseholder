@@ -26,6 +26,7 @@ from leaseholder_bench.e2.record import (
     TURNS_LOGGER,
     WATERFALL,
     background,
+    call_turns,
     compact,
     engine_counts,
     engine_settings,
@@ -672,6 +673,23 @@ def answered(*v2v_ms: float) -> list[dict[str, Any]]:
     return [
         {"caller": 0, "turn": n, "v2v_ms": ms, "barge_in": False} for n, ms in enumerate(v2v_ms)
     ]
+
+
+def test_the_warm_up_turns_are_in_no_voice_to_voice_sample(tmp_path: Path) -> None:
+    run_dir = point(tmp_path, "a9-warm", "9", 3400, 2000)
+    stages = {"end_of_turn_ms": 800, "turn_to_first_sentence_ms": 400, "tts_first_audio_ms": 200}
+    warm = [
+        {"caller": c, "turn": 0, "v2v_ms": 9000.0, "barge_in": False, "warmup": True}
+        for c in (0, 1)
+    ]
+    turn_lines(run_dir, stages, 4, [*warm, *answered(1700, 1800, 1900, 2000)])
+    [row], _ = load_points([run_dir])
+    assert row["v2v_samples"] == [1700, 1800, 1900, 2000] and row["v2v_p95_ms"] == 1985.0
+    [cell] = stage_waterfall([row])
+    assert (cell["replies"], cell["v2v_mean_ms"]) == (4, 1850)
+    # A node's share counts only its calls' measured turns too.
+    share = call_turns([*warm, *answered(1700, 1800)], 2)
+    assert (share["turns"], share["v2v_ms"]["n"], share["v2v_ms"]["p50"]) == (2, 2, 1750.0)
 
 
 def test_the_stage_waterfall_stacks_each_configurations_stages_to_its_mean_v2v(

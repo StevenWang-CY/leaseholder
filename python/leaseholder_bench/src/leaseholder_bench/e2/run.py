@@ -792,7 +792,12 @@ def _measure(
     _worker_journal(systemd, out, start, arm.voice.callers)
     try:
         metrics = summarize_point(
-            out, start, end, agents=bool(arm.agents.sessions), nodes=tuple(nodes)
+            out,
+            start,
+            end,
+            agents=bool(arm.agents.sessions),
+            nodes=tuple(nodes),
+            warmup_turns=arm.voice.warmup_turns,
         )
     except ValueError as exc:
         raise E2Error(str(exc)) from None
@@ -859,13 +864,16 @@ def _call(
 ) -> float:
     """Run the calls; returns when they ended. The replay must outlast them."""
     voice = arm.voice
-    record.say(f"calls: {voice.callers} callers, {voice.turns} turns each")
+    warmup = f" after {voice.warmup_turns} warm-up" if voice.warmup_turns else ""
+    record.say(f"calls: {voice.callers} callers, {voice.turns} turns each{warmup}")
     options = {
         "--corpus": host.root / "data" / "callers",
         "--callers": voice.callers,
         "--turns": voice.turns,
         "--barge-in": voice.barge_in,
         "--seed": voice.seed,
+        # Only when there are some, as the callers before the option took no such flag.
+        **({"--warmup-turns": voice.warmup_turns} if voice.warmup_turns else {}),
         "--out": out / "bots",
     }
     command = [*host.bots(), *(str(word) for option in options.items() for word in option)]
@@ -874,7 +882,7 @@ def _call(
     env = os.environ | read_env(host.config / "livekit.env")
     bots = Process("lh-voice bots", command, out / "bots.log", env)
     running.callback(bots.stop, 30.0)
-    deadline = time.monotonic() + CALL_TURN_S * voice.turns + 120
+    deadline = time.monotonic() + CALL_TURN_S * (voice.warmup_turns + voice.turns) + 120
     while not bots.exited():
         if aiperf is not None and aiperf.exited():
             raise aiperf.failure("exited while the calls ran, so its load did not cover them")

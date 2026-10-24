@@ -14,6 +14,11 @@ The caller then waits until the agent has been quiet for a second, pauses for a 
 takes the next turn. Every time comes from one clock in one process, so no clock offset enters
 the numbers. Each run directory gets ``run.json``, ``turns.jsonl`` and ``summary.json``.
 
+A call may open with warm-up turns (``--warmup-turns``): a line and its reply, without an
+interruption, played but not measured. Their lines in turns.jsonl say ``"warmup": true`` and the
+summary leaves them out. They draw their lines and pauses from a generator of their own, so the
+measured turns after them are those of the same call without them.
+
 A turn fails when the agent does not answer within ``reply_timeout``, or does not stop speaking: its
 line in turns.jsonl has an ``error`` and keeps what the turn measured before. In the summary a
 sample that the timeout cut short counts as censored at the timeout, never as missing, so that a
@@ -78,8 +83,14 @@ class BotsConfig:
     """Seconds between the end of a reply and the next turn."""
     reply_timeout: float = 30.0
     seed: int = 0
+    warmup_turns: int = 0
+    """Turns that open each call unmeasured: a line and its reply, no interruption."""
     save_audio: bool = False
     """Write each call's audio and its turns' times after the calls: call-<i>.wav, call-<i>.json."""
+
+    def __post_init__(self) -> None:
+        if self.warmup_turns < 0:
+            raise ValueError("warmup_turns cannot be negative")
 
 
 class Corpus:
@@ -128,9 +139,11 @@ class Caller:
         """When each turn's events happened (its line's start and speech end, the reply, ...), as far
         as the turn got; call-<i>.json gives them."""
 
-    async def turn(self, number: int) -> dict[str, Any]:
+    async def turn(self, number: int, warmup: random.Random | None = None) -> dict[str, Any]:
+        """One turn of the call; a warm-up turn draws its line from ``warmup`` and is never
+        interrupted."""
         config, audio = self.config, self.agent_audio
-        clip = self.rng.choice(self.corpus.turns)
+        clip = (warmup or self.rng).choice(self.corpus.turns)
         at = self.moments[number] = {}
         played = await self.microphone.play(clip)
         at |= {"start": played["start"], "speech_end": played["speech_end"]}
@@ -146,7 +159,7 @@ class Caller:
             "barge_in": False,
         }
         try:
-            if self.rng.random() < config.barge_in:
+            if warmup is None and self.rng.random() < config.barge_in:
                 delay = self.rng.uniform(*config.barge_in_delay)
                 await asyncio.sleep(max(0.0, reply + delay - time.monotonic()))
                 interruption = self.rng.choice(self.corpus.barge_ins)
@@ -194,15 +207,7 @@ class Caller:
                 "the agent never listened",
             )
             await asyncio.sleep(0.5)  # let the agent's audio input run on silence first
-            for number in range(config.turns):
-                try:
-                    row = await self.turn(number)
-                except TimeoutError as exc:
-                    row = {"caller": self.index, "turn": number, "error": str(exc)}
-                rows.append(row)
-                log.write(json.dumps(row) + "\n")
-                log.flush()
-                await asyncio.sleep(self.rng.uniform(*config.think))
+            await self.play(rows, log)
         finally:
             self.max_lateness_s = self.microphone.max_lateness_s
             for task in tasks:
@@ -210,6 +215,25 @@ class Caller:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.microphone.source.aclose()
             await self.room.disconnect()
+
+    async def play(self, rows: list[dict[str, Any]], log: TextIO) -> None:
+        """The call's turns, each line to ``rows`` and ``log`` (turns.jsonl) as it ends, numbered in
+        the order they are played: first the warm-up turns, marked ``"warmup": true``, whose lines
+        and pauses come from a generator of their own, then the measured turns."""
+        config = self.config
+        warmup = random.Random(f"warmup-{config.seed}-{self.index}")
+        for number in range(config.warmup_turns + config.turns):
+            warm = number < config.warmup_turns
+            try:
+                row = await self.turn(number, warmup if warm else None)
+            except TimeoutError as exc:
+                row = {"caller": self.index, "turn": number, "error": str(exc)}
+            if warm:
+                row["warmup"] = True
+            rows.append(row)
+            log.write(json.dumps(row) + "\n")
+            log.flush()
+            await asyncio.sleep((warmup if warm else self.rng).uniform(*config.think))
 
     def save(self, out_dir: Path, rows: Iterable[dict[str, Any]]) -> None:
         """Write the call as the caller had it (``--save-audio``), from the frames it kept.
@@ -281,8 +305,10 @@ def v2v_samples(rows: Iterable[dict[str, Any]], timeout_ms: float) -> tuple[list
 def summarize(
     rows: list[dict[str, Any]], lateness: list[float], timeout_s: float = 30.0
 ) -> dict[str, Any]:
-    """The calls' summary. A sample a timeout cut short counts at the timeout (``timeout_s``): the
-    reply to a turn or to an interruption that never came, the agent's audio that never stopped."""
+    """The calls' summary of their measured turns, the warm-up turns left out. A sample a timeout cut
+    short counts at the timeout (``timeout_s``): the reply to a turn or to an interruption that never
+    came, the agent's audio that never stopped."""
+    rows = [row for row in rows if not row.get("warmup")]
     timeout_ms = timeout_s * 1000
     v2v, censored = v2v_samples(rows, timeout_ms)
     silence = [r["barge_in_to_silence_ms"] for r in rows if "barge_in_to_silence_ms" in r]

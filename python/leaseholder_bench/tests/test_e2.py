@@ -122,6 +122,7 @@ def test_an_arm_file_fills_in_the_defaults(tmp_path: Path) -> None:
     arm = load_arm(write(tmp_path, "a1-voice.toml", VOICE_ALONE))
     assert (arm.name, arm.arm, arm.label) == ("a1-voice", "1", "voice alone")
     assert arm.voice == Voice(callers=2, turns=25, barge_in=0.25, preemptive_generation=True)
+    assert arm.voice.warmup_turns == 0  # the arm files measured before warm-up turns stay as run
     assert (arm.agents.sessions, arm.agents.think_cap) == (0, 120.0)
     assert (arm.gateway, arm.engine, arm.router) == ({}, Engine("frozen", ()), None)
 
@@ -158,6 +159,7 @@ def test_an_arm_file_says_everything_about_its_point(tmp_path: Path) -> None:
         ('arm = "7z1"\nlabel = "x"\n', "arm is E2's arm"),
         ('arm = 2\nlabel = "x"\nrouter = "nginx"\n', "router can only be smg"),
         ('arm = 2\nlabel = "x"\n[voice]\nbarge_in = 1.5\n', "barge_in is a share"),
+        ('arm = 2\nlabel = "x"\n[voice]\nwarmup_turns = -1\n', "warmup_turns cannot be negative"),
         ('arm = 2\nlabel = "x"\n[engine]\nflags = ["--a b"]\n', "is not a plain word"),
         ('arm = 2\nlabel = "x"\n[engine]\nflags = ["512"]\n', "follows no flag"),
         ('arm = 2\nlabel = "x"\n[engine]\nflags = "--a"\n', "flags must be list"),
@@ -711,6 +713,7 @@ def test_voice_alone_runs_the_calls_against_the_box_as_it_is(cyan: Cyan) -> None
     args = json.loads((out / "bots.args").read_text())
     assert args[args.index("--turns") + 1] == "25" and args[args.index("--callers") + 1] == "2"
     assert "--save-audio" not in args and run_json["save_audio"] is False
+    assert "--warmup-turns" not in args  # an arm without warm-up turns runs the callers as before
     assert summary["name"] == "a1-voice" and summary["background"] is None
     assert summary["voice"]["v2v_ms"]["p95"] == 1800.0
     assert summary["engine"]["preemptions"] == 1  # one scrape apart
@@ -873,6 +876,29 @@ def test_a_point_keeps_the_gateways_requests_and_the_workers_lines(cyan: Cyan) -
     assert worker_summary["waterfall"]["e2e_ms"]["p50"] == 1100.0
     assert worker_summary["waterfall"]["llm_ttft_ms"]["n"] == 1
     assert worker_summary["waterfall"]["end_of_turn_ms"] == {"n": 0}
+
+
+def test_a_call_opens_with_its_warm_up_turns_which_nothing_measures(cyan: Cyan) -> None:
+    def worker(since: float, until: float | None) -> str:
+        lines = ["registered worker"]
+        for session in ("s0", "s1"):  # each session's reply to the warm-up line comes first
+            for turn, e2e in ((0, 9000.0), (1, 1000.0), (2, 1200.0), (3, 1400.0)):
+                lines.append(worker_line(TURNS, "turn", session_id=session, turn=turn, e2e_ms=e2e))
+            lines.append(worker_line(SESSIONS, "session ended", session_id=session))
+        return "\n".join(lines)
+
+    cyan.systemd.journals = {"lh-voice-worker": worker}
+    arm = VOICE_ALONE + "[voice]\ncallers = 2\nturns = 3\nwarmup_turns = 1\n"
+    summary = run(cyan, "a1-warm", arm)
+    out = cyan.host.root / "runs" / "a1-warm"
+    args = json.loads((out / "bots.args").read_text())
+    assert args[args.index("--warmup-turns") + 1] == "1"
+    assert record(cyan, "a1-warm")["arm"]["voice"]["warmup_turns"] == 1
+    turns = [json.loads(line) for line in (out / "bots" / "turns.jsonl").read_text().splitlines()]
+    assert [t["turn"] for t in turns if t.get("warmup")] == [0, 0]  # one a call, kept, marked
+    waterfall = summary["worker"]["waterfall"]["e2e_ms"]
+    assert (summary["worker"]["turns"], waterfall["n"], waterfall["p50"]) == (6, 6, 1200.0)
+    assert "calls: 2 callers, 3 turns each after 1 warm-up" in (out / "run.log").read_text()
 
 
 def test_the_worker_journal_waits_only_for_sessions_that_end(

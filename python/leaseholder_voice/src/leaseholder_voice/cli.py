@@ -34,6 +34,7 @@ def _bots(args: argparse.Namespace) -> int:
         turns=args.turns,
         barge_in=args.barge_in,
         seed=args.seed,
+        warmup_turns=args.warmup_turns,
         save_audio=args.save_audio,
     )
     summary = asyncio.run(run_bots(config, args.out))
@@ -89,6 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="seed of the lines, interruptions and pauses (default %(default)s)",
+    )
+    bots.add_argument(
+        "--warmup-turns",
+        type=int,
+        default=0,
+        help="turns that open each call unmeasured: a line and its reply, no interruption, "
+        'marked "warmup" in turns.jsonl and left out of the summary (default %(default)s)',
     )
     bots.add_argument(
         "--save-audio",

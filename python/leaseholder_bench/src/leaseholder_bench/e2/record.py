@@ -65,11 +65,19 @@ reply that never came counts as a sample censored at this value, in every V2V pe
 
 
 def summarize_point(
-    run_dir: Path, start: float, end: float, *, agents: bool, nodes: Sequence[str] = ()
+    run_dir: Path,
+    start: float,
+    end: float,
+    *,
+    agents: bool,
+    nodes: Sequence[str] = (),
+    warmup_turns: int = 0,
 ) -> dict[str, Any]:
     """The E2 metrics of the window ``start``..``end`` (epoch seconds) from a run directory. Raises
     ``ValueError`` when the point measured nothing to place on the frontier. A point on several GPU
-    ``nodes`` adds up their engines' counters and reports each node's share under ``nodes``."""
+    ``nodes`` adds up their engines' counters and reports each node's share under ``nodes``. The
+    ``warmup_turns`` that open each call are measured by nothing: the callers leave them out, and so
+    does the worker's account of the turns."""
     bots = orjson.loads((run_dir / "bots" / "summary.json").read_bytes())
     if bots["v2v_ms"].get("n", 0) <= bots["v2v_ms"].get("censored", 0):
         raise ValueError(f"the calls measured no voice-to-voice latency ({bots['errors']} failed)")
@@ -81,7 +89,7 @@ def summarize_point(
     summary = {
         "window_s": round(end - start, 1),
         "voice": {key: bots[key] for key in voice},
-        "worker": worker(run_dir / "voice-worker.log"),
+        "worker": worker(run_dir / "voice-worker.log", warmup_turns),
         "background": background(records, start, end) if agents else None,
         "gateway": gateway_counts(*_snapshots(metrics, "gateway"), end - start, requests),
         "engine": (
@@ -112,7 +120,8 @@ def node_shares(
     its journal places none), the agent requests and the first bytes of the realtime requests the
     gateway sent it (None without its request log), and its engine's counters."""
     placed = call_nodes(run_dir)
-    turns = list(_json_lines((run_dir / "bots" / "turns.jsonl").read_text())) if placed else []
+    turns = _json_lines((run_dir / "bots" / "turns.jsonl").read_text()) if placed else ()
+    turns = measured_turns(turns)
     shares = {}
     for node, engine in engines.items():
         sent = None if requests is None else [r for r in requests if r.get("node") == node]
@@ -147,10 +156,17 @@ def call_nodes(run_dir: Path) -> dict[int, str]:
     return nodes
 
 
+def measured_turns(turns: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The callers' measured turns (bots/turns.jsonl): all but the warm-up turns that open each call,
+    whose lines say ``"warmup": true`` (``[voice] warmup_turns``)."""
+    return [turn for turn in turns if not turn.get("warmup")]
+
+
 def call_turns(turns: Sequence[Mapping[str, Any]], calls: int) -> dict[str, Any]:
-    """Some of the calls' numbers from their callers' turns (bots/turns.jsonl), counted as ``lh-voice
-    bots`` sums up all of them: voice-to-voice over every reply, the reply to an interruption too,
-    and a reply or a silence a timeout cut short censored at REPLY_TIMEOUT_MS."""
+    """Some of the calls' numbers from their callers' measured turns (bots/turns.jsonl), counted as
+    ``lh-voice bots`` sums up all of them: voice-to-voice over every reply, the reply to an
+    interruption too, and a reply or a silence a timeout cut short censored at REPLY_TIMEOUT_MS."""
+    turns = measured_turns(turns)
     silence = [t["barge_in_to_silence_ms"] for t in turns if "barge_in_to_silence_ms" in t]
     silence += [
         REPLY_TIMEOUT_MS
@@ -168,11 +184,11 @@ def call_turns(turns: Sequence[Mapping[str, Any]], calls: int) -> dict[str, Any]
 
 
 def turn_samples(turns: Iterable[Mapping[str, Any]]) -> tuple[list[float], int]:
-    """The voice-to-voice samples of the callers' turns (bots/turns.jsonl) and how many are censored:
-    each turn's reply and, after a barge-in, the reply to the interruption, as ``lh-voice bots`` pools
-    them; a reply that never came (a failed turn) stands at REPLY_TIMEOUT_MS."""
+    """The voice-to-voice samples of the callers' measured turns (bots/turns.jsonl) and how many are
+    censored: each turn's reply and, after a barge-in, the reply to the interruption, as ``lh-voice
+    bots`` pools them; a reply that never came (a failed turn) stands at REPLY_TIMEOUT_MS."""
     samples, censored = [], 0
-    for turn in turns:
+    for turn in measured_turns(turns):
         wanted = ["v2v_ms", *(["v2v_after_barge_in_ms"] if turn.get("barge_in") else [])]
         for key in wanted:
             censored += key not in turn
@@ -209,16 +225,19 @@ def _json_lines(text: str) -> Iterator[dict[str, Any]]:
             yield record
 
 
-def worker(journal: Path) -> dict[str, Any] | None:
+def worker(journal: Path, warmup_turns: int = 0) -> dict[str, Any] | None:
     """The voice worker's own account of the calls, from its journal (voice-worker.log): each stage
     of the waterfall over the turns, and the lifecycle events its sessions sent, dropped and failed
     to deliver. None without a turn or session line in it; the events are None when no session sent
-    any (``LH_EVENTS=off``, or an LLM that bypasses the gateway)."""
+    any (``LH_EVENTS=off``, or an LLM that bypasses the gateway). The first ``warmup_turns`` turn
+    lines of each session are the replies to the call's warm-up turns, which have no interruption to
+    add a reply, and are left out."""
     if not journal.exists():
         return None
     turns, sessions = worker_lines(journal.read_text(errors="replace"))
     if not turns and not sessions:
         return None
+    turns = [t for t in turns if t.get("turn", warmup_turns) >= warmup_turns]
     counted = [s for s in sessions if "events_sent" in s]
     events = {
         kind: sum(s[f"events_{kind}"] for s in counted) for kind in ("sent", "dropped", "failed")
