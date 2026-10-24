@@ -28,6 +28,12 @@ It is a harness, not a general-purpose router: one upstream or a few nodes, loop
 - The Anthropic Messages API: agentic-api translates it and calls the gateway.
 - Inferring `turn_started` and `turn_finished` from traffic. The finish reason is logged per request.
 - The Responses API's stop reasons (its usage is read).
+- What a production gateway would need beyond this harness:
+  - a bound on the request bodies it holds in all: each request holds its body, up to `max_body_bytes`, while it waits at the admission point (up to `queue_limit` a class) or is sent, and nothing bounds the requests in flight or the connections;
+  - timeouts on reading a request body and between upstream frames: a client that trickles its body, or an engine that stops in mid-stream without closing, holds its place, and under a policy its admission slot, until the client leaves;
+  - cost bounds: nothing caps `n` or `max_tokens`, except degrade's cap on realtime replies under policy `leaseholder`;
+  - a socket handoff on restart: a stopping gateway accepts nothing while it drains, for up to `drain_timeout_s`, so calls' requests fail until the next one listens;
+  - a key on `/metrics`, which every user of the host can read on the loopback TCP port, tenants and traffic included.
 
 ## Running
 
