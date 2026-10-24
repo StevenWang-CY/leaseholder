@@ -620,7 +620,8 @@ def test_repeats_of_a_point_are_one_configuration_placed_at_their_medians(tmp_pa
         f"| disc-frozen: disc-frozen label; median (range) of 3 runs |  | 16 "
         f"| {spread('4,000', '3,000', '5,000')} | | {spread('1,600', '1,600', '1,600')} "
         f"| {spread('3,000', '2,000', '4,000')} | {spread('3,500', '2,500', '4,500')} "
-        f"| {spread('2', '0', '3')} | | ~{spread('120', '120', '120')} | | |"
+        f"| {spread('2', '0', '3')} | {spread('140', '140', '140')} / {spread('8,000', '8,000', '8,000')} "
+        f"| ~{spread('120', '120', '120')} | | |"
     )
     lines = table.splitlines()
     assert lines[lines.index(medians) - 1].startswith("| disc-frozen (w2c) |")  # after its runs

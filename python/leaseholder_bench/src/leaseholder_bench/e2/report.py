@@ -353,6 +353,8 @@ REPEATED = (
     "v2v_p50_ms",
     "v2v_p95_ms",
     "v2v_p99_ms",
+    "agent_ttft_p50_ms",
+    "agent_ttft_p99_ms",
     "realtime_first_byte_p95_ms",
     "voice_errors",
 )
@@ -712,8 +714,8 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool, window_columns: bool = 
         f"| {first['point']}: {_label(first)}; median (range) of {len(runs)} runs "
         f"| {'•' if group['frontier'] else ''} | {first['sessions']} "
         f"| {spread('background_tokens_per_s')} |{window} | {spread('v2v_p50_ms')} "
-        f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} | "
-        f"| {first_byte} | | |"
+        f"| {spread('v2v_p95_ms')} | {spread('v2v_p99_ms')} | {spread('voice_errors')} "
+        f"| {spread('agent_ttft_p50_ms')} / {spread('agent_ttft_p99_ms')} | {first_byte} | | |"
     )
     return line + (" | |" if gpu_columns else "")
 
