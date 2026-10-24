@@ -27,6 +27,9 @@ link() { # link NAME: link NAME's drop-ins into their units
 # The units' crash-loop guard (StartLimitBurst=3 in 30 min) counts every start; a switch is no crash, so it clears the
 # counters before starting (a unit not loaded keeps none).
 clear_start_limits() { systemctl --user reset-failed lh-engine lh-stt lh-tts 2>/dev/null || true; }
+# Whether every named unit is active: `systemctl is-active` given several units succeeds when any one of them is, so a
+# box half stopped by a pause, or with a failed engine beside running audio servers, would pass for running.
+all_active() { local u; for u; do systemctl --user is-active -q "$u" || return 1; done; }
 
 if [[ $action != use ]]; then
   systemctl --user stop "${box[@]}"
@@ -35,6 +38,7 @@ if [[ $action != use ]]; then
   clear_start_limits
   systemctl --user start leaseholder.target
   systemctl --user is-active lh-stt lh-tts lh-engine
+  all_active lh-stt lh-tts lh-engine
   exit
 fi
 
@@ -64,13 +68,13 @@ wanted() {
   if (($#)); then echo "lh-engine.service.d/variant-flags.conf: $flags_line"; fi
 }
 changed=$(comm -3 <(current | sort) <(wanted "$@" | sort) | sed 's/^[[:space:]]*//; s/\.service\.d\/.*//' | sort -u)
-if [[ -z $changed ]] && systemctl --user is-active -q lh-stt lh-tts lh-engine; then
+if [[ -z $changed ]] && all_active lh-stt lh-tts lh-engine; then
   echo "variant: the box already runs $name $*"
   exit
 fi
 # Only the engine restarts when only its drop-ins change and the audio servers run; anything else (re)starts the box.
 restart=("${box[@]}")
-if [[ $changed == lh-engine ]] && systemctl --user is-active -q lh-stt lh-tts; then restart=(lh-engine); fi
+if [[ $changed == lh-engine ]] && all_active lh-stt lh-tts; then restart=(lh-engine); fi
 systemctl --user stop "${restart[@]}"
 rm -f "$units"/lh-*.service.d/variant-*.conf
 [[ $name == frozen ]] || link "$name"
@@ -83,3 +87,4 @@ systemctl --user daemon-reload
 clear_start_limits
 systemctl --user start "${restart[0]}" # leaseholder.target or lh-engine; returns once /health answers
 systemctl --user is-active lh-stt lh-tts lh-engine
+all_active lh-stt lh-tts lh-engine
