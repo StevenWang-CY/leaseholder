@@ -11,7 +11,8 @@ PY_PACKAGES := $(filter-out python/leaseholder_vllm,$(patsubst %/pyproject.toml,
 E2_RESULTS := benchmarks/results/2026-10-23-e2
 E2_REPORT ?= build/reproduce-e2
 
-.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e2 e2-figures
+.PHONY: check lint lint-rust lint-python fmt test test-rust test-vllm test-python schema reproduce-e1 reproduce-e2 \
+  e2-figures
 
 check: lint test
 
@@ -51,6 +52,24 @@ test-python:
 
 schema:
 	cargo run -q -p lh-proto --bin lh-proto-schema
+
+# E1's tables in crates/lh-sim/README.md from the 32x corpus, which stays outside the repository (`lh-bench
+# scale-traces` writes it; python/leaseholder_bench/README.md): the regime map, the realistic regime over 20 seeds,
+# and the other GPUs at the 32x replay and at their own scalings. Usage: make reproduce-e1 CORPUS=<its directory>.
+E1_REPORT ?= build/reproduce-e1
+E1_SIM = target/release/lh-sim
+reproduce-e1:
+	@test -n "$(CORPUS)" || { echo "usage: make reproduce-e1 CORPUS=<the 32x corpus directory>" >&2; exit 2; }
+	cargo build --release --locked -p lh-sim
+	@mkdir -p $(E1_REPORT)
+	$(E1_SIM) regime $(CORPUS) --csv $(E1_REPORT)/regime.csv --markdown $(E1_REPORT)/regime.md >/dev/null
+	$(E1_SIM) regime $(CORPUS) --sessions 8,12,16,24 --cpu-ratio 4 --pause-sources trace \
+	  --seeds $$(seq 11 30 | paste -sd, -) --csv $(E1_REPORT)/realistic.csv --markdown $(E1_REPORT)/realistic.md \
+	  >/dev/null
+	$(E1_SIM) hardware $(CORPUS) --csv $(E1_REPORT)/hardware.csv --markdown $(E1_REPORT)/hardware.md >/dev/null
+	$(E1_SIM) hardware $(CORPUS) --fit --csv $(E1_REPORT)/hardware-fit.csv --markdown $(E1_REPORT)/hardware-fit.md \
+	  >/dev/null
+	@ls $(E1_REPORT)/*.md
 
 # E2's report (frontier.md, frontier.csv, frontier.svg, waterfall.svg) from the committed records, with the bench
 # venv; it prints the files it writes.

@@ -26,7 +26,7 @@ use lh_core::{
 use crate::aiperf::PlanOptions;
 use crate::corpus::Corpus;
 use crate::metrics::Summary;
-use crate::regime;
+use crate::regime::{self, signed, thousands};
 use crate::replay::{Pauses, ReplayConfig, Service};
 use crate::run::{Arm, RunConfig};
 use crate::scheduler::StepBudget;
@@ -388,12 +388,11 @@ pub fn cells(
     out
 }
 
-/// A cell of [`sweep`] and what the E1 arms did in it.
+/// A cell of [`sweep`] and what the E1 arms did in it, at the cell's seed.
 #[derive(Clone, Debug)]
 pub struct Placement {
     pub gpu: Gpu,
     pub token_scale: u32,
-    pub seed: u64,
     pub result: regime::CellResult,
 }
 
@@ -419,7 +418,6 @@ pub fn sweep(
         Ok(Placement {
             gpu: cell.gpu,
             token_scale: cell.token_scale,
-            seed: cell.seed,
             result,
         })
     })
@@ -432,7 +430,7 @@ fn opt(x: Option<f64>) -> String {
 /// One row per cell and arm: the regime sweep's columns between the GPU's and the realtime tier's.
 pub fn csv(results: &[Placement]) -> String {
     let mut text = format!(
-        "gpu,costs,token_scale,pool_tokens,seed,{},kv_pressure_peak,median_prompt_tokens,\
+        "gpu,costs,token_scale,pool_tokens,{},kv_pressure_peak,median_prompt_tokens,\
          realtime_short_share,realtime_blocked_share,chunk_ms\n",
         regime::CSV_COLUMNS
     );
@@ -442,12 +440,11 @@ pub fn csv(results: &[Placement]) -> String {
         for (s, &arm) in p.result.arms.iter().zip(&Arm::E1) {
             write!(
                 text,
-                "{},{},{},{},{},",
+                "{},{},{},{},",
                 p.gpu.name,
                 p.gpu.label(),
                 p.token_scale,
                 p.result.cell.capacity.gpu_blocks * block_tokens,
-                p.seed
             )
             .expect("writing to a String");
             regime::csv_row(&mut text, &p.result, s, arm);
@@ -464,19 +461,6 @@ pub fn csv(results: &[Placement]) -> String {
         }
     }
     text
-}
-
-/// `n` with thousands separators.
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// `x` to a tenth, with thousands separators.
@@ -544,7 +528,7 @@ pub fn markdown(results: &[Placement], hash_block: u32, realtime_tokens: u64) ->
     let Some(first) = groups.first() else {
         return String::new();
     };
-    let seeds: Vec<_> = first.iter().map(|p| p.seed.to_string()).collect();
+    let seeds: Vec<_> = first.iter().map(|p| p.result.seed.to_string()).collect();
     let seeds = match &seeds[..] {
         [one] => format!("seed {one}"),
         all => format!("means over seeds {}", all.join(", ")),
@@ -578,9 +562,9 @@ pub fn markdown(results: &[Placement], hash_block: u32, realtime_tokens: u64) ->
         let ms = |pct| thousands(mean(&|q| q.result.resume(Arm::LruCpu, pct)).round() as u64);
         let gains = |arm: Arm| {
             format!(
-                "{:+.0} / {:+.0}%",
-                100.0 * mean(&|q| q.result.gain(arm, 50)),
-                100.0 * mean(&|q| q.result.gain(arm, 90))
+                "{} / {}%",
+                signed(100.0 * mean(&|q| q.result.gain(arm, 50)), 0),
+                signed(100.0 * mean(&|q| q.result.gain(arm, 90)), 0)
             )
         };
         let gpu = if previous == Some((p.gpu.name, p.token_scale)) {
@@ -896,7 +880,6 @@ mod tests {
         Placement {
             gpu,
             token_scale: 8,
-            seed,
             result: regime::CellResult {
                 cell: regime::Cell {
                     pauses: Pauses::Trace,
@@ -904,6 +887,7 @@ mod tests {
                     cpu_ratio: 4.0,
                     capacity: gpu.capacity(&QWEN, 4.0),
                 },
+                seed,
                 arms,
             },
         }

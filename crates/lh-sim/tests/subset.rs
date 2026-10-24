@@ -254,7 +254,15 @@ fn the_box_places_as_the_regime_sweep_runs_it_and_an_h100_elsewhere() {
         capacity: TierCapacity::with_cpu_ratio(&qwen, FROZEN_BOX_POOL_TOKENS, 4.0),
         ..cell(RTX_5060_TI)
     };
-    let mapped = regime::sweep(&traces, PlanOptions::default(), &base, &[frozen_box], 1).unwrap();
+    let mapped = regime::sweep(
+        &traces,
+        PlanOptions::default(),
+        &base,
+        &[frozen_box],
+        &[11],
+        1,
+    )
+    .unwrap();
     assert_eq!(placed[0].result.arms, mapped[0].arms);
     // The H100's pool is 13.8 times the box's and its restores are 8 times faster per token.
     let (b, h) = (

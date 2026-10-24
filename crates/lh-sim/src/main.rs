@@ -290,7 +290,8 @@ struct MrcArgs {
 
 #[derive(Args)]
 struct RegimeArgs {
-    /// The workload; --concurrency and --pauses give way to --sessions and --pause-sources.
+    /// The workload; --concurrency, --seed and --pauses give way to --sessions, --seeds and
+    /// --pause-sources.
     #[command(flatten)]
     replay: ReplayArgs,
     #[command(flatten)]
@@ -309,10 +310,13 @@ struct RegimeArgs {
         default_value = "trace,tracelab"
     )]
     pause_sources: Vec<PausesArg>,
+    /// Seeds; the map gives each cell's mean over them, and with several a table gives their spread.
+    #[arg(long, value_delimiter = ',', default_value = "11,12,13")]
+    seeds: Vec<u64>,
     /// Cells to run at once. Default: the machine's cores.
     #[arg(long)]
     jobs: Option<usize>,
-    /// Write one row per cell and arm to this CSV file.
+    /// Write one row per cell, seed and arm to this CSV file.
     #[arg(long)]
     csv: Option<PathBuf>,
     /// Write the regime map to this Markdown file.
@@ -729,13 +733,15 @@ fn regime(args: RegimeArgs) -> Result<(), String> {
         args.replay.plan_options(),
         &cfg,
         &cells,
+        &args.seeds,
         jobs,
     )?;
     let map = regime::markdown(&results);
     print!("{map}");
     println!(
-        "{} cells x {} arms in {:.1} s on {jobs} threads",
+        "{} cells x {} seeds x {} arms in {:.1} s on {jobs} threads",
         cells.len(),
+        args.seeds.len(),
         Arm::E1.len(),
         start.elapsed().as_secs_f64()
     );
@@ -991,5 +997,28 @@ mod tests {
         // --fit takes the place of --token-scale, and an unknown GPU is refused.
         assert!(parse(&["hardware", "DATA", "--fit", "--token-scale", "2"]).is_err());
         assert!(parse(&["hardware", "DATA", "--gpus", "a100"]).is_err());
+    }
+
+    #[test]
+    fn regime_takes_its_seeds() {
+        let regime = |args: &[&str]| match parse(args).unwrap().command {
+            Command::Regime(r) => r,
+            _ => panic!("not the regime command"),
+        };
+        let r = regime(&[
+            "regime",
+            "DATA",
+            "--seeds",
+            "11,12,13,14",
+            "--cpu-ratio",
+            "4",
+        ]);
+        assert_eq!((r.seeds, r.cpu_ratios), (vec![11, 12, 13, 14], vec![4.0]));
+        // By default the map's three seeds, every session count, CPU tier and pause source.
+        let d = regime(&["regime", "DATA"]);
+        assert_eq!(d.seeds, [11, 12, 13]);
+        assert_eq!(d.sessions, [5, 8, 12, 16, 24, 32, 40]);
+        assert_eq!(d.cpu_ratios, [2.0, 4.0, 8.0]);
+        assert_eq!(d.pause_sources, [PausesArg::Trace, PausesArg::Tracelab]);
     }
 }
