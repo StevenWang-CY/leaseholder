@@ -5,9 +5,11 @@ Load it through the offloading connector's extra config:
     "kv_connector_extra_config": {"eviction_policy": "LeasePolicy",
                                   "cache_policy_module_path": "leaseholder_vllm.policy", ...}
 
-The control plane attaches a lease hint to each request as ``kv_transfer_params.leaseholder`` (the
-``EngineLeaseHint`` type in ``crates/lh-proto``). The policy reads only that hint plus recency: it never
-learns about sessions any other way, and it keeps no lease table beyond what the hints imply.
+Unused, and removed after v0.3: leases were not pursued (ADR-0006). A control plane would attach a
+lease hint to each request as ``kv_transfer_params.leaseholder`` (the ``EngineLeaseHint`` type in
+``crates/lh-proto``); nothing does, since the gateway strips ``kv_transfer_params`` from client
+requests and adds none. The policy reads only that hint plus recency: it never learns about sessions
+any other way, and it keeps no lease table beyond what the hints imply.
 """
 
 import heapq

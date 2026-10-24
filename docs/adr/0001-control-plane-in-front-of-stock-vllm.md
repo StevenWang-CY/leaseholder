@@ -34,4 +34,5 @@ Build option 3: a Rust service (tokio, hyper/axum, tower).
 ## Later
 
 - **No trait** (2026-10-23). The policies are variants of one enum in `lh_core::admission`, driven by a pure state machine (arrivals, first bytes, departures and the realtime sessions' turns) that the gateway feeds and whose waits it carries out.
+- **The simulator** (2026-10-24). `lh-sim` shares `lh-core`'s cost and step-time models, not its policies: only the gateway runs those.
 - **The engine change** (2026-10-23/24). The consequence that the control plane compensates with admission and headroom did not hold: in E2 only an engine change moved the voice tail. It runs as the generated `make-room` variant on vLLM 0.32.0 and is proposed upstream as #63350 and #63351 ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)).

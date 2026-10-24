@@ -1,11 +1,13 @@
-"""vLLM's native OffloadingConnector, plus two things the control plane needs from the engine.
+"""vLLM's native OffloadingConnector, plus two things the lease design needed from the engine.
+
+Unused, and removed after v0.3: leases were not pursued (ADR-0006).
 
 1. Session ids: vLLM keeps ``Request.session_id`` (from the ``X-Session-ID`` header or the body) but does not
    copy it into the offload request context. The connector mirrors it into the lease hint, so the cache policy
    sees the session even when the control plane sent no explicit ``session_id`` in the hint.
 2. Hit receipts: each finished request returns how many prompt tokens were served from the GPU prefix cache and
    how many were restored from the CPU tier, as ``kv_transfer_params.leaseholder`` in the response. The
-   recompute ledger needs that split per request; vLLM's own metrics give it only in aggregate.
+   recompute ledger would have needed that split per request; vLLM's own metrics give it only in aggregate.
 
 Load it with:
 

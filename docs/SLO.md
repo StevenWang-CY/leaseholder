@@ -12,7 +12,7 @@ The deployed configuration sends the priority and nothing else ([ADR-0006](adr/0
 
 ## Indicators
 
-Every E2 point computes these (`lh-bench e2`; [EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load) gives the method). The voice targets are stated against voice alone on the same box: experiments end a turn a fixed delay after the end of speech, which contributes about 1 s of every turn, so the target is the degradation that agent load may add.
+E2's report computes these for every point (`lh-bench e2`; [EXPERIMENTS.md](EXPERIMENTS.md#e2-voice-under-agent-load) gives the method), except two: the server-side voice turn, from a W1 probe, and the control-plane overhead, the gateway's own histogram. The voice targets are stated against voice alone on the same box: experiments end a turn a fixed delay after the end of speech, which contributes about 1 s of every turn, so the target is the degradation that agent load may add.
 
 | Indicator | Definition | Target, or what is reported |
 |---|---|---|
@@ -23,7 +23,7 @@ Every E2 point computes these (`lh-bench e2`; [EXPERIMENTS.md](EXPERIMENTS.md#e2
 | Server-side voice turn | The utterance sent to STT, until the first byte of TTS audio (`lh-bench voice-turn`): the part serving controls | p95 ≤ 800 ms (voice alone: 589 ms p50 and 665 ms p90, W1) |
 | Background goodput | The prompt and completion tokens per second of the agent requests that complete during the calls | Reported: the frontier's x-axis. Its window is the calls' duration, which differs by configuration |
 | Agents' time to first token | AIPerf's per-request records | p50 and p99, reported |
-| The gateway's decisions | Under an admission policy: deferrals by reason, degraded replies, false alarms of the headroom, resubmissions (`lh_gateway_admission_*`) | Reported per point |
+| The gateway's decisions | Under an admission policy: deferrals by reason, degraded replies and resubmissions (`lh_gateway_admission_*`) | Reported per point. The gateway also counts the headroom's false alarms, which no E2 run had: every utterance of the callers is a turn |
 | Control-plane overhead | `lh_gateway_overhead_seconds`, on every request: from the end of the request body to the upstream write, with an admission policy's decision but not the wait it imposes | p99 ≤ 2 ms per request. On cyan with the W1 build: p99 0.44 ms for voice alone and 0.58 ms beside the agent replay, and +0.38 ms to a voice request's first token paired against the engine's own socket ([BENCHMARKS.md](BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)). On an Apple M5 Max, an admission policy adds 6–24 µs of its own time on average, `leaseholder` 9 µs ([`lh-gateway` README](../crates/lh-gateway/README.md#overhead)) |
 
 Not computed: audio gaps (the continuity indicator), the interactive class's resume target, and the cache-contract honor rate, which went with leases.

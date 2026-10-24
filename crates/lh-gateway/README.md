@@ -242,9 +242,9 @@ What the numbers say:
 - **Streamed chunks cost about the same as the bare hop:** 65 against 61 µs at p50 for one stream.
 - **The same benchmark on an Apple M5 Max** (18 cores, macOS 26.6) adds 39 µs at one client, and 0.82 ms at most at p99. cyan's 2.1 GHz Xeon costs several times more per request.
 
-**In place on cyan**, with the voice agent and the agent replay as clients ([BENCHMARKS](../../docs/BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)):
-- the gateway's own time is 0.13 ms on average for voice requests;
-- paired against the engine's own socket, the gateway adds 0.38 ms to a voice request's first token.
+**In place on cyan**, on the W1 build (2026-10-22, before the admission policies and placement), with the voice agent and the agent replay as clients ([BENCHMARKS](../../docs/BENCHMARKS.md#the-control-plane-lh-gateway-in-front-of-the-engine)):
+- the gateway's own time was 0.13 ms on average for voice requests;
+- paired against the engine's own socket, the gateway added 0.38 ms to a voice request's first token.
 
 **Admission policies.** The benchmark's second table prices each policy: background requests, which every policy holds, through one gateway per policy, with limits the runs never reach so that a policy adds its bookkeeping and never a wait, and through a gateway without a policy, which runs the same requests just before. Each gateway's own histogram follows the table. It has not run on cyan yet. On the M5 Max, the medians of eight runs on 2026-10-22, with the machine busy with other work, for the 2 KiB non-streaming rows:
 

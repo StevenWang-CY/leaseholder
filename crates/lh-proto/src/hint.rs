@@ -1,7 +1,9 @@
-//! The engine lease hint: the whole contract between the control plane and the engine-side cache policy.
+//! The engine lease hint: the whole contract the lease design set between the control plane and the engine-side
+//! cache policy. It is unused and removed after v0.3: leases were not pursued (ADR-0006), and nothing sends the
+//! hint, since the gateway strips `kv_transfer_params` from client requests and adds none.
 //!
-//! The control plane attaches it to each engine request as `kv_transfer_params.leaseholder`. The engine decides
-//! what to keep from this hint plus recency and size; the control plane decides when to bring KV back. There is
+//! A control plane would attach it to each engine request as `kv_transfer_params.leaseholder`. The engine would
+//! decide what to keep from this hint plus recency and size, and the control plane when to bring KV back, with
 //! no second lease table inside the engine.
 
 use schemars::JsonSchema;
@@ -12,7 +14,7 @@ use crate::{SessionId, SloClass};
 /// The key under `kv_transfer_params` that holds the hint.
 pub const KV_TRANSFER_PARAMS_KEY: &str = "leaseholder";
 
-/// The lease hint on one engine request, at `kv_transfer_params.leaseholder`.
+/// The lease hint a control plane would put on one engine request, at `kv_transfer_params.leaseholder`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EngineLeaseHint {
     pub session_id: SessionId,

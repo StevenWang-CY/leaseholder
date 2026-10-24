@@ -29,7 +29,7 @@ Leaseholder's realtime voice plane on LiveKit Agents 1.8.8 ([ARCHITECTURE §4.2]
 | `LH_LLM_UDS` | The control plane's socket (`gateway.sock`), or the engine's tunnel (`phastform-engine.sock`) |
 | `LH_STT_UDS`, `LH_TTS_UDS` | The tunnels to the STT and TTS servers |
 | `LH_IDLE_PROCESSES` | Pre-started job processes (default 2) |
-| `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30); a failed request is retried once |
+| `LH_LLM_TIMEOUT` | Seconds before an LLM request fails (default 30). A failed request is retried once, where LiveKit's default is three: a refused or reset connection gets a second try, and a timed-out request's retry starts after the callers' 30 s reply timeout has counted the turn, so it cannot hide a slow reply from E2 |
 | `LH_TURN_DETECTION` | `model` (default) or `vad` |
 | `LH_PREEMPTIVE_GENERATION` | `true` (default) or `false` |
 | `LH_EVENTS` | `on` (default): lifecycle events to the control plane through `LH_LLM_UDS`; `off` |

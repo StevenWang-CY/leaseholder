@@ -54,7 +54,7 @@ Arm 10 of the plan (MPS with an active-thread split, audio off the GPU) was not 
 - **The voice worker's stage times** (endpointing, the reply's first sentence, TTS's first audio, transport and playout) and the realtime first byte, exact from the gateway's request log.
 - **Agents.** Background goodput (the prompt and completion tokens of the agent requests completed during the calls, over the calls' duration) and the agents' TTFT p50 and p99.
 - **The engine.** Prompt tokens by source (computed, cached, restored from the CPU tier) and preemptions.
-- **The gateway.** Its decisions: deferrals by reason, degraded replies, false alarms and resubmissions.
+- **The gateway.** Its decisions: deferrals by reason, degraded replies and resubmissions. It also counts the headroom's false alarms, and a record keeps the counters that moved: none of E2's records has one, since every utterance of the callers is a turn.
 - **The GPU.** Its clocks and temperature.
 
 Audio gaps, abort latency, wasted tokens and cost per token were in the plan and are not computed.
@@ -63,13 +63,13 @@ Audio gaps, abort latency, wasted tokens and cost per token were in the plan and
 - **Runs.** W2 measured each baseline once (50 turns). W3–W4 repeated the discriminating scenario in rounds, rotating the order of the engine groups so that no configuration always runs at the same hour. Each headline configuration has five runs (250 turns); each ablation and PR configuration has three (150).
 - **Builds.** W2's first two campaigns (`w2`, `w2b`) ran the W2 gateway and voice worker; everything else ran the W3 build, with lifecycle events, and later versions of the variant where noted.
 - **The SLO's reference** is the median of five runs of voice alone, 1,767 ms, so the SLO is 2,017 ms. One of those runs is from the W2 build; the four on the W3 build give 1,768.5 ms.
-- **Every turn counts,** the first of each call included. Under load, the first turn is slower than the rest (a mean of 2.4–2.5 s against 1.8 s in the standard scenario at 16 session trees). Without it, that scenario's p95 is 2,186 ms for the frozen box and 2,037 for arm 9, against 2,323 and 2,196. The discriminating scenario is unaffected (arm 9: 2,058 against 2,057).
+- **Every turn counts,** the first of each call included. Under load the first turn is slower than the rest, which raises the standard scenario's p95 and leaves the discriminating scenario's where it is; [BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2) gives both with and without it.
 - **Goodput windows differ.** Background goodput is counted over the calls, whose duration differs by configuration (about 280 s for arm 9, about 430 s for the frozen box), against agent requests of about 75 s.
 - **Load generator health.** The callers record how late they play their lines: at most 116 ms, at six callers, and under 60 ms elsewhere. The report does not use it to reject points.
 
-**Results** ([BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2)):
-- **The engine change takes the voice tail to the SLO's edge.** In the discriminating scenario every stock, engine and router baseline leaves the p95 between 5.7 and 12.1 s, except preempt-resubmit (2.6 s, at the agents' tail). Arm 9 reaches 2,057 ms with every reply capped at 16 tokens. The PRs' configuration reaches 2,193 ms with full replies and a 48-token window.
-- **The gateway's lifecycle-timed mechanisms could not act there.** Running agent requests held the pool, and the headroom can protect it only by deferring new requests, so it never had its room: degrade capped 60 of 60 replies in every run. The throttle, checked after the headroom, deferred nothing while the headroom ran. Room came from the engine alone: the policy in front of stock vLLM leaves the tail where stock does (10,993 ms). Where the mechanisms engage, in the standard scenario, they were not isolated.
+**Results.** [BENCHMARKS.md](BENCHMARKS.md#voice-under-agent-load-e2) holds E2's numbers; in short:
+- **The engine change takes the voice tail to the SLO's edge.** In the discriminating scenario every stock, engine and router baseline leaves the p95 seconds over the SLO, except preempt-resubmit, at the cost of the agents' tail. Arm 9's runs straddle the SLO, with every reply capped at 16 tokens; the PRs' configuration, with full replies and a 48-token window, lands just above it.
+- **The gateway's lifecycle-timed mechanisms could not act there.** Running agent requests held the pool, and the headroom can protect it only by deferring new requests, so it never had its room: degrade capped every reply in every run. The throttle, checked after the headroom, deferred nothing while the headroom ran. Room came from the engine alone: the policy in front of stock vLLM leaves the tail where stock does. Where the mechanisms engage, in the standard scenario, they were not isolated.
 - **Where the pool has room, there is nothing to fix.** At the standard scenario's realistic load, arm 9 and the frozen box are within noise of each other.
 
 **Other hardware.** E2 runs on the frozen box. What transfers is stated in hardware-free terms:

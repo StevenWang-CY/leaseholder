@@ -58,7 +58,7 @@ Each baseline is what an operator could deploy today, configured as its authors 
 
 ### Where the pool has room: the standard scenario
 
-The whole corpus at 8, 16 and 24 agent session trees. At 8, every vLLM arm meets the SLO. At 16, the realistic operating point, none clearly does: the best land 100–220 ms above it and within noise of each other, and no gateway policy or engine knob separates itself from tuned stock. At 24 none meets it. Repeated three times at 16, arm 9 (2,196 ms) and the frozen box (2,323 ms) are within noise of each other: where the pool has room an engine change has nothing to do, and what remains is agent prefill sharing the steps of the reply.
+The whole corpus at 8, 16 and 24 agent session trees. At 8, W2's vLLM arms meet the SLO, and arm 9, run there once in W4, lands 43 ms above it. At 16, the realistic operating point, none clearly does: the best land 100–220 ms above it and within noise of each other, and no gateway policy or engine knob separates itself from tuned stock. At 24 none meets it. Repeated three times at 16, arm 9 (2,196 ms) and the frozen box (2,323 ms) are within noise of each other: where the pool has room an engine change has nothing to do, and what remains is agent prefill sharing the steps of the reply.
 
 ### Where agent KV fills the pool: the discriminating scenario
 
@@ -91,7 +91,7 @@ Five runs of each headline configuration and three of each ablation and PR confi
 | The frozen box (tuned stock vLLM) | 10,138 ms (9,257–10,811) | 3,710 | 99 s |
 | Static reservation, 2,048 tokens | 5,671 ms (4,906–5,798) | 3,564 | 102 s |
 | Preempt-resubmit | 2,591 ms (2,110–2,663) | 3,630 | 160 s |
-| Arm 9 | 2,057 ms (1,980–2,134) | 3,411 | 103 s |
+| Arm 9, every reply capped at 16 tokens | 2,057 ms (1,980–2,134) | 3,411 | 103 s |
 | #63350 alone | 5,773 ms (5,612–6,063) | 3,633 | 97 s |
 | #63350 + #63351, 16-token window | 3,229 ms (3,220–4,772) | 3,568 | 100 s |
 | #63350 + #63351, 48-token window | 2,193 ms (2,168–2,286) | 3,493 | 97 s |

@@ -33,7 +33,7 @@ What the measurements say:
 | GPU KV pool with speech-to-text, LLM and text-to-speech co-located | **36,400 tokens**: two or three agent contexts |
 | One voice turn on the server (STT → first LLM sentence → first TTS audio), p50 | **589 ms** idle · **1,261 ms** beside one stream of cold 8k-token agent prefills · **2,279 ms** beside two |
 | What stock priority scheduling does about it | vLLM preempts among running requests, but a waiting voice turn cannot preempt running work when the KV cache is full ([#40004](https://github.com/vllm-project/vllm/issues/40004)) |
-| What a control plane in front costs | `lh-gateway` adds **0.38 ms** to a voice request's first token: the paired median against the engine's own socket |
+| What a control plane in front costs | `lh-gateway` adds **0.38 ms** to a voice request's first token: the paired median against the engine's own socket (W1 build, on cyan) |
 
 The frozen box is the one pinned configuration every experiment runs on: the LLM, STT and TTS servers sharing the GPU. More numbers are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -59,7 +59,7 @@ The frozen box is the one pinned configuration every experiment runs on: the LLM
 - **Realtime is never shed.** The engine makes room for a voice turn; under arm 9's policy the gateway caps its reply instead of refusing it.
 - **KV never crosses the network.** Sessions stick to the node that holds them. Every service binds loopback; hosts talk over SSH tunnels; the voice plane runs in a network namespace with no route out.
 
-The original design also put leases, prefetch and a recompute ledger in the control plane; after E1 and E2 they were dropped ([ADR-0006](docs/adr/0006-the-engine-change-carries-the-realtime-tier.md)). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes what is built, what was tested and not adopted, and why.
+The name is the original design's, in which the control plane held leases on sessions' KV; that design also had prefetch and a recompute ledger, and after E1 and E2 all three were dropped ([ADR-0006](docs/adr/0006-the-engine-change-carries-the-realtime-tier.md)). [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes what is built, what was tested and not adopted, and why.
 
 ## Status
 

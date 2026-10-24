@@ -2,8 +2,8 @@
 
 AGENTS (12) closed-loop agent sessions at priority 2 beside two calls at priority 0, against one engine for SECONDS:
 - agents: 48 output tokens and 0-3 s of thought a turn; with ``fresh``, a new prompt of 6-30k tokens each turn, as
-  E2's discriminating replay computes 98% of its prompt tokens; with ``grow`` (the default), the prompt grows by a
-  tool result of 1-4k tokens each turn from 6-14k up to 30k, so that it reuses the CPU tier;
+  E2's discriminating replay computes about 95% of its prompt tokens; with ``grow`` (the default), the prompt grows
+  by a tool result of 1-4k tokens each turn from 6-14k up to 30k, so that it reuses the CPU tier;
 - calls: a conversation that grows by about 30 tokens a turn, a turn every 4-8 s, 16 output tokens.
 It prints each call turn's time to first token, then their distribution. On the GPU node, with the engine's
 environment, which has aiohttp: ``~/leaseholder/venvs/engine/bin/python tail.py http://127.0.0.1:8000 240 12 fresh``.
@@ -47,7 +47,7 @@ async def agent(session: aiohttp.ClientSession, seed: int, stop: float) -> None:
                 await response.read()
         except aiohttp.ClientError:
             return
-        if FRESH:  # E2's discriminating replay computes 98% of its prompt tokens
+        if FRESH:  # E2's discriminating replay computes about 95% of its prompt tokens
             context = tokens(rng, rng.randrange(6000, 30_000))
         else:
             context = context + tokens(rng, rng.randrange(1000, 4000))

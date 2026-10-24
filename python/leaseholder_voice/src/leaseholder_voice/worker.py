@@ -163,6 +163,8 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_handling=turn_handling(),
         aec_warmup_duration=None,
         conn_options=SessionConnectOptions(
+            # One retry, not LiveKit's three: a dropped connection still gets a second try, and a
+            # stalled turn gives up after two timeouts rather than four.
             llm_conn_options=APIConnectOptions(max_retry=1, timeout=llm_timeout)
         ),
     )
