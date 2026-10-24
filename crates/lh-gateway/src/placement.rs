@@ -40,7 +40,9 @@ use crate::proxy::{Upstream, read_body};
 use crate::server::{App, Shared};
 
 /// Sessions remembered at most, a bound on what clients can make the gateway hold. A new session that finds the
-/// table full is placed but not remembered.
+/// table full takes the place of the session idle longest; only while every session has a request in flight is it
+/// placed without being remembered. Untrusted tenants' sessions take at most half the table, so that their requests,
+/// each of which may name a session of its own, cannot make it forget the trusted tenants' idle sessions.
 const SESSIONS: usize = 4096;
 
 /// Failed probes in a row after which a node takes no new sessions.
@@ -159,15 +161,17 @@ impl Placement {
         self.probe_interval
     }
 
-    /// Places a request of `session`, as `class` asks: on the session's node while it holds, otherwise on the
-    /// node the policy chooses; `None` when no ready node takes it. A request that does not name its session
-    /// (`named` false: the gateway minted it) is placed, but the session is not remembered.
+    /// Places a request of `session`, of a `trusted` tenant or not, as `class` asks: on the session's node while it
+    /// holds, otherwise on the node the policy chooses; `None` when no ready node takes it. A request that does not
+    /// name its session (`named` false: the gateway minted it) is placed, but the session is not remembered; nor is
+    /// one that finds no room in the table ([`SESSIONS`]).
     pub fn request(
         &self,
         nodes: &[Node],
         session: &SessionId,
         class: SloClass,
         named: bool,
+        trusted: bool,
     ) -> Option<InFlight> {
         let ready = |node: usize| nodes[node].ready();
         {
@@ -184,7 +188,7 @@ impl Placement {
                 let node = self.choose(nodes, &table, class)?;
                 self.metrics.placed(self.policy, found.reason());
                 let placed = named
-                    .then(|| table.place(session, class, node, false, Instant::now()))
+                    .then(|| table.place(session, class, node, false, trusted, Instant::now()))
                     .flatten();
                 (node, placed)
             }
@@ -192,18 +196,27 @@ impl Placement {
         Some(table.start(node, placed))
     }
 
-    /// `POST /v1/sessions`: the node of `session`, placed now as `class` asks if it has none; `None` when no ready
-    /// node takes it. A session placed this way counts as a request in flight on its node until its first
-    /// request, so that calls which start together are not all placed on the same node.
-    pub fn session(&self, nodes: &[Node], session: &SessionId, class: SloClass) -> Option<usize> {
+    /// `POST /v1/sessions`, from a trusted tenant: the node of `session`, placed now as `class` asks if it has
+    /// none, or why it could not be. A session placed this way counts as a request in flight on its node until its
+    /// first request, so that calls which start together are not all placed on the same node.
+    pub fn session(
+        &self,
+        nodes: &[Node],
+        session: &SessionId,
+        class: SloClass,
+    ) -> Result<usize, Unplaced> {
         let mut table = self.write();
         match table.find(session, |node| nodes[node].ready()) {
-            Found::On(placed) => Some(placed.node),
+            Found::On(placed) => Ok(placed.node),
             found => {
-                let node = self.choose(nodes, &table, class)?;
+                let node = self
+                    .choose(nodes, &table, class)
+                    .ok_or(Unplaced::NoReadyNode)?;
+                table
+                    .place(session, class, node, true, true, Instant::now())
+                    .ok_or(Unplaced::Full)?;
                 self.metrics.placed(self.policy, found.reason());
-                table.place(session, class, node, true, Instant::now());
-                Some(node)
+                Ok(node)
             }
         }
     }
@@ -274,6 +287,15 @@ impl Placement {
     fn write(&self) -> RwLockWriteGuard<'_, Table> {
         self.table.write().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Why `POST /v1/sessions` placed no session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unplaced {
+    /// No ready node takes the session's class.
+    NoReadyNode,
+    /// The table is full, and every session in it has a request in flight.
+    Full,
 }
 
 /// A request's place on its node, from its placement to its end; dropping it ends the request there, without the
@@ -397,14 +419,26 @@ pub(crate) async fn post(State(app): State<App>, request: Request) -> Response {
         shared.metrics.class_clamped();
     }
     ex.class = Some(class);
-    let placed = shared
-        .placement
-        .as_ref()
-        .and_then(|placement| placement.session(&shared.nodes, &asked.session_id, class));
-    let Some(index) = placed else {
-        ex.session = Some(asked.session_id);
-        let message = format!("no ready node takes {class} sessions");
-        return ex.error(StatusCode::SERVICE_UNAVAILABLE, "no_ready_node", message);
+    let placed = match &shared.placement {
+        Some(placement) => placement.session(&shared.nodes, &asked.session_id, class),
+        None => Err(Unplaced::NoReadyNode),
+    };
+    let index = match placed {
+        Ok(index) => index,
+        Err(unplaced) => {
+            ex.session = Some(asked.session_id);
+            let (code, message) = match unplaced {
+                Unplaced::NoReadyNode => (
+                    "no_ready_node",
+                    format!("no ready node takes {class} sessions"),
+                ),
+                Unplaced::Full => (
+                    "placement_full",
+                    format!("each of the {SESSIONS} sessions placed has a request in flight"),
+                ),
+            };
+            return ex.error(StatusCode::SERVICE_UNAVAILABLE, code, message);
+        }
     };
     let node = &shared.nodes[index];
     ex.on_node(node);
@@ -421,6 +455,8 @@ pub(crate) async fn post(State(app): State<App>, request: Request) -> Response {
 #[derive(Debug)]
 struct Table {
     sessions: HashMap<SessionId, Arc<Session>>,
+    /// Those of the sessions that untrusted tenants' requests placed: at most half the table.
+    untrusted: usize,
     /// Each node's requests in flight, and the sessions placed on it by `POST /v1/sessions` that have sent none
     /// yet, in the order of the nodes. Requests count themselves here under the table's shared lock, and end
     /// without it.
@@ -444,6 +480,8 @@ struct Session {
     node: usize,
     /// The class it was placed with.
     class: SloClass,
+    /// Whether a trusted tenant placed it.
+    trusted: bool,
     /// When it was placed.
     placed: Instant,
     /// Its requests in flight.
@@ -504,6 +542,7 @@ impl Table {
         let nodes: Vec<Held> = nodes.into_iter().map(held).collect();
         Self {
             sessions: HashMap::new(),
+            untrusted: 0,
             in_flight: nodes.iter().map(|_| AtomicU32::new(0)).collect(),
             nodes,
         }
@@ -518,24 +557,27 @@ impl Table {
         }
     }
 
-    /// Places `session` on `node`, replacing any placement it had: by a request, or by `POST /v1/sessions`
-    /// (`pending`). A full table does not remember a new session: `None`.
+    /// Places `session` on `node`, replacing any placement it had: by a request of a `trusted` tenant or not, or by
+    /// `POST /v1/sessions` (`pending`). `None` when the table has no room for it.
     fn place(
         &mut self,
         session: &SessionId,
         class: SloClass,
         node: usize,
         pending: bool,
+        trusted: bool,
         now: Instant,
     ) -> Option<Arc<Session>> {
         if let Some(old) = self.sessions.remove(session) {
             self.release(&old);
-        } else if self.sessions.len() >= SESSIONS {
+        }
+        if !self.make_room(trusted) {
             return None;
         }
         let placed = Arc::new(Session {
             node,
             class,
+            trusted,
             placed: now,
             requests: AtomicU32::new(0),
             pending: AtomicBool::new(pending),
@@ -544,9 +586,35 @@ impl Table {
         if pending {
             self.in_flight[node].fetch_add(1, Ordering::Relaxed);
         }
+        self.untrusted += usize::from(!trusted);
         self.nodes[node].count(class, 1);
         self.sessions.insert(session.clone(), Arc::clone(&placed));
         Some(placed)
+    }
+
+    /// Whether a new session of a `trusted` tenant or not has room. A full table, or an untrusted session where
+    /// untrusted tenants hold their half, forgets the placement idle longest that the new session may take the
+    /// place of; there is no room only when each of those has a request in flight. Requests start under the
+    /// table's lock, so none starts while this scans the table, which it does only when the table or the untrusted
+    /// half is full.
+    fn make_room(&mut self, trusted: bool) -> bool {
+        let untrusted_full = !trusted && self.untrusted >= SESSIONS / 2;
+        if !untrusted_full && self.sessions.len() < SESSIONS {
+            return true;
+        }
+        let idlest = self
+            .sessions
+            .iter()
+            .filter(|(_, placed)| !placed.busy() && !(untrusted_full && placed.trusted))
+            .min_by_key(|(_, placed)| placed.since())
+            .map(|(session, _)| session.clone());
+        match idlest {
+            Some(session) => {
+                self.forget(&session);
+                true
+            }
+            None => false,
+        }
     }
 
     /// A request starts on `node`, of `session` when the table remembers it: its place there until it ends. The
@@ -599,11 +667,12 @@ impl Table {
             .min()
     }
 
-    /// Frees what a placement that ended held on its node.
+    /// Frees what a placement that ended held on its node, and its place in the untrusted tenants' half.
     fn release(&mut self, placed: &Session) {
         if placed.pending.swap(false, Ordering::AcqRel) {
             self.in_flight[placed.node].fetch_sub(1, Ordering::Relaxed);
         }
+        self.untrusted -= usize::from(!placed.trusted);
         self.nodes[placed.node].count(placed.class, -1);
     }
 }
@@ -656,7 +725,7 @@ mod tests {
         let (mut t, t0) = (table(), Instant::now());
         let s = session("agent-1");
         assert!(matches!(t.find(&s, |_| true), Found::None));
-        let placed = t.place(&s, Background, 1, false, t0).unwrap();
+        let placed = t.place(&s, Background, 1, false, true, t0).unwrap();
         t.count(Some(&placed), 1);
         t.count(Some(&placed), 1);
         assert_eq!(held(&t), [(0, [0; 3]), (2, [0, 0, 1])]);
@@ -668,7 +737,7 @@ mod tests {
         let lost = t.find(&s, |node| node == 0);
         assert!(matches!(lost, Found::Lost));
         assert_eq!(lost.reason(), Reason::NodeDown);
-        t.place(&s, Background, 0, false, t0);
+        t.place(&s, Background, 0, false, true, t0);
         assert_eq!(held(&t), [(0, [0, 0, 1]), (0, [0; 3])]);
         assert_eq!(node_of(&t, &s), Some(0));
     }
@@ -677,10 +746,10 @@ mod tests {
     fn a_request_on_the_node_a_session_left_does_not_touch_its_new_placement() {
         let (mut t, t0) = (table(), Instant::now());
         let s = session("agent-1");
-        let on_zero = t.place(&s, Background, 0, false, t0).unwrap();
+        let on_zero = t.place(&s, Background, 0, false, true, t0).unwrap();
         t.count(Some(&on_zero), 0);
         // Node 0 failed while the request ran; the session's next request went to node 1.
-        let on_one = t.place(&s, Background, 1, false, t0).unwrap();
+        let on_one = t.place(&s, Background, 1, false, true, t0).unwrap();
         t.count(Some(&on_one), 1);
         end(&t.in_flight, Some(&on_zero), 0, t0 + Duration::from_secs(1));
         assert_eq!(held(&t), [(0, [0; 3]), (1, [0, 0, 1])]);
@@ -693,9 +762,9 @@ mod tests {
         let idle = Duration::from_secs(300);
         let at = |s: u64| t0 + Duration::from_secs(s);
         let (busy, quiet) = (session("busy"), session("quiet"));
-        let running = t.place(&busy, Background, 0, false, t0).unwrap();
+        let running = t.place(&busy, Background, 0, false, true, t0).unwrap();
         t.count(Some(&running), 0);
-        let done = t.place(&quiet, Interactive, 1, false, t0).unwrap();
+        let done = t.place(&quiet, Interactive, 1, false, true, t0).unwrap();
         t.count(Some(&done), 1);
         end(&t.in_flight, Some(&done), 1, at(10));
         assert_eq!(t.expire(at(100), idle), Some(at(310)));
@@ -714,7 +783,7 @@ mod tests {
     fn a_session_placed_ahead_of_its_requests_holds_a_place_until_its_first_one() {
         let (mut t, t0) = (table(), Instant::now());
         let call = session("voice-RM_a1");
-        let placed = t.place(&call, Realtime, 0, true, t0).unwrap();
+        let placed = t.place(&call, Realtime, 0, true, true, t0).unwrap();
         assert_eq!(held(&t), [(1, [1, 0, 0]), (0, [0; 3])]);
         // Its first request takes the place over, and its end frees it.
         t.count(Some(&placed), 0);
@@ -726,8 +795,8 @@ mod tests {
         assert_eq!(held(&t)[0], (0, [1, 0, 0]));
         // A call that never sends a request gives its place up as it idles out, or closes.
         let (silent, closed) = (session("voice-RM_b2"), session("voice-RM_c3"));
-        t.place(&silent, Realtime, 1, true, t0);
-        t.place(&closed, Realtime, 1, true, t0);
+        t.place(&silent, Realtime, 1, true, true, t0);
+        t.place(&closed, Realtime, 1, true, true, t0);
         assert_eq!(held(&t)[1], (2, [2, 0, 0]));
         t.forget(&closed);
         assert_eq!(held(&t)[1], (1, [1, 0, 0]));
@@ -736,24 +805,143 @@ mod tests {
     }
 
     #[test]
-    fn a_full_table_places_new_sessions_without_remembering_them() {
+    fn a_full_table_forgets_the_session_idle_longest_and_never_a_busy_one() {
         let (mut t, t0) = (table(), Instant::now());
+        let at = |ms: usize| t0 + Duration::from_millis(ms as u64);
+        // Each session idle since its placement, s-0 the longest, until a request of s-0 ends after the others.
         for n in 0..SESSIONS {
-            t.place(&session(&format!("s-{n}")), Background, n % 2, false, t0);
+            t.place(
+                &session(&format!("s-{n}")),
+                Background,
+                n % 2,
+                false,
+                true,
+                at(n),
+            );
         }
+        let first = Arc::clone(&t.sessions[&session("s-0")]);
+        t.count(Some(&first), 0);
+        end(&t.in_flight, Some(&first), 0, at(SESSIONS));
+        // A new session takes the place of s-1, idle longest now.
         let late = session("late");
-        assert!(t.place(&late, Background, 0, false, t0).is_none());
-        assert_eq!(node_of(&t, &late), None);
-        // Its requests still count on their node.
-        t.count(None, 0);
-        assert_eq!(held(&t)[0], (1, [0, 0, SESSIONS as u32 / 2]));
-        end(&t.in_flight, None, 0, t0);
-        assert_eq!(held(&t)[0].0, 0);
-        // A session it remembers is placed again in its place.
-        let first = session("s-0");
-        t.place(&first, Interactive, 1, false, t0);
-        assert_eq!(node_of(&t, &first), Some(1));
+        assert!(
+            t.place(&late, Interactive, 1, false, true, at(SESSIONS))
+                .is_some()
+        );
+        assert_eq!(node_of(&t, &session("s-1")), None);
+        assert_eq!(node_of(&t, &session("s-0")), Some(0));
+        assert_eq!(node_of(&t, &late), Some(1));
+        let half = SESSIONS as u32 / 2;
+        assert_eq!(held(&t), [(0, [0, 0, half]), (0, [0, 1, half - 1])]);
+        // While every session has a request in flight, a new one is placed but not remembered: its requests still
+        // count on their node. Once one request ends, its session makes room.
+        let placed: Vec<Arc<Session>> = t.sessions.values().cloned().collect();
+        for session in &placed {
+            t.count(Some(session), session.node);
+        }
+        let later = session("later");
+        assert!(
+            t.place(&later, Background, 0, false, true, at(SESSIONS))
+                .is_none()
+        );
+        assert_eq!(node_of(&t, &later), None);
+        let s2 = Arc::clone(&t.sessions[&session("s-2")]);
+        end(&t.in_flight, Some(&s2), 0, at(SESSIONS + 1));
+        assert!(
+            t.place(&later, Background, 0, false, true, at(SESSIONS + 1))
+                .is_some()
+        );
+        assert_eq!(node_of(&t, &session("s-2")), None);
         assert_eq!(t.sessions.len(), SESSIONS);
+    }
+
+    #[test]
+    fn untrusted_sessions_take_at_most_half_the_table() {
+        let (mut t, t0) = (table(), Instant::now());
+        let at = |ms: usize| t0 + Duration::from_millis(ms as u64);
+        let half = SESSIONS / 2;
+        // A trusted half, idle the longest, then an untrusted half.
+        for n in 0..half {
+            let agent = session(&format!("agent-{n}"));
+            t.place(&agent, Background, 0, false, true, at(n));
+        }
+        for n in 0..half {
+            let hashed = session(&format!("h-{n}"));
+            t.place(&hashed, Interactive, 1, false, false, at(half + n));
+        }
+        assert_eq!((t.sessions.len(), t.untrusted), (SESSIONS, half));
+        // Another untrusted session takes the place of the untrusted one idle longest, not of a trusted one, idle
+        // longer.
+        t.place(
+            &session("h-new"),
+            Interactive,
+            1,
+            false,
+            false,
+            at(SESSIONS),
+        );
+        assert_eq!(node_of(&t, &session("h-0")), None);
+        assert_eq!(node_of(&t, &session("agent-0")), Some(0));
+        assert_eq!((t.sessions.len(), t.untrusted), (SESSIONS, half));
+        // With room in the table, an untrusted session still needs an untrusted place: while each of those has a
+        // request in flight it is not remembered, and a trusted one is.
+        t.forget(&session("agent-0"));
+        let untrusted: Vec<Arc<Session>> = t
+            .sessions
+            .values()
+            .filter(|s| !s.trusted)
+            .cloned()
+            .collect();
+        for session in &untrusted {
+            t.count(Some(session), session.node);
+        }
+        let (hashed, agent) = (session("h-late"), session("agent-late"));
+        assert!(
+            t.place(&hashed, Interactive, 1, false, false, at(SESSIONS))
+                .is_none()
+        );
+        assert!(
+            t.place(&agent, Background, 0, false, true, at(SESSIONS))
+                .is_some()
+        );
+        assert_eq!((t.sessions.len(), t.untrusted), (SESSIONS, half));
+    }
+
+    #[tokio::test]
+    async fn the_placement_endpoint_is_refused_only_while_every_session_has_a_request_in_flight() {
+        let names: [Arc<str>; 2] = ["a".into(), "b".into()];
+        let metrics = Arc::new(Metrics::with_nodes(&names, Policy::LeastLoaded));
+        let nodes: Vec<Node> = names
+            .iter()
+            .map(|name| {
+                let upstream =
+                    Upstream::new("127.0.0.1:9".parse().unwrap(), Duration::from_secs(1));
+                let own = Arc::new(metrics.on(name));
+                Node::new(Some(Arc::clone(name)), upstream, None, own, [true; 3])
+            })
+            .collect();
+        let config = config::Placement {
+            policy: Policy::LeastLoaded,
+            nodes: Vec::new(),
+            idle: Duration::from_secs(300),
+            probe_interval: Duration::from_secs(1),
+        };
+        let placement = Placement::new(&config, &nodes, Arc::clone(&metrics));
+        let requests: Vec<InFlight> = (0..SESSIONS)
+            .map(|n| {
+                let agent = session(&format!("agent-{n}"));
+                placement
+                    .request(&nodes, &agent, Background, true, true)
+                    .unwrap()
+            })
+            .collect();
+        let call = session("voice-RM_late");
+        assert_eq!(
+            placement.session(&nodes, &call, Realtime),
+            Err(Unplaced::Full)
+        );
+        drop(requests);
+        assert_eq!(placement.session(&nodes, &call, Realtime), Ok(0));
     }
 
     #[test]
@@ -779,9 +967,10 @@ mod tests {
                                 Found::None | Found::Lost => None,
                             }
                         };
+                        // The agents are an untrusted tenant's.
                         let request = placed.unwrap_or_else(|| {
                             let mut t = table.write().unwrap();
-                            let placed = t.place(s, Background, n % 2, false, t0);
+                            let placed = t.place(s, Background, n % 2, false, false, t0);
                             t.start(n % 2, placed)
                         });
                         drop(request);
@@ -793,7 +982,14 @@ mod tests {
         // and placements idle for a millisecond end.
         for n in 0..2_000 {
             let mut t = table.write().unwrap();
-            t.place(&sessions[8 + n % 8], Realtime, n % 2, true, Instant::now());
+            t.place(
+                &sessions[8 + n % 8],
+                Realtime,
+                n % 2,
+                true,
+                true,
+                Instant::now(),
+            );
             t.expire(Instant::now(), Duration::from_millis(1));
         }
         for worker in workers {
@@ -803,5 +999,6 @@ mod tests {
         t.expire(Instant::now() + Duration::from_secs(1), Duration::ZERO);
         assert!(t.sessions.is_empty());
         assert_eq!(held(&t), [(0, [0; 3]), (0, [0; 3])]);
+        assert_eq!(t.untrusted, 0);
     }
 }

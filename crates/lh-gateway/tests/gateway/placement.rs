@@ -59,6 +59,45 @@ fn six_hundred() -> &'static str {
     format!(r#"{{"model":"qwen","prompt":"{}"}}"#, "x".repeat(2_350)).leak()
 }
 
+/// `count` requests of the bench tenant, which is untrusted, 64 at a time: each names a session of its own by its
+/// `prompt_cache_key`, hashed with the tenant. They go over the Unix socket, where the tenant's key selects it as on
+/// any listener, so that thousands of connections leave no TCP ports waiting to close.
+async fn flood(gw: &Gateway, count: usize) {
+    for chunk in (0..count).collect::<Vec<_>>().chunks(64) {
+        let calls: Vec<_> = chunk
+            .iter()
+            .map(|n| {
+                let body =
+                    format!(r#"{{"model":"qwen","messages":[],"prompt_cache_key":"flood-{n}"}}"#);
+                let target = gw.unix.clone();
+                tokio::spawn(async move {
+                    call(
+                        &target,
+                        "POST",
+                        "/v1/chat/completions",
+                        &[BENCH_AUTH],
+                        &body,
+                    )
+                    .await
+                    .status
+                })
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.await.unwrap(), 200);
+        }
+    }
+}
+
+/// The sessions placed on each node, by class.
+async fn sessions(gw: &Gateway, class: &str) -> [f64; 2] {
+    let metrics = gw.metrics().await;
+    ["a", "b"].map(|node| {
+        let series = format!("lh_gateway_sessions{{node=\"{node}\",class=\"{class}\"}}");
+        metric(&metrics, &series).unwrap()
+    })
+}
+
 #[tokio::test]
 async fn least_loaded_places_a_new_session_on_the_quieter_node_and_keeps_it_there() {
     let (a, b, gw) = two_nodes("[placement]\npolicy = \"least-loaded\"").await;
@@ -289,6 +328,57 @@ async fn the_placement_endpoint_places_a_call_ahead_of_its_first_request() {
     // With one upstream there is nothing to place: the route does not exist.
     let one = Gateway::start(a.addr, "").await;
     assert_eq!(place(&one, "voice-RM_4").await.status, 404);
+}
+
+/// The review's probe P4: an untrusted tenant names as many sessions as the table holds (14 a second would do, at
+/// `idle_s` 300), and a call placed after them keeps the node `POST /v1/sessions` answered.
+#[tokio::test]
+async fn a_call_keeps_its_node_after_an_untrusted_flood_of_sessions() {
+    let (a, b, gw) = two_nodes("[placement]\npolicy = \"least-loaded\"").await;
+    flood(&gw, 4096).await;
+    // The call is placed ahead of its first request, on a: nothing is in flight, and ties go to the first node.
+    let placed = place(&gw, "voice-RM_victim").await;
+    assert_eq!(
+        (placed.status.as_u16(), &placed.json()["node"]),
+        (200, &json!("a"))
+    );
+    // Its place on a counts as a request in flight there, so an agent's new session goes to b.
+    let held = spawn_call(&gw.tcp, agent("agent-held", "held", true), CHAT);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while a.tags().is_empty() && b.tags().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent's request went nowhere"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        b.tags(),
+        ["held"],
+        "the call's place on a was not remembered"
+    );
+    // The call's first request goes to its node, a, though the nodes tie now.
+    let headers = [("x-session-id", "voice-RM_victim"), (TAG, "call-turn-1")];
+    let reply = call(&gw.unix, "POST", "/v1/chat/completions", &headers, CHAT).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(a.tags(), ["call-turn-1"]);
+    // The flood holds half the table.
+    let flooded = sessions(&gw, "interactive").await;
+    assert_eq!(flooded[0] + flooded[1], 2048.0);
+    b.release(1);
+    assert_eq!(held.await.unwrap().status, 200);
+}
+
+/// An untrusted tenant's sessions take at most half the table, so that its flood cannot make the table forget the
+/// trusted tenants' idle sessions: an agent's session that went idle before the flood keeps its node.
+#[tokio::test]
+async fn untrusted_sessions_take_at_most_half_the_table() {
+    let (_a, _b, gw) = two_nodes("[placement]\npolicy = \"least-loaded\"").await;
+    assert_eq!(send(&gw, "agent-idle", "before").await, 200);
+    flood(&gw, 4096).await;
+    let flooded = sessions(&gw, "interactive").await;
+    assert_eq!(flooded[0] + flooded[1], 2048.0);
+    assert_eq!(sessions(&gw, "background").await, [1.0, 0.0]);
 }
 
 #[tokio::test]

@@ -136,7 +136,9 @@ pub(crate) async fn inference(app: App, route: Route, request: Request) -> Respo
     let mut placed = None;
     if let Some(placement) = &shared.placement {
         let named = names_session(&inputs, body.prompt_cache_key.as_deref());
-        let Some(in_flight) = placement.request(&shared.nodes, &session, class, named) else {
+        let Some(in_flight) =
+            placement.request(&shared.nodes, &session, class, named, tenant.trusted)
+        else {
             ex.session = Some(session);
             let message = format!("no ready node takes {class} requests");
             return ex.error(StatusCode::SERVICE_UNAVAILABLE, "no_ready_node", message);
