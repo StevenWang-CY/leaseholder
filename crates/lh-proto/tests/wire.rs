@@ -1,9 +1,8 @@
-//! The wire format, pinned by examples. `testdata/events.jsonl` holds one example of every event type;
-//! the Python components are to test against it once they emit events (W3).
+//! The wire format, pinned by examples. `testdata/events.jsonl` holds one example of every event type; the
+//! voice worker's tests hold the events it emits to the JSON Schema generated from these types.
 
 use lh_proto::{
-    EventKind, EventSource, LifecycleEvent, SessionId, SessionIdError, SloClass, StopReason,
-    headers,
+    EventKind, EventSource, LifecycleEvent, SessionId, SessionIdError, SloClass, headers,
 };
 use serde_json::{Value, json};
 
@@ -58,6 +57,11 @@ fn unknown_fields_are_ignored_and_unknown_types_rejected() {
     let unknown = json!({"event_id": "e", "session_id": "s", "at_ms": 1, "source": "client",
                          "type": "user_laughed"});
     assert!(serde_json::from_value::<LifecycleEvent>(unknown).is_err());
+
+    // The control plane infers no events, so no client may claim that it did.
+    let inferred = json!({"event_id": "e", "session_id": "s", "at_ms": 1, "source": "inferred",
+                          "type": "turn_started"});
+    assert!(serde_json::from_value::<LifecycleEvent>(inferred).is_err());
 }
 
 #[test]
@@ -87,21 +91,6 @@ fn classes_map_to_engine_priorities_in_order() {
         serde_json::to_value(SloClass::Background).unwrap(),
         json!("background")
     );
-}
-
-#[test]
-fn stop_reasons_normalize_both_apis() {
-    for (api, expected) in [
-        ("stop", StopReason::Stop),
-        ("end_turn", StopReason::Stop),
-        ("length", StopReason::Length),
-        ("max_tokens", StopReason::Length),
-        ("tool_calls", StopReason::ToolCalls),
-        ("tool_use", StopReason::ToolCalls),
-        ("pause_turn", StopReason::Stop),
-    ] {
-        assert_eq!(StopReason::from_api(api), expected, "{api}");
-    }
 }
 
 #[test]

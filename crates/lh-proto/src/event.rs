@@ -2,8 +2,8 @@
 //!
 //! One schema serves every workload (ADR-0002). Policy `leaseholder` follows the voice sessions' turns by their
 //! events, which time its KV headroom and its critical window; the agents' events are recorded, and nothing acts
-//! on them. Events arrive at `POST /v1/events`, idempotent by `(tenant, source, event_id)`, or the control plane infers
-//! them from the traffic it proxies.
+//! on them. Trusted clients post them to `POST /v1/events`, idempotent by `(tenant, source, event_id)`; the
+//! control plane infers none from the traffic it proxies.
 //!
 //! On the wire an event is one flat JSON object; `type` selects the variant and its fields:
 //!
@@ -41,8 +41,6 @@ impl LifecycleEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventSource {
-    /// Inferred by the control plane from proxied traffic (for example, a response ending in tool calls).
-    Inferred,
     /// agentic-api's lifecycle sink: exact server-side tool timing.
     AgenticApi,
     /// The LiveKit voice worker: voice activity, end of turn, playback, barge-in.
@@ -55,7 +53,6 @@ impl EventSource {
     /// The wire name, also used as a metric label.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Inferred => "inferred",
             Self::AgenticApi => "agentic-api",
             Self::VoiceWorker => "voice-worker",
             Self::Client => "client",
@@ -98,9 +95,10 @@ pub enum EventKind {
     PlaybackStarted,
     /// The agent finished speaking.
     PlaybackEnded { played_ms: u64 },
-    /// The user barged in. Cancel the in-flight stream and truncate the context to what the user heard.
+    /// The user barged in, `played_ms` into the reply: policy `leaseholder` takes it as the user speaking again.
+    /// The voice agent ends the reply's stream itself.
     Interrupted { played_ms: u64 },
-    /// The session ended; its KV becomes ordinary cache.
+    /// The session ended: the gateway forgets its turn state and, with several GPU nodes, its placement.
     SessionClosed,
 }
 
@@ -136,15 +134,4 @@ pub enum StopReason {
     Cancelled,
     /// The upstream failed.
     Error,
-}
-
-impl StopReason {
-    /// Maps an OpenAI `finish_reason` or an Anthropic `stop_reason`. Unknown values count as a natural stop.
-    pub fn from_api(reason: &str) -> Self {
-        match reason {
-            "length" | "max_tokens" => Self::Length,
-            "tool_calls" | "function_call" | "tool_use" => Self::ToolCalls,
-            _ => Self::Stop,
-        }
-    }
 }

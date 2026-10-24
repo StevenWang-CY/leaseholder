@@ -169,7 +169,7 @@
       ]
     },
     {
-      "description": "The user barged in. Cancel the in-flight stream and truncate the context to what the user heard.",
+      "description": "The user barged in, `played_ms` into the reply: policy `leaseholder` takes it as the user speaking again.\nThe voice agent ends the reply's stream itself.",
       "type": "object",
       "properties": {
         "played_ms": {
@@ -188,7 +188,7 @@
       ]
     },
     {
-      "description": "The session ended; its KV becomes ordinary cache.",
+      "description": "The session ended: the gateway forgets its turn state and, with several GPU nodes, its placement.",
       "type": "object",
       "properties": {
         "type": {
@@ -211,11 +211,6 @@
     "EventSource": {
       "description": "Who emitted an event.",
       "oneOf": [
-        {
-          "description": "Inferred by the control plane from proxied traffic (for example, a response ending in tool calls).",
-          "type": "string",
-          "const": "inferred"
-        },
         {
           "description": "agentic-api's lifecycle sink: exact server-side tool timing.",
           "type": "string",
