@@ -28,3 +28,5 @@ Separate mechanisms per workload would duplicate the prefetch and headroom logic
 ## Later
 
 Since 2026-10-23 the voice worker posts its events to `/v1/events`, checked against the generated `lifecycle_event.schema.json`, and the gateway's `leaseholder` policy follows each call's turn by them. Tool-wait events are not ingested, and the shared lease and prefetch transitions are not pursued ([ADR-0006](0006-the-engine-change-carries-the-realtime-tier.md)).
+
+Since 2026-10-24 (W5) events are idempotent by `(tenant, source, event_id)`, so that a trusted tenant cannot make another's events repeats, and the control plane infers no events: the `inferred` source is gone.

@@ -21,7 +21,7 @@ Session ids are 1–128 characters from `[A-Za-z0-9._:-]`, so they are safe in h
 
 | Header | Direction | Meaning |
 |---|---|---|
-| `X-Session-ID` | trusted caller → gateway → engine | The session id. vLLM records it in its GPU-tier KV events |
+| `X-Session-ID` | trusted caller → gateway → engine | The session id. vLLM records it in its GPU-tier KV events, which the frozen box does not publish |
 | `X-Claude-Code-Session-ID` | caller → gateway | Claude Code's own session header |
 | `X-LH-Class` | trusted caller → gateway | The class: `realtime`, `interactive` or `background`; from any other caller, the tenant's default class |
 | `X-LH-Session-ID` | gateway → caller | The session id the gateway resolved or minted |
@@ -36,15 +36,15 @@ Every `X-LH-` header ends at the gateway; none reaches the engine.
 | Kind | Names |
 |---|---|
 | Headers | `X-Vllm-Priority`, `X-SMG-Priority`, `X-Session-ID` (from untrusted callers), `X-data-parallel-rank`, `X-Request-Id` |
-| Body fields | vLLM's `session_id`, `priority`, `kv_transfer_params`, `cache_salt`, `request_id`, `vllm_xargs`; SGLang's `rid`, `extra_key`, `session_params`, `custom_labels`, `routed_dp_rank`, `data_parallel_rank`, `disagg_prefill_dp_rank`, `bootstrap_host`, `bootstrap_port`, `bootstrap_room` |
+| Body fields | vLLM's `session_id`, `priority`, `kv_transfer_params`, `ec_transfer_params`, `cache_salt`, `request_id`, `vllm_xargs`; SGLang's `rid`, `extra_key`, `session_params`, `custom_labels`, `routed_dp_rank`, `data_parallel_rank`, `disagg_prefill_dp_rank`, `bootstrap_host`, `bootstrap_port`, `bootstrap_room` |
 
-vLLM 0.32 reads the body's `session_id` before the header, and `vllm_xargs.session_id` after it; `X-Vllm-Priority` takes precedence over the body's `priority`. When `upstream_priority` lists `body`, the gateway writes the class's engine priority into the body's `priority`, which SGLang reads (E2 arm 7b). vLLM's FCFS scheduler ignores priorities. Each tenant's `cache_salt` is the first 32 hex digits of SHA-256("leaseholder-cache-salt", NUL, tenant): it depends on the tenant's name, not its key, so rotating a key keeps the tenant's cache.
+vLLM 0.32 reads the body's `session_id` before the header, and `vllm_xargs.session_id` after it; `X-Vllm-Priority` takes precedence over the body's `priority`. When `upstream_priority` lists `body`, the gateway writes the class's engine priority into the body's `priority`, which SGLang reads (E2 arm 7b). vLLM's FCFS scheduler ignores priorities. Each tenant's `cache_salt` is the first 32 hex digits of HMAC-SHA-256 of the tenant's name, keyed by the 32 random bytes of `cache_salt_secret_file`: it depends on the tenant's name, not its key, so rotating a key keeps the tenant's cache, and without the secret the name does not give it away.
 
 ## Lifecycle events
 
 The voice worker tells the gateway where each call is.
 - **Delivery.** Trusted callers `POST` events to `/v1/events`, as one JSON object or an array of them, and get 202 `{"accepted": n, "duplicates": m}`. The voice worker posts over the gateway's Unix socket, where the voice tenant needs no key, from one background task per session, with a 1 s timeout and no retry: a late timing signal would mislead.
-- **Idempotency.** Events are idempotent by `(source, event_id)` within a window (by default 100,000 ids for 10 minutes): a repeat is acknowledged and ignored.
+- **Idempotency.** Events are idempotent by `(tenant, source, event_id)` within a window (by default 100,000 ids for 10 minutes): a repeat is acknowledged and ignored.
 - **Unknowns.** Unknown fields are ignored; an unknown `type` is rejected with 400, and so is the whole batch that contains it.
 
 ```json
@@ -54,10 +54,10 @@ The voice worker tells the gateway where each call is.
 
 | Field | Meaning |
 |---|---|
-| `event_id` | Idempotency key, unique per emitter: the voice worker sends the session id and a sequence number |
+| `event_id` | Idempotency key, unique per emitter: the voice worker sends the session id, its sender's nonce and a sequence number |
 | `session_id` | The session: for a call, the requests' `X-Session-ID` (`voice-<room SID>`) |
 | `at_ms` | When the emitter observed what the event reports, on its clock, in Unix epoch ms. Ordering uses the gateway's receipt time |
-| `source` | `voice-worker`, `agentic-api`, `client` or `inferred` |
+| `source` | `voice-worker`, `agentic-api` or `client` |
 | `type` | The event type, below |
 
 Under the `leaseholder` admission policy, the gateway keeps each realtime session's turn state from the voice events ([ARCHITECTURE.md §6](ARCHITECTURE.md#6-tested-and-not-adopted)). Every state but idle times out after `state_timeout_s` without an event, so a lost event holds a session at most that long, and a realtime request opens its session's critical window too. Under any other policy it keeps no turn state, and `session_closed` only ends the session's placement.
@@ -80,8 +80,8 @@ When the gateway fronts several GPU nodes, it places each session on one of them
 - **Request.** Trusted callers `POST` one JSON object to `/v1/sessions`: `{"session_id": "voice-RM_a1B2c3", "class": "realtime"}`. `session_id` has the form of [Sessions](#sessions). `class` is optional: the tenant's default class when absent, and a class stricter than the tenant's `max_class` is lowered to it, as for a request.
 - **Answer.** 200 `{"session_id": "voice-RM_a1B2c3", "class": "realtime", "node": "gray"}`. `node` is the node's name in the gateway's configuration, which also names its tunnel sockets on the control host (`gray-stt.sock`, `gray-tts.sock`).
 - **Idempotent.** Asking again returns the same node while the placement holds, and the session's requests go to that node.
-- **How long it holds.** Until the session has gone `idle_s` (300 s by default) without a request, its node fails readiness, or its `session_closed` event arrives. Its next request is then placed again; KV left on the old node is lost.
-- **Errors.** 401 `invalid_api_key` without a valid key (the voice plane's socket needs none); 403 `untrusted_tenant` from a caller that is not trusted; 400 `invalid_session` for a body without a valid `session_id` or with an unknown class; 503 `no_ready_node` when no ready node serves the class. A gateway with one upstream has no such route (404).
+- **How long it holds.** Until the session has gone `idle_s` (300 s by default) without a request, its node fails readiness, or its `session_closed` event arrives, or, while the table of 4,096 sessions is full, a new session takes its place as the one idle longest (untrusted tenants' sessions take at most half the table). Its next request is then placed again; KV left on the old node is lost.
+- **Errors.** 401 `invalid_api_key` without a valid key (the voice plane's socket needs none); 403 `untrusted_tenant` from a caller that is not trusted; 400 `invalid_session` for a body without a valid `session_id` or with an unknown class; 503 `no_ready_node` when no ready node serves the class; 503 `placement_full` when the table is full and every session in it has a request in flight. A gateway with one upstream has no such route (404).
 
 ## Removed after v0.3
 

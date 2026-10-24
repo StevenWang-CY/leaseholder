@@ -60,13 +60,13 @@ Every measurement runs on one pinned configuration with the audio models on the 
 │  host network (loopback only)                      │  voice plane: network namespace, no route out      │
 │  lh-gateway (Rust)                                 │  LiveKit server · LiveKit Agents voice worker      │
 │  AIPerf agent replay (pinned cores)                │  measurement callers (livekit-rtc)                 │
-│  SSH tunnels → 127.0.0.1:18000/18100/18880/15558   │  reach out only through Unix sockets               │
+│  SSH tunnels → 127.0.0.1:18000/18100/18880         │  reach out only through Unix sockets               │
 └──────────────────────────────────────────────────────┬──────────────────────────────────────────────────┘
                                                        │ SSH local forwards (systemd --user, restricted key)
                                                        ▼
-┌─────────────── Phastform: RTX 5060 Ti 16 GB, 188 GiB RAM, the frozen box (Gray: the same) ─────────────┐
-│  vLLM 0.32 + make-room · Qwen3-4B-FP8 · KV pool 36,400 tokens · CPU tier 20 GiB          :8000      │
-│  vLLM Whisper large-v3-turbo (STT) :8100 · Kokoro-82M (TTS) :8880 · KV-event replay :5558             │
+┌─────────────── Phastform: RTX 5060 Ti 16 GB, 188 GiB RAM, the frozen box (Gray: the same) ──────────────┐
+│  vLLM 0.32 + make-room · Qwen3-4B-FP8 · KV pool 36,400 tokens · CPU tier 20 GiB          :8000          │
+│  vLLM Whisper large-v3-turbo (STT) :8100 · Kokoro-82M (TTS) :8880                                       │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,9 +80,9 @@ Every measurement runs on one pinned configuration with the audio models on the 
 ### 3.3 Network and security
 
 See [ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md).
-- **Loopback and tunnels.** Every service binds loopback. Hosts reach each other only through SSH local forwards run as `systemd --user` units, with a key that may forward only the listed ports.
+- **Loopback and tunnels.** Every service binds loopback. Hosts reach each other only through SSH local forwards run as `systemd --user` units, with a key that may forward only to the engine, STT and TTS ports and may open no listener. The engine publishes no KV events: they carry every cached block's token ids, and vLLM sends them to whoever binds its TCP endpoint.
 - **The voice plane** runs in a network namespace with no route out. libwebrtc binds ICE sockets on every non-loopback interface and gathers no candidate on loopback alone, so the namespace holds loopback plus one dummy interface (10.255.0.1/32).
-- **Sanitized inputs.** The gateway strips the request fields and headers that vLLM, SGLang and SMG trust for scheduling, caching and routing, and sets its own: the class's priority, `X-Session-ID` and the tenant's `cache_salt`, derived from the tenant's name, so tenants never share prefix-cache entries ([PROTOCOL.md](PROTOCOL.md#headers)). Sessions are scoped to the tenant: a session id from an untrusted tenant is hashed with the tenant's name.
+- **Sanitized inputs.** The gateway strips the request fields and headers that vLLM, SGLang and SMG trust for scheduling, caching and routing, and sets its own: the class's priority, `X-Session-ID` and the tenant's `cache_salt`, an HMAC of the tenant's name under a secret only the gateway reads, so tenants never share prefix-cache entries and a client that reaches the engine directly cannot name another tenant's salt ([PROTOCOL.md](PROTOCOL.md#headers)). Sessions are scoped to the tenant: a session id from an untrusted tenant is hashed with the tenant's name.
 - **KV never crosses the network.** A session stays on the node that holds its KV; when a node fails, its sessions are placed again and re-prefill there.
 - **Known gap.** The hosts' other users share their loopback: on the GPU nodes they reach the engine (in vLLM's development mode, for the harness), STT and TTS directly, and on cyan the tunnels' TCP ports, SMG and the gateway's `/metrics`. Closing it takes Unix sockets end to end and a production unit without development mode, W6's production hardening ([ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md#co-tenants-2026-10-24)).
 
@@ -100,7 +100,7 @@ See [ADR-0005](adr/0005-loopback-services-and-node-sticky-kv.md).
 
 It serves its metrics at `/metrics` (requests, first bytes, the admission point's decisions by policy and reason, the realtime sessions' turn states) and logs one JSON line per request with its first byte to the millisecond, which E2 reads.
 
-The Rust workspace has four crates: `lh-proto` (wire types and their JSON Schemas), `lh-core` (the E0 tier cost model, KV geometry and a step-time model of vLLM 0.32, which the simulator and the gateway's throttle share, and the admission and placement policies, which only the gateway runs: pure code with no I/O and no clock), `lh-gateway` and `lh-sim` (§5).
+The Rust workspace has four crates: `lh-proto` (wire types and their JSON Schemas), `lh-core` (pure models of the frozen box, the E0 tier cost model, KV geometry and a step-time model of vLLM 0.32, which `lh-sim` runs, and the admission and placement policies, which only the gateway runs and whose throttle prices by the step model, compiled in: no I/O and no clock), `lh-gateway` and `lh-sim` (§5).
 
 ### 4.2 The voice pipeline
 

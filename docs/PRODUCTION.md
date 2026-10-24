@@ -36,7 +36,7 @@ The engine change matters when background KV fills the pool: agent contexts of 1
 
 ### The priorities
 
-Voice requests go at priority 0 and background work at 2; in vLLM a lower value is served first. A client can send `priority` in the request body or the `X-Vllm-Priority` header. A gateway in front should set it from the caller's identity instead, so that a background client cannot raise its own; `lh-gateway` maps each tenant to a class and caps it with `max_class`. Nothing else in front is needed: the measured configuration ran without an admission policy.
+Voice requests go at priority 0 and background work at 2; in vLLM a lower value is served first. A client can send `priority` in the request body or the `X-Vllm-Priority` header. A gateway in front should set it from the caller's identity instead, so that a background client cannot raise its own; `lh-gateway` maps each tenant to a class and caps it with `max_class`. Nothing else in front is needed: the measured configuration ran without an admission policy. `lh-gateway` is the harness that measured it, not a production gateway: what one would add is listed in [its README](../crates/lh-gateway/README.md#what-it-does-not-do), and the engine must be reachable only through the gateway.
 
 ### The reply's first tokens
 
