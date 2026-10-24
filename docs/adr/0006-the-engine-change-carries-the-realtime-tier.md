@@ -33,4 +33,4 @@ E2 measured two calls beside 24 coding-agent sessions whose contexts fill the GP
   - ADR-0003's decision stands, with the room made in the engine;
   - a window that covers the reply's first sentence makes degrade unnecessary.
 - **The v0 lease and ledger code is removed after v0.3:** `lh-proto`'s lease hint and ledger rows, `X-LH-Synthetic`, and `leaseholder_vllm`'s `LeasePolicy` and `LeaseConnector`. Done on 2026-10-24; the v0.3 tree keeps them.
-- **The change's known gaps** ([ARCHITECTURE.md §2](../ARCHITECTURE.md#2-the-engine-change)) are open in the variant and in both PRs, and E2 measured the change with them. W5 fixes them, with the further defects its review found, before the PRs' review.
+- **The change's known gaps** ([ARCHITECTURE.md §2](../ARCHITECTURE.md#2-the-engine-change)) were open in the v0.3 variant and in both PRs as first opened, and E2 measured the change with them. W5 fixed them, with the further defects its review found, in the variant (main, up to dff9744); the PRs carry the same fixes before their review.
