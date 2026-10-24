@@ -14,6 +14,11 @@ The caller then waits until the agent has been quiet for a second, pauses for a 
 takes the next turn. Every time comes from one clock in one process, so no clock offset enters
 the numbers. Each run directory gets ``run.json``, ``turns.jsonl`` and ``summary.json``.
 
+A turn fails when the agent does not answer within ``reply_timeout``, or does not stop speaking: its
+line in turns.jsonl has an ``error`` and keeps what the turn measured before. In the summary a
+sample that the timeout cut short counts as censored at the timeout, never as missing, so that a
+failure raises a percentile rather than leaving it out.
+
 With ``--save-audio`` each caller also keeps the frames it already handles, what it sent and the
 agent's audio as received, and once every call has ended writes them as ``call-<i>.wav`` with the
 times of each turn's events in ``call-<i>.json``, for the demo video (benchmarks/e2/demo.py).
@@ -140,23 +145,28 @@ class Caller:
             "spoke_during_turn": audio.started_between(played["onset"], played["speech_end"]),
             "barge_in": False,
         }
-        if self.rng.random() < config.barge_in:
-            delay = self.rng.uniform(*config.barge_in_delay)
-            await asyncio.sleep(max(0.0, reply + delay - time.monotonic()))
-            interruption = self.rng.choice(self.corpus.barge_ins)
-            barged = await self.microphone.play(interruption)
-            onset = barged["onset"]
-            at |= {"barge_in": onset, "barge_in_speech_end": barged["speech_end"]}
-            row.update(barge_in=True, barge_in_clip=interruption.name)
-            row["interrupted_speech"] = audio.speaking_at(onset)
-            if row["interrupted_speech"]:
-                stopped = await audio.end_of_span_at(onset, config.reply_timeout)
-                at["silence"] = stopped
-                row["barge_in_to_silence_ms"] = round(max(0.0, stopped - onset) * 1000, 1)
-            second = await audio.first_onset_after(barged["speech_end"], config.reply_timeout)
-            at["barge_in_reply"] = second
-            row["v2v_after_barge_in_ms"] = round((second - barged["speech_end"]) * 1000, 1)
-        at["end"] = await audio.silent_after(time.monotonic(), QUIET_S, config.reply_timeout * 2)
+        try:
+            if self.rng.random() < config.barge_in:
+                delay = self.rng.uniform(*config.barge_in_delay)
+                await asyncio.sleep(max(0.0, reply + delay - time.monotonic()))
+                interruption = self.rng.choice(self.corpus.barge_ins)
+                barged = await self.microphone.play(interruption)
+                onset = barged["onset"]
+                at |= {"barge_in": onset, "barge_in_speech_end": barged["speech_end"]}
+                row.update(barge_in=True, barge_in_clip=interruption.name)
+                row["interrupted_speech"] = audio.speaking_at(onset)
+                if row["interrupted_speech"]:
+                    stopped = await audio.end_of_span_at(onset, config.reply_timeout)
+                    at["silence"] = stopped
+                    row["barge_in_to_silence_ms"] = round(max(0.0, stopped - onset) * 1000, 1)
+                second = await audio.first_onset_after(barged["speech_end"], config.reply_timeout)
+                at["barge_in_reply"] = second
+                row["v2v_after_barge_in_ms"] = round((second - barged["speech_end"]) * 1000, 1)
+            at["end"] = await audio.silent_after(
+                time.monotonic(), QUIET_S, config.reply_timeout * 2
+            )
+        except TimeoutError as exc:  # the turn fails, keeping the reply it measured
+            row["error"] = str(exc)
         return row
 
     async def call(self, rows: list[dict[str, Any]], log: TextIO) -> None:
@@ -245,27 +255,46 @@ class Caller:
         (out_dir / f"call-{self.index}.json").write_text(json.dumps(call, indent=1) + "\n")
 
 
-def percentiles(values: Iterable[float]) -> dict[str, float | int]:
+def percentiles(values: Iterable[float], censored: int = 0) -> dict[str, float | int]:
+    """Count, p50, p95 and p99 of samples in ms; ``censored`` of them stand at the reply timeout."""
     xs = sorted(values)
+    count = {"n": len(xs)} | ({"censored": censored} if censored else {})
     if len(xs) < 2:
-        return {"n": len(xs), **({"p50": xs[0]} if xs else {})}
+        return count | ({"p50": xs[0]} if xs else {})
     q = statistics.quantiles(xs, n=100, method="inclusive")
-    return {"n": len(xs), "p50": round(q[49], 1), "p95": round(q[94], 1), "p99": round(q[98], 1)}
+    return count | {"p50": round(q[49], 1), "p95": round(q[94], 1), "p99": round(q[98], 1)}
 
 
-def summarize(rows: list[dict[str, Any]], lateness: list[float]) -> dict[str, Any]:
-    ok = [r for r in rows if "error" not in r]
-    v2v = [r["v2v_ms"] for r in ok] + [r["v2v_after_barge_in_ms"] for r in ok if r["barge_in"]]
-    barge = [r["barge_in_to_silence_ms"] for r in ok if r.get("barge_in_to_silence_ms") is not None]
+def v2v_samples(rows: Iterable[dict[str, Any]], timeout_ms: float) -> tuple[list[float], int]:
+    """The callers' voice-to-voice samples and how many of them are censored: each turn's reply and,
+    after a barge-in, the reply to the interruption, a reply that never came standing at the
+    timeout."""
+    samples, censored = [], 0
+    for row in rows:
+        wanted = ["v2v_ms", *(["v2v_after_barge_in_ms"] if row.get("barge_in") else [])]
+        for key in wanted:
+            censored += key not in row
+            samples.append(row.get(key, timeout_ms))
+    return samples, censored
+
+
+def summarize(
+    rows: list[dict[str, Any]], lateness: list[float], timeout_s: float = 30.0
+) -> dict[str, Any]:
+    """The calls' summary. A sample a timeout cut short counts at the timeout (``timeout_s``): the
+    reply to a turn or to an interruption that never came, the agent's audio that never stopped."""
+    timeout_ms = timeout_s * 1000
+    v2v, censored = v2v_samples(rows, timeout_ms)
+    silence = [r["barge_in_to_silence_ms"] for r in rows if "barge_in_to_silence_ms" in r]
+    cut = sum(1 for r in rows if r.get("interrupted_speech") and "barge_in_to_silence_ms" not in r)
+    barge_ins = [r for r in rows if r.get("barge_in")]
     return {
         "turns": len(rows),
-        "errors": len(rows) - len(ok),
-        "v2v_ms": percentiles(v2v),
-        "barge_in_to_silence_ms": percentiles(barge),
-        "barge_ins": sum(1 for r in ok if r["barge_in"]),
-        "barge_ins_after_the_reply": sum(
-            1 for r in ok if r["barge_in"] and not r["interrupted_speech"]
-        ),
+        "errors": sum(1 for r in rows if "error" in r),
+        "v2v_ms": percentiles(v2v, censored),
+        "barge_in_to_silence_ms": percentiles([*silence, *[timeout_ms] * cut], cut),
+        "barge_ins": len(barge_ins),
+        "barge_ins_after_the_reply": sum(1 for r in barge_ins if not r["interrupted_speech"]),
         "caller_max_lateness_ms": round(max(lateness, default=0.0) * 1000, 1),
     }
 
@@ -279,7 +308,7 @@ async def run_bots(config: BotsConfig, out_dir: Path) -> dict[str, Any]:
     started = time.time()
     with (out_dir / "turns.jsonl").open("w") as log:
         await asyncio.gather(*(caller.call(rows, log) for caller in callers))
-    summary = summarize(rows, [c.max_lateness_s for c in callers])
+    summary = summarize(rows, [c.max_lateness_s for c in callers], config.reply_timeout)
     run = {
         "kind": "voice-bots",
         "config": asdict(config) | {"api_secret": "<redacted>", "corpus": str(config.corpus)},

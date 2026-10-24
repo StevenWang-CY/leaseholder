@@ -89,7 +89,7 @@ def test_render_writes_16k_clips_and_a_manifest(tmp_path: Path):
     assert len(corpus.turns) == len(TURN_LINES) and len(corpus.barge_ins) == len(BARGE_IN_LINES)
 
 
-def test_summary_pools_v2v_samples_and_counts_missed_barge_ins():
+def test_summary_pools_v2v_samples_and_censors_the_replies_that_never_came():
     rows = [
         {"caller": 0, "turn": 0, "v2v_ms": 800.0, "barge_in": False},
         {"caller": 0, "turn": 1, "v2v_ms": 900.0, "barge_in": True, "interrupted_speech": True,
@@ -97,13 +97,23 @@ def test_summary_pools_v2v_samples_and_counts_missed_barge_ins():
         {"caller": 1, "turn": 0, "v2v_ms": 1100.0, "barge_in": True, "interrupted_speech": False,
          "v2v_after_barge_in_ms": 950.0},
         {"caller": 1, "turn": 1, "error": "the agent did not start speaking"},
+        # The reply came; after the interruption the agent never stopped speaking.
+        {"caller": 1, "turn": 2, "v2v_ms": 700.0, "barge_in": True, "interrupted_speech": True,
+         "error": "the agent did not stop speaking"},
     ]  # fmt: skip
-    summary = summarize(rows, [0.004, 0.012])
-    assert summary["turns"] == 4 and summary["errors"] == 1
-    assert summary["v2v_ms"]["n"] == 5 and summary["v2v_ms"]["p50"] == 950.0
-    assert summary["barge_in_to_silence_ms"] == {"n": 1, "p50": 620.0}
-    assert summary["barge_ins"] == 2 and summary["barge_ins_after_the_reply"] == 1
+    summary = summarize(rows, [0.004, 0.012], timeout_s=30.0)
+    assert summary["turns"] == 5 and summary["errors"] == 2
+    # The failed turn's reply and the unanswered interruption count at the 30 s timeout.
+    assert summary["v2v_ms"] == {
+        "n": 8, "censored": 2, "p50": 975.0, "p95": 30_000.0, "p99": 30_000.0
+    }  # fmt: skip
+    silence = summary["barge_in_to_silence_ms"]
+    assert (silence["n"], silence["censored"], silence["p50"]) == (2, 1, 15_310.0)
+    assert summary["barge_ins"] == 3 and summary["barge_ins_after_the_reply"] == 1
     assert summary["caller_max_lateness_ms"] == 12.0
+    # Without a failure the summary is as it always was: no censored count.
+    answered = summarize(rows[:3], [0.0])
+    assert answered["v2v_ms"] == {"n": 5, "p50": 950.0, "p95": 1080.0, "p99": 1096.0}
 
 
 def test_a_recorded_track_keeps_its_frames_together_and_its_pauses():
@@ -228,3 +238,45 @@ def test_a_saved_call_lines_up_what_the_caller_sent_with_what_it_heard(
     gaps = [(onset - last) / 24 for (_, last), (onset, _) in zip(sent, heard, strict=True)]
     assert gaps == pytest.approx(v2v, abs=25)  # the waveforms show the V2V the callers measured
     assert all(REPLY_S * 1000 <= ms <= REPLY_S * 1000 + 60 for ms in v2v)
+
+
+class FirstReplyOnly(Line):
+    """The fake agent answers the first line it hears and never the interruption after it."""
+
+    async def capture_frame(self, frame: Any) -> None:
+        await super().capture_frame(frame)
+        del self.replies[1:]
+
+
+def test_an_unanswered_interruption_fails_the_turn_and_keeps_its_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    line = FirstReplyOnly()
+    monkeypatch.setattr(audio.rtc, "AudioSource", line.source)
+    monkeypatch.setattr(audio.rtc, "AudioStream", line.stream)
+    monkeypatch.setattr(bots, "QUIET_S", 0.2)
+    corpus = SimpleNamespace(turns=[line_clip("turn-00", 0.3)], barge_ins=[line_clip("barge", 0.2)])
+    config = BotsConfig("ws://fake", "key", "secret", tmp_path, barge_in=1.0, reply_timeout=0.5)
+    config = dataclasses.replace(config, barge_in_delay=(0.05, 0.05))
+
+    async def call() -> dict[str, Any]:
+        caller = Caller(config, corpus, 0, "test")
+        tasks = [
+            asyncio.create_task(caller.microphone.run()),
+            asyncio.create_task(caller.agent_audio.consume(line)),
+        ]
+        await asyncio.sleep(0.2)
+        row = await caller.turn(0)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return row
+
+    row = asyncio.run(call())
+    assert row["error"] == "the agent did not start speaking"
+    assert row["barge_in"] and "v2v_after_barge_in_ms" not in row
+    assert REPLY_S * 1000 <= row["v2v_ms"] <= REPLY_S * 1000 + 60  # the reply it measured stays
+    summary = summarize([row], [0.0], timeout_s=0.5)
+    assert summary["errors"] == 1
+    assert (summary["v2v_ms"]["n"], summary["v2v_ms"]["censored"]) == (2, 1)
+    assert summary["v2v_ms"]["p99"] == pytest.approx(500.0, abs=5)

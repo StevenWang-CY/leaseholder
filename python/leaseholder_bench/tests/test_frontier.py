@@ -539,7 +539,42 @@ def test_a_median_between_two_runs_keeps_its_half(tmp_path: Path) -> None:
     rows, _ = load_points(dirs)
     table = write_report(rows, tmp_path / "report")[1].read_text()
     assert f"| {spread('0.5', '0', '1')} |" in table
-    assert f"| • | 16 | {spread('4,000', '4,000', '4,000')} |" in table
+    # A run's failed turn keeps its configuration off the frontier.
+    assert f"|  | 16 | {spread('4,000', '4,000', '4,000')} |" in table
+
+
+def test_a_failed_turn_is_censored_and_keeps_its_configuration_off_the_frontier(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    stages = {"end_of_turn_ms": 800, "turn_to_first_sentence_ms": 300, "tts_first_audio_ms": 200}
+    ok = point(tmp_path, "a5-ok-s24", "5", 4000, 2000)
+    turn_lines(ok, stages, 3, answered(1900, 2000, 2100))
+    # vLLM's queued-token limit refused 48 of the 50 turns: they count at the reply timeout.
+    refusing = point(tmp_path, "a5-queued-s24", "5", 5600, 2013)
+    failed = [
+        {"caller": 0, "turn": n, "error": "the agent did not start speaking"} for n in range(48)
+    ]
+    turn_lines(refusing, stages, 2, [*answered(1797, 2013), *failed])
+    rewrite(refusing, lambda s: s["voice"].update(errors=48))
+    rows, _ = load_points([point(tmp_path, "a1-voice", "1", None, 1760), ok, refusing])
+    by = {r["point"]: r for r in rows}
+    assert (by["a5-queued-s24"]["v2v_p50_ms"], by["a5-queued-s24"]["v2v_p95_ms"]) == (
+        30_000,
+        30_000,
+    )
+    # Its V2V is censored, not measured: off the frontier, and no rival of the measured point.
+    assert not by["a5-queued-s24"]["frontier"] and by["a5-ok-s24"]["frontier"]
+    assert [c["point"] for c in stage_waterfall(rows)] == ["a5-ok-s24"]
+    out = tmp_path / "report"
+    write_report(rows, out)
+    table = (out / "frontier.md").read_text()
+    assert "| a5-queued-s24: a5-queued-s24 label |  | 16 | 5,600 |" in table
+    assert "| ≥30,000 | ≥30,000 | ≥30,000 | 48 of 50 |" in table
+    figure = (out / "frontier.svg").read_text()
+    assert (
+        "Failed turns: a5-queued-s24, 48 of 50, its V2V censored at 30 s, off the scale" in figure
+    )
 
 
 def turn_lines(run_dir: Path, stages: dict[str, float], turns: int, v2v: list[dict]) -> None:
@@ -567,7 +602,7 @@ def test_the_stage_waterfall_stacks_each_configurations_stages_to_its_mean_v2v(
         {"transcript_ms": 790, "end_of_turn_ms": 800, "llm_ttft_ms": 2500}
         | {"turn_to_first_sentence_ms": 3000, "tts_first_audio_ms": 300},
         4,
-        [*answered(4000, 4400), barged | {"v2v_after_barge_in_ms": 4600}, {"error": "timeout"}],
+        [*answered(4000, 4400), barged | {"v2v_after_barge_in_ms": 4600}],
     )
     turn_lines(
         frozen[1],
@@ -858,7 +893,9 @@ def test_a_point_on_two_gpu_nodes_reports_its_totals_and_each_nodes_share(tmp_pa
     }
     assert (a["voice"]["v2v_ms"]["n"], a["voice"]["v2v_ms"]["p50"]) == (3, 1600.0)  # with the reply
     assert a["voice"]["barge_in_to_silence_ms"]["p50"] == 600.0
-    assert (b["voice"]["turns"], b["voice"]["errors"], b["voice"]["v2v_ms"]["n"]) == (2, 1, 1)
+    # Node b's failed turn counts at the reply timeout, censored.
+    assert (b["voice"]["turns"], b["voice"]["errors"], b["voice"]["v2v_ms"]["n"]) == (2, 1, 2)
+    assert b["voice"]["v2v_ms"]["p99"] == pytest.approx(30_000, abs=300)
     assert b["background"] == {
         "requests": 2,
         "errors": 1,

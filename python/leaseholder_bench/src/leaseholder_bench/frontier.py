@@ -70,6 +70,9 @@ WATERFALL = (
 """The stage times of the worker's turn lines, in the order of a turn (its ``STAGES``)."""
 GPU_TIME = "%Y/%m/%d %H:%M:%S.%f"
 """nvidia-smi's timestamp, which campaign.sh has it write in UTC."""
+REPLY_TIMEOUT_MS = 30_000.0
+"""How long ``lh-voice bots`` waits for a reply (its ``reply_timeout``), after which the turn fails: a
+reply that never came counts as a sample censored at this value, in every V2V percentile."""
 
 
 def summarize_point(
@@ -79,7 +82,7 @@ def summarize_point(
     ``ValueError`` when the point measured nothing to place on the frontier. A point on several GPU
     ``nodes`` adds up their engines' counters and reports each node's share under ``nodes``."""
     bots = orjson.loads((run_dir / "bots" / "summary.json").read_bytes())
-    if not bots["v2v_ms"].get("n"):
+    if bots["v2v_ms"].get("n", 0) <= bots["v2v_ms"].get("censored", 0):
         raise ValueError(f"the calls measured no voice-to-voice latency ({bots['errors']} failed)")
     metrics = run_dir / "metrics"
     records = run_dir / "aiperf" / "profile_export.jsonl"
@@ -157,20 +160,35 @@ def call_nodes(run_dir: Path) -> dict[int, str]:
 
 def call_turns(turns: Sequence[Mapping[str, Any]], calls: int) -> dict[str, Any]:
     """Some of the calls' numbers from their callers' turns (bots/turns.jsonl), counted as ``lh-voice
-    bots`` sums up all of them: voice-to-voice over every reply, the reply to an interruption too."""
-    ok = [t for t in turns if "error" not in t]
-    v2v = [t["v2v_ms"] for t in ok] + [t["v2v_after_barge_in_ms"] for t in ok if t["barge_in"]]
-    silence = [
-        t["barge_in_to_silence_ms"] for t in ok if t.get("barge_in_to_silence_ms") is not None
+    bots`` sums up all of them: voice-to-voice over every reply, the reply to an interruption too,
+    and a reply or a silence a timeout cut short censored at REPLY_TIMEOUT_MS."""
+    silence = [t["barge_in_to_silence_ms"] for t in turns if "barge_in_to_silence_ms" in t]
+    silence += [
+        REPLY_TIMEOUT_MS
+        for t in turns
+        if t.get("interrupted_speech") and "barge_in_to_silence_ms" not in t
     ]
     return {
         "calls": calls,
         "turns": len(turns),
-        "errors": len(turns) - len(ok),
-        "v2v_ms": summarize(v2v),
+        "errors": sum(1 for t in turns if "error" in t),
+        "v2v_ms": summarize(turn_samples(turns)[0]),
         "barge_in_to_silence_ms": summarize(silence),
-        "barge_ins": sum(1 for t in ok if t["barge_in"]),
+        "barge_ins": sum(1 for t in turns if t.get("barge_in")),
     }
+
+
+def turn_samples(turns: Iterable[Mapping[str, Any]]) -> tuple[list[float], int]:
+    """The voice-to-voice samples of the callers' turns (bots/turns.jsonl) and how many are censored:
+    each turn's reply and, after a barge-in, the reply to the interruption, as ``lh-voice bots`` pools
+    them; a reply that never came (a failed turn) stands at REPLY_TIMEOUT_MS."""
+    samples, censored = [], 0
+    for turn in turns:
+        wanted = ["v2v_ms", *(["v2v_after_barge_in_ms"] if turn.get("barge_in") else [])]
+        for key in wanted:
+            censored += key not in turn
+            samples.append(turn.get(key, REPLY_TIMEOUT_MS))
+    return samples, censored
 
 
 def logged_background(requests: Iterable[Mapping[str, Any]], seconds: float) -> dict[str, Any]:
@@ -587,6 +605,10 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         first_byte = logged_first_byte(requests, "realtime")
     worker = summary.get("worker") or {}
     waterfall, events = worker.get("waterfall") or {}, worker.get("events") or {}
+    # V2V from the callers' turns, where a failed turn counts at the reply timeout; from the callers'
+    # summary for a run directory without them.
+    samples = v2v_samples(run_dir / "bots" / "turns.jsonl")
+    v2v = percentiles(samples) if samples else voice["v2v_ms"]
     row = {
         "arm": str(arm["arm"]),
         "workload": _workload(arm["agents"]["data"], arm["voice"]["callers"]),
@@ -601,9 +623,9 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
         "router": arm["router"] or "",
         "background_tokens_per_s": background.get("tokens_per_s", 0.0),
         "background_requests_per_s": background.get("requests_per_s", 0.0),
-        "v2v_p50_ms": voice["v2v_ms"].get("p50"),
-        "v2v_p95_ms": voice["v2v_ms"].get("p95"),
-        "v2v_p99_ms": voice["v2v_ms"].get("p99"),
+        "v2v_p50_ms": v2v.get("p50"),
+        "v2v_p95_ms": v2v.get("p95"),
+        "v2v_p99_ms": v2v.get("p99"),
         "voice_turns": voice["turns"],
         "voice_errors": voice["errors"],
         "barge_in_to_silence_p95_ms": voice["barge_in_to_silence_ms"].get("p95"),
@@ -628,7 +650,7 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
     # inputs, the count and mean of each of the worker's stages and the callers' V2V samples.
     row["data"] = arm["agents"]["data"]
     row["stage_means"] = {s: (c["n"], c["mean"]) for s, c in waterfall.items() if "mean" in c}
-    row["v2v_samples"] = v2v_samples(run_dir / "bots" / "turns.jsonl")
+    row["v2v_samples"] = samples
     nodes = summary.get("nodes") or {}
     row["nodes"] = " ".join(nodes) or None
     row["by_node"] = [_node_row(run_dir, node, share, window) for node, share in nodes.items()]
@@ -636,17 +658,21 @@ def _row(run_dir: Path, run: Mapping[str, Any], summary: Mapping[str, Any]) -> d
 
 
 def v2v_samples(turns: Path) -> list[float]:
-    """The callers' voice-to-voice samples in their turns.jsonl, pooled as their summary pools them:
-    each answered turn's, and the reply's after each barge-in. None without the file."""
+    """The callers' voice-to-voice samples in their turns.jsonl (:func:`turn_samples`), a failed
+    turn's censored at REPLY_TIMEOUT_MS; none without the file."""
     if not turns.exists():
         return []
-    samples = []
-    for row in map(orjson.loads, filter(str.strip, turns.read_text().splitlines())):
-        if "error" not in row:
-            samples.append(row["v2v_ms"])
-            if row["barge_in"]:
-                samples.append(row["v2v_after_barge_in_ms"])
-    return samples
+    return turn_samples(map(orjson.loads, filter(str.strip, turns.read_text().splitlines())))[0]
+
+
+def percentiles(samples: Sequence[float]) -> dict[str, float | int]:
+    """Count, p50, p95 and p99 of V2V samples in ms, as ``lh-voice bots`` sums its calls up: inclusive
+    quantiles, to a tenth of a millisecond."""
+    xs = sorted(samples)
+    if len(xs) < 2:
+        return {"n": len(xs), **({"p50": xs[0]} if xs else {})}
+    q = statistics.quantiles(xs, n=100, method="inclusive")
+    return {"n": len(xs), "p50": round(q[49], 1), "p95": round(q[94], 1), "p99": round(q[98], 1)}
 
 
 def _node_row(
@@ -745,7 +771,8 @@ frontier.md gives with their range."""
 def configurations(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The configurations the rows measured, in the order of their first runs: each arm file's runs,
     one per campaign that measured it, with the median of each REPEATED column over the runs that
-    measured it (the run's own value for a configuration measured once)."""
+    measured it (the run's own value for a configuration measured once), and the failed turns and
+    the turns of all its runs."""
     runs: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for row in rows:
         runs.setdefault(_configuration(row), []).append(row)
@@ -753,6 +780,8 @@ def configurations(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         {"workload": workload, "arm": arm, "point": point, "runs": measured}
         | {"frontier": all(r["frontier"] for r in measured)}
         | {column: _median(r[column] for r in measured) for column in REPEATED}
+        | {"failed_turns": sum(r["voice_errors"] for r in measured)}
+        | {"turns": sum(r["voice_turns"] for r in measured)}
         for (workload, arm, point), measured in runs.items()
     ]
 
@@ -763,14 +792,16 @@ def _median(values: Iterable[float | None]) -> float | None:
 
 
 def mark_frontier(rows: Sequence[dict[str, Any]]) -> None:
-    """Mark the points that no other point of their arm and workload dominates."""
+    """Mark the points that no other point of their arm and workload dominates. A point with failed
+    turns is left off: its V2V is censored, not measured, so it neither takes a place on the
+    frontier nor keeps another point off it."""
 
     def dominates(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
         ax, ay = a["background_tokens_per_s"], a["v2v_p95_ms"]
         bx, by = b["background_tokens_per_s"], b["v2v_p95_ms"]
         return ax >= bx and ay <= by and (ax > bx or ay < by)
 
-    placed = [r for r in rows if r["v2v_p95_ms"] is not None]
+    placed = [r for r in rows if r["v2v_p95_ms"] is not None and not r.get("failed_turns")]
     for row in placed:
         rivals = (
             r
@@ -821,10 +852,15 @@ def stage_waterfall(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     stage over their turns, the rest of the mean V2V (``transport_ms``: the callers' V2V less the
     worker's stages), the LLM's mean time to first token and when its request started (at the final
     transcript under preemptive generation, otherwise at the end of the turn), and the mean, median
-    and p95 of the callers' V2V samples. Configurations without turn lines are left out."""
+    and p95 of the callers' V2V samples. Configurations without turn lines are left out, and so are
+    runs with failed turns, whose replies the worker's stages do not cover."""
     cells = []
     for group in configurations(rows):
-        runs = [r for r in group["runs"] if r["stage_means"] and r["v2v_samples"]]
+        runs = [
+            r
+            for r in group["runs"]
+            if r["stage_means"] and r["v2v_samples"] and not r["voice_errors"]
+        ]
         stages = {stage: _pooled(runs, stage) for stage, _ in STACKED}
         if not runs or None in stages.values():
             continue
@@ -927,7 +963,9 @@ def markdown(rows: Sequence[Mapping[str, Any]]) -> str:
         "realtime first byte is the gateway's, from its request log; ~ marks one interpolated "
         "inside its histogram's buckets, for a point without the log. Refused counts the gateway's "
         "admission point and the engine's queue limits; — is a count the point's gateway or engine "
-        "does not keep."
+        "does not keep. A failed turn, one the agent did not answer within the callers' reply "
+        f"timeout, counts as a V2V sample censored at {REPLY_TIMEOUT_MS:,.0f} ms, so that ≥ marks a "
+        "percentile it sets; a configuration with failed turns is not placed on the frontier."
     )
     if any(len(g["runs"]) > 1 for g in groups.values()):
         intro += (
@@ -1005,7 +1043,7 @@ def _arm_rows(
         line = (
             f"| {name} | {mark} | {r['sessions']} "
             f"| {_cell(r['background_tokens_per_s'])} | {_cell(r['background_requests_per_s'], 2)} "
-            f"| {_cell(r['v2v_p50_ms'])} | {_cell(r['v2v_p95_ms'])} | {_cell(r['v2v_p99_ms'])} "
+            f"| {_v2v(r['v2v_p50_ms'])} | {_v2v(r['v2v_p95_ms'])} | {_v2v(r['v2v_p99_ms'])} "
             f"| {r['voice_errors']} of {r['voice_turns']} | {ttft} | {first_byte} "
             f"| {_cell(r['engine_preemptions'])} | {counts} |"
         )
@@ -1027,6 +1065,8 @@ def _spread(group: Mapping[str, Any], gpu_columns: bool) -> str:
         if not values:
             return "—"
         median = group[column]
+        if column.startswith("v2v_"):
+            return f"{_v2v(median)} ({_v2v(min(values))}\N{EN DASH}{_v2v(max(values))})"
         # A median between two counts of failed turns keeps its half.
         digits = 1 if column == "voice_errors" and not float(median).is_integer() else 0
         return f"{_cell(median, digits)} ({_cell(min(values))}\N{EN DASH}{_cell(max(values))})"
@@ -1081,8 +1121,8 @@ def _nodes(rows: Sequence[Mapping[str, Any]], gpu_columns: bool) -> list[str]:
                 failed = f"{n['voice_errors']} of {n['voice_turns']}"
             first_byte = " / ".join(_cell(n[f"agent_first_byte_{q}_ms"]) for q in ("p50", "p99"))
             line = (
-                f"| {name} | {n['node']} | {_cell(n['calls'])} | {_cell(n['v2v_p50_ms'])} "
-                f"| {_cell(n['v2v_p95_ms'])} | {_cell(n['v2v_p99_ms'])} | {failed} "
+                f"| {name} | {n['node']} | {_cell(n['calls'])} | {_v2v(n['v2v_p50_ms'])} "
+                f"| {_v2v(n['v2v_p95_ms'])} | {_v2v(n['v2v_p99_ms'])} | {failed} "
                 f"| {_cell(n['background_tokens_per_s'])} | {_cell(n['background_requests_per_s'], 2)} "
                 f"| {first_byte} | {_cell(n['realtime_first_byte_p95_ms'])} "
                 f"| {_cell(n['engine_preemptions'])} |"
@@ -1162,6 +1202,11 @@ def _cell(value: Any, digits: int = 0) -> str:
     return f"{value:,}" if isinstance(value, int) else str(value)
 
 
+def _v2v(value: float | None) -> str:
+    """A V2V percentile's cell: ≥ marks one that a failed turn sets, censored at the reply timeout."""
+    return ("≥" if value is not None and value >= REPLY_TIMEOUT_MS else "") + _cell(value)
+
+
 # Light chart surface, ink and the categorical palette, in its order.
 _SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
 _SURFACE, _INK, _MUTED, _GRID, _AXIS = "#fcfcfb", "#0b0b0b", "#898781", "#e1e0d9", "#c3c2b7"
@@ -1212,8 +1257,9 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
     the arm's marker, its dominated configurations as open markers, and the arm's name by the last
     point of its frontier. A configuration measured in several campaigns sits at its runs' medians,
     with whiskers over their range on both axes: one marker per configuration keeps each frontier a
-    line through what frontier.md marks, and the whiskers still show a run that collapsed. A dashed
-    line marks the voice SLO, ``slo`` ms. False without matplotlib."""
+    line through what frontier.md marks, and the whiskers still show a run that collapsed. A
+    configuration with failed turns, whose V2V is censored, is a cross on no frontier, and the notes
+    name it. A dashed line marks the voice SLO, ``slo`` ms. False without matplotlib."""
     try:
         import matplotlib
     except ImportError:
@@ -1223,9 +1269,16 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
     from matplotlib.lines import Line2D
     from matplotlib.ticker import StrMethodFormatter
 
-    groups = [g for g in configurations(rows) if g["v2v_p95_ms"] is not None]
-    arms = sorted({g["arm"] for g in groups}, key=_arm_order)
+    placed = [g for g in configurations(rows) if g["v2v_p95_ms"] is not None]
+    groups = [g for g in placed if not g["failed_turns"]]
+    failed = [g for g in placed if g["failed_turns"]]
+    arms = sorted({g["arm"] for g in placed}, key=_arm_order)
     fence = _fence([g["v2v_p95_ms"] for g in groups])
+    # The scale of the measured configurations: a censored V2V must not flatten them.
+    top = fence if fence is not None else max((g["v2v_p95_ms"] for g in groups), default=None)
+    if slo is not None and top is not None:
+        top = max(top, slo)
+    crosses = [g for g in failed if top is not None and g["v2v_p95_ms"] <= top]
     fig, ax = plt.subplots(figsize=(7.5, 5.5), facecolor=_SURFACE, layout="constrained")
     ax.set_facecolor(_SURFACE)
     ends = []
@@ -1274,20 +1327,37 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
             )
         if drawn := [g for g in front if fence is None or g["v2v_p95_ms"] <= fence]:
             ends.append((drawn[-1]["background_tokens_per_s"], drawn[-1]["v2v_p95_ms"], arm))
+        if censored := [g for g in crosses if g["arm"] == arm]:
+            ax.scatter(
+                [g["background_tokens_per_s"] for g in censored],
+                [g["v2v_p95_ms"] for g in censored],
+                s=size**2,
+                marker="X",
+                color=color,
+                linewidths=0,
+                zorder=2,
+            )
     notes = ["A line joins each arm's frontier; open markers are dominated configurations"]
     if any(len(g["runs"]) > 1 for g in groups):
         notes[0] += ", whiskers span repeated runs"
-    if fence is not None:  # the scale of the rest and of the SLO, with matplotlib's margins
-        shown = [g["v2v_p95_ms"] for g in groups if g["v2v_p95_ms"] <= fence]
+    if fence is not None or len(crosses) < len(failed):  # the scale of the rest and the SLO
+        shown = [g["v2v_p95_ms"] for g in groups if fence is None or g["v2v_p95_ms"] <= fence]
         shown += [] if slo is None else [slo]
-        low, high = min(shown), max(shown)
-        ax.set_ylim(low - 0.05 * (high - low), high + 0.05 * (high - low))
+        if shown:
+            low, high = min(shown), max(shown)
+            ax.set_ylim(low - 0.05 * (high - low), high + 0.05 * (high - low))
+    if fence is not None:
         notes += [
             f"Off the scale: {g['point']}, {g['v2v_p95_ms']:,.0f} ms at "
             f"{g['background_tokens_per_s']:,.0f} tokens/s"
             for g in groups
             if g["v2v_p95_ms"] > fence
         ]
+    notes += [
+        f"Failed turns: {g['point']}, {g['failed_turns']} of {g['turns']}, its V2V censored at "
+        f"{REPLY_TIMEOUT_MS / 1000:.0f} s{' (a cross)' if g in crosses else ', off the scale'}"
+        for g in failed
+    ]
     taken = []  # what the arms' names keep clear of
     if slo is None:
         notes.append(f"No point of voice alone with {rows[0]['callers']} callers sets a voice SLO")
@@ -1326,7 +1396,7 @@ def plot(rows: Sequence[Mapping[str, Any]], path: Path, slo: float | None = None
         for text in legend.get_texts():
             text.set_color(_INK)
     fig.draw_without_rendering()  # lays the axes out, so that the names can be placed in them
-    marks = [(g["background_tokens_per_s"], g["v2v_p95_ms"]) for g in groups]
+    marks = [(g["background_tokens_per_s"], g["v2v_p95_ms"]) for g in [*groups, *crosses]]
     _name_ends(ax, ends, marks, taken)
     _save_svg(fig, path, bbox_inches="tight", pad_inches=0.1)
     plt.close(fig)
