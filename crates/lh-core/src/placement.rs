@@ -10,8 +10,8 @@
 //!   background KV, and a call to the node where its turns will find headroom: the fewest calls, then the fewest
 //!   armed for a turn now, then the most free KV.
 //!
-//! Ties go to the earlier node in the caller's order, and then to the node with the fewest requests in flight
-//! where a policy does not already order by them.
+//! Every policy breaks its ties by the fewest requests in flight, and then by the earlier node in the caller's
+//! order.
 
 use std::cmp::Reverse;
 

@@ -1,4 +1,5 @@
-//! The deterministic policy core shared by the simulator and the gateway.
+//! Pure models of the frozen box (cost, geometry, step), which lh-sim runs, and the gateway's admission and
+//! placement policies, whose throttle prices by the step model.
 //!
 //! Pure code: no I/O and no clock. Callers pass token counts and events, and get durations and decisions back.
 //! - [`admission`]: whether a request goes upstream now, waits or is refused: the E2 baselines the gateway

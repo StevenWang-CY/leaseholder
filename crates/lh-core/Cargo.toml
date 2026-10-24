@@ -1,6 +1,6 @@
 [package]
 name = "lh-core"
-description = "Leaseholder's deterministic policy core: admission, placement, the tier cost model and KV geometry"
+description = "Leaseholder's pure models of the frozen box (cost, geometry, step), which lh-sim runs, and the gateway's admission and placement policies"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
