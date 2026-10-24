@@ -1,0 +1,56 @@
+[09:41:37Z] deploy the working tree
+Linger=yes
+v0.1-2-gcdc84e0-dirty
+[09:41:40Z] CPU behavior and build tests (engine venv torch, VLLM_TARGET_DEVICE=cpu)
+........................s                                                [100%]
+24 passed, 1 skipped in 12.10s
+[09:41:55Z] engine: frozen
+active
+active active active 
+0
+additional_config: {}
+[09:45:10Z] probe prefill: frozen box
+prefill: priority-0 TTFT 290 ms, 16 tokens 1226 ms, for 744 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 302 ms, 16 tokens 1226 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[09:45:20Z] engine: make-room --additional-config.make_room.budget_cap_tokens 0
+active
+active active active 
+6
+additional_config: {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 2048, 'budget_cap_tokens': 0}}
+[09:48:13Z] probe prefill: make-room, first-tokens rule off
+prefill: priority-0 TTFT 324 ms, 16 tokens 1248 ms, for 747 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 339 ms, 16 tokens 1277 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[09:48:23Z] engine: make-room
+active
+active active active 
+6
+additional_config: {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 2048}}
+[09:51:30Z] probe prefill: make-room (arm 9)
+prefill: priority-0 TTFT 283 ms, 16 tokens 579 ms, for 750 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 528 ms, 16 tokens 824 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[09:51:39Z] engine: make-room --additional-config.make_room.reserve_tokens 0
+See "systemctl --user status lh-engine.service" and "journalctl --user -xeu lh-engine.service" for details.
+failed active active 
+6
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/usr/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+[09:51:48Z] probe kv: make-room, reserve off
+    raise client_error(req.connection_key, exc) from exc
+aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+    raise client_error(req.connection_key, exc) from exc
+aiohttp.client_exceptions.ClientConnectorError: Cannot connect to host 127.0.0.1:8000 ssl:default [Connect call failed ('127.0.0.1', 8000)]
+[09:51:49Z] pause Gray (restart: systemctl --user start leaseholder.target)
+failed inactive inactive 4 MiB
+[09:52:12Z] done

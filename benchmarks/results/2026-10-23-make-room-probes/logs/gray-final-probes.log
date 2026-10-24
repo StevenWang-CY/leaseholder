@@ -1,0 +1,27 @@
+[10:59:06Z] deploy main
+Linger=yes
+v0.1-7-ge19fba5
+[10:59:09Z] engine: make-room (restart: systemctl --user start leaseholder.target)
+active
+active 1
+prefill: priority-0 TTFT 282 ms, 16 tokens 578 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 354 ms, 16 tokens 651 ms, for 746 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[11:02:24Z] tail.py fresh (makeroom-tail-fresh)
+calls: 73 turns, TTFT p50 202 p90 291 p95 324 max 398 ms
+[11:07:23Z] tail.py grow (makeroom-tail-grow)
+calls: 73 turns, TTFT p50 202 p90 291 p95 336 max 678 ms
+[11:12:54Z] engine: make-room --additional-config.make_room.reserve_tokens 0 (restart: systemctl --user start leaseholder.target)
+active
+active 1
+kv: priority-0 TTFT 225 ms, 16 tokens 514 ms, for 746 prompt tokens, sent with 2 priority-2 requests of 17999 tokens running and 22 of 2274 blocks free; after it, 2 running and 1 waiting
+kv: priority-0 TTFT 297 ms, 16 tokens 586 ms, for 748 prompt tokens, sent with 2 priority-2 requests of 17999 tokens running and 22 of 2274 blocks free; after it, 2 running and 1 waiting
+[11:16:43Z] engine: frozen (restart: systemctl --user start leaseholder.target)
+active
+active 1
+[11:18:05Z] tail.py fresh (frozen-tail-fresh)
+calls: 47 turns, TTFT p50 3081 p90 6894 p95 9067 max 11094 ms
+[11:23:12Z] tail.py grow (frozen-tail-grow)
+calls: 50 turns, TTFT p50 1359 p90 6894 p95 7942 max 8692 ms
+[11:28:46Z] pause Gray
+inactive inactive inactive 4 MiB
+[11:29:15Z] done

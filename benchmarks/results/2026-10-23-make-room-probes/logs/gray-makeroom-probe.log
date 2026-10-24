@@ -1,0 +1,21 @@
+[05:15:52Z] deploy the make-room worktree
+Linger=yes
+51edfe0
+[05:15:55Z] start the frozen box
+active
+active
+active
+[05:18:43Z] probe: frozen box (stock scheduler)
+priority-0 TTFT 137 ms for 748 prompt tokens, with 2 of 2 priority-2 requests of 17999 tokens decoding and 1148 of 2274 blocks free; preemptions: 0
+[05:18:52Z] switch to make-room with the reserve off
+active
+active
+active
+active
+additional_config: {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 0}}
+[05:21:29Z] probe: make-room
+priority-0 TTFT 109 ms for 748 prompt tokens, with 2 of 2 priority-2 requests of 17999 tokens decoding and 1148 of 2274 blocks free; preemptions: 0
+[05:21:38Z] back to frozen and pause (restart: systemctl --user start leaseholder.target)
+inactive inactive inactive 4 MiB
+gray.conf
+[05:22:13Z] done

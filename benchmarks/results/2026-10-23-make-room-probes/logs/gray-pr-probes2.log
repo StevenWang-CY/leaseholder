@@ -1,0 +1,29 @@
+Linger=yes
+v0.1-13-gd307801
+3
+[13:49:18Z] engine: frozen (restart: systemctl --user start leaseholder.target)
+active
+active {} None
+prefill: priority-0 TTFT 390 ms, 16 tokens 1431 ms, for 752 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 596 ms, 16 tokens 1683 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 341 ms, 16 tokens 1367 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 381 ms, 16 tokens 1423 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+kv: priority-0 TTFT 5077 ms, 16 tokens 5367 ms, for 746 prompt tokens, sent with 2 priority-2 requests of 17999 tokens running and 22 of 2274 blocks free; after it, 2 running and 1 waiting
+kv: priority-0 TTFT 5069 ms, 16 tokens 5359 ms, for 747 prompt tokens, sent with 2 priority-2 requests of 17999 tokens running and 22 of 2274 blocks free; after it, 2 running and 1 waiting
+[13:53:26Z] engine: make-room --additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap false (restart: systemctl --user start leaseholder.target)
+active
+active {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': False, 'reserve_tokens': 0}} lh_make_room_scheduler.AsyncScheduler
+prefill: priority-0 TTFT 329 ms, 16 tokens 1386 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1008 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 589 ms, 16 tokens 1674 ms, for 751 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[13:55:57Z] tail.py fresh
+calls: 60 turns, TTFT p50 643 p90 1900 p95 2980 max 6298 ms
+[14:00:56Z] tail.py grow
+calls: 60 turns, TTFT p50 540 p90 1226 p95 2342 max 3325 ms
+[14:06:29Z] engine: make-room --additional-config.make_room.reserve_tokens 0 (restart: systemctl --user start leaseholder.target)
+active
+active {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 0}} lh_make_room_scheduler.AsyncScheduler
+prefill: priority-0 TTFT 263 ms, 16 tokens 564 ms, for 747 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 323 ms, 16 tokens 569 ms, for 750 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[14:09:02Z] pause Gray
+inactive inactive inactive 4 MiB
+[14:09:31Z] done

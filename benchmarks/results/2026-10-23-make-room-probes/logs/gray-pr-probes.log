@@ -1,0 +1,19 @@
+Linger=yes
+v0.1-11-g6967456
+[13:19:21Z] engine: make-room --additional-config.make_room.reserve_tokens 0 (restart: systemctl --user start leaseholder.target)
+active
+active {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 0}}
+prefill: priority-0 TTFT 317 ms, 16 tokens 618 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 328 ms, 16 tokens 576 ms, for 749 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[13:21:40Z] tail.py fresh
+calls: 73 turns, TTFT p50 257 p90 347 p95 357 max 370 ms
+[13:26:39Z] tail.py grow
+calls: 73 turns, TTFT p50 261 p90 403 p95 439 max 604 ms
+[13:32:12Z] engine: make-room --additional-config.make_room.reserve_tokens 0 --additional-config.make_room.budget_cap false (restart: systemctl --user start leaseholder.target)
+active
+active {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': False, 'reserve_tokens': 0}}
+prefill: priority-0 TTFT 419 ms, 16 tokens 1460 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 342 ms, 16 tokens 1370 ms, for 746 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+[13:35:37Z] pause Gray
+inactive inactive inactive 4 MiB
+[13:36:05Z] done

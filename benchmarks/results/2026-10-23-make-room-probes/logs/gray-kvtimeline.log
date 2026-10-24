@@ -1,0 +1,68 @@
+[05:22:29Z] start the frozen box
+active
+[05:25:42Z] timeline
+  0.1s usage 0.000 running 0 waiting 0 preemptions 0 tokens [0, 0]
+  0.6s usage 0.169 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  1.2s usage 0.281 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  1.7s usage 0.380 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  2.3s usage 0.450 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  2.8s usage 0.521 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  3.3s usage 0.591 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  3.9s usage 0.647 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  4.4s usage 0.704 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  5.0s usage 0.760 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  5.5s usage 0.816 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  6.1s usage 0.858 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  6.6s usage 0.901 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  7.1s usage 0.943 running 2 waiting 0 preemptions 0 tokens [0, 0]
+  7.7s usage 0.987 running 2 waiting 0 preemptions 0 tokens [1, 0]
+  8.3s usage 0.991 running 2 waiting 0 preemptions 0 tokens [19, 17]
+  8.8s usage 0.992 running 2 waiting 0 preemptions 0 tokens [40, 38]
+  9.3s usage 0.993 running 2 waiting 0 preemptions 0 tokens [62, 60]
+  9.9s usage 0.994 running 2 waiting 0 preemptions 0 tokens [83, 81]
+ 10.4s usage 0.996 running 2 waiting 0 preemptions 0 tokens [105, 103]
+ 11.0s usage 0.996 running 2 waiting 0 preemptions 0 tokens [127, 125]
+ 11.5s usage 0.998 running 2 waiting 0 preemptions 0 tokens [148, 146]
+ 12.1s usage 0.999 running 2 waiting 0 preemptions 0 tokens [170, 168]
+ 12.6s usage 1.000 running 2 waiting 0 preemptions 0 tokens [191, 189]
+ 13.1s usage 0.501 running 1 waiting 1 preemptions 0 tokens [218, 192]
+ 13.7s usage 0.502 running 1 waiting 1 preemptions 0 tokens [246, 192]
+ 14.2s usage 0.503 running 1 waiting 1 preemptions 0 tokens [275, 192]
+ 14.8s usage 0.503 running 1 waiting 1 preemptions 0 tokens [303, 192]
+ 15.3s usage 0.504 running 1 waiting 1 preemptions 0 tokens [332, 192]
+ 15.8s usage 0.505 running 1 waiting 1 preemptions 0 tokens [360, 192]
+ 16.4s usage 0.506 running 1 waiting 1 preemptions 0 tokens [388, 192]
+ 16.9s usage 0.506 running 1 waiting 1 preemptions 0 tokens [417, 192]
+ 17.5s usage 0.507 running 1 waiting 1 preemptions 0 tokens [445, 192]
+ 18.0s usage 0.508 running 1 waiting 1 preemptions 0 tokens [474, 192]
+ 18.5s usage 0.509 running 1 waiting 1 preemptions 0 tokens [502, 192]
+ 19.1s usage 0.509 running 1 waiting 1 preemptions 0 tokens [530, 192]
+ 19.6s usage 0.510 running 1 waiting 1 preemptions 0 tokens [557, 192]
+ 20.1s usage 0.511 running 1 waiting 1 preemptions 0 tokens [585, 192]
+ 20.7s usage 0.512 running 1 waiting 1 preemptions 0 tokens [613, 192]
+ 21.2s usage 0.512 running 1 waiting 1 preemptions 0 tokens [642, 192]
+ 21.8s usage 0.513 running 1 waiting 1 preemptions 0 tokens [670, 192]
+ 22.3s usage 0.514 running 1 waiting 1 preemptions 0 tokens [699, 192]
+ 22.9s usage 0.515 running 1 waiting 1 preemptions 0 tokens [727, 192]
+ 23.4s usage 0.516 running 1 waiting 1 preemptions 0 tokens [756, 192]
+ 24.0s usage 0.516 running 1 waiting 1 preemptions 0 tokens [784, 192]
+ 24.5s usage 0.517 running 1 waiting 1 preemptions 0 tokens [812, 192]
+[05:26:07Z] engine log during the timeline
+(EngineCore pid=1999557) INFO 10-23 05:25:39 [factory.py:62] Creating v1 connector with name: OffloadingConnector and engine_id: ed3a9bbf-a9f1-4adf-8859-050d77da6842
+(EngineCore pid=1999557) WARNING 10-23 05:25:39 [base.py:214] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.
+(EngineCore pid=1999557) INFO 10-23 05:25:39 [factory.py:57] Creating offloading spec with name: CPUOffloadingSpec
+(EngineCore pid=1999557) INFO 10-23 05:25:39 [kv_events.py:379] Starting ZMQ publisher thread
+(APIServer pid=1999234) WARNING 10-23 05:25:39 [__init__.py:44] SECURITY WARNING: Development endpoints are enabled! This should NOT be used in production!
+(APIServer pid=1999234) WARNING 10-23 05:25:40 [model.py:1893] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.7, 'top_k': 20, 'top_p': 0.8}`. If this is 
+(APIServer pid=1999234) INFO 10-23 05:25:40 [launcher.py:195] Route: /kv_event_sources, Methods: GET
+(APIServer pid=1999234) INFO 10-23 05:25:40 [launcher.py:195] Route: /release_kv_cache_memory, Methods: POST
+(APIServer pid=1999234) INFO 10-23 05:25:40 [launcher.py:195] Route: /abort_requests, Methods: POST
+(APIServer pid=1999234) INFO 10-23 05:25:40 [launcher.py:195] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=1999234) INFO 10-23 05:25:40 [launcher.py:195] Route: /inference/v1/abort_requests, Methods: POST
+(APIServer pid=1999234) INFO 10-23 05:25:51 [loggers.py:335] Engine 000: Avg prompt throughput: 3160.5 tokens/s, Avg generation throughput: 2.6 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 99.0%, Prefi
+(APIServer pid=1999234) INFO 10-23 05:25:51 [metrics.py:103] KV Transfer metrics: vllm:kv_offload_lookup_sync_delay_seconds_count=2, vllm:kv_offload_lookup_sync_delay_seconds_sum=0.00011969543993473053, vllm:kv_offload_c
+(APIServer pid=1999234) INFO 10-23 05:26:01 [loggers.py:335] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 64.6 tokens/s, Running: 1 reqs, Waiting: 1 reqs, KV fetch: 1 waiting to start, 0 in
+(APIServer pid=1999234) INFO 10-23 05:26:01 [metrics.py:103] KV Transfer metrics: vllm:kv_offload_cpu_cache_usage_perc=0.00010986596352450011, vllm:kv_offload_cpu_cache_write_usage_perc=0.00010986596352450011, vllm:kv_of
+[05:26:08Z] pause (restart: systemctl --user start leaseholder.target)
+inactive inactive inactive 4 MiB
+[05:26:41Z] done

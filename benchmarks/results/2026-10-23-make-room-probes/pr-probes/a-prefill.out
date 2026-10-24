@@ -1,0 +1,4 @@
+prefill: priority-0 TTFT 419 ms, 16 tokens 1460 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 342 ms, 16 tokens 1370 ms, for 746 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 329 ms, 16 tokens 1386 ms, for 748 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1008 of 2274 blocks free; after it, 4 running and 0 waiting
+prefill: priority-0 TTFT 589 ms, 16 tokens 1674 ms, for 751 prompt tokens, sent with 3 priority-2 requests of 10000 tokens running and 1026 of 2274 blocks free; after it, 4 running and 0 waiting

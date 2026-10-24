@@ -1,0 +1,15 @@
+[10:17:22Z] deploy main, then the instrumented build.py and the probe
+Linger=yes
+[10:17:25Z] start make-room afresh (restart: systemctl --user start leaseholder.target)
+active
+active active active 
+1
+[10:20:33Z] tailprobe: 12 agents and 2 calls for 240 s (engine clock 2026-10-23 10:20:33)
+10:24:30.468 call 2 ttft     87 ms
+10:24:33.268 call 1 ttft    507 ms
+calls: 70 turns, TTFT p50 424 p90 619 p95 3311 max 3544 ms
+[10:26:07Z] 122 LHDBG lines
+[10:26:07Z] redeploy main and pause Gray
+Linger=yes
+inactive inactive inactive 4 MiB
+[10:26:39Z] done

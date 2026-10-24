@@ -1,0 +1,24 @@
+[05:08:26Z] deploy the make-room worktree
+Linger=yes
+d12b5d2
+[05:08:31Z] CPU behavior tests (engine venv torch, VLLM_TARGET_DEVICE=cpu)
+...................s                                                     [100%]
+19 passed, 1 skipped in 27.01s
+[05:09:05Z] start the frozen box
+active
+active
+active
+[05:12:09Z] probe: frozen box (stock scheduler)
+priority-0 TTFT 117 ms for 747 prompt tokens, with 2 of 2 priority-2 requests of 17999 tokens decoding and 1148 of 2274 blocks free; preemptions: 0
+[05:12:19Z] switch to make-room with the reserve off
+active
+active
+active
+active
+additional_config: {'make_room': {'max_preemptions_per_step': 2, 'budget_cap': True, 'reserve_tokens': 0}}
+[05:15:20Z] probe: make-room
+priority-0 TTFT 107 ms for 745 prompt tokens, with 2 of 2 priority-2 requests of 17999 tokens decoding and 1148 of 2274 blocks free; preemptions: 0
+[05:15:29Z] back to frozen and pause (restart: systemctl --user start leaseholder.target)
+inactive activating activating 4 MiB
+gray.conf
+[05:16:02Z] done

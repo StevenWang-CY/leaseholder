@@ -1,0 +1,21 @@
+[10:29:22Z] deploy main and the probe
+Linger=yes
+[10:29:25Z] v2b-fresh: build build.py.debug, agents fresh (restart: systemctl --user start leaseholder.target)
+active
+active 1
+calls: 68 turns, TTFT p50 361 p90 1897 p95 3176 max 4120 ms
+[10:37:35Z] v2b-fresh: 202 LHDBG lines
+[10:37:35Z] v2c-fresh: build build.py.debug-v2c, agents fresh (restart: systemctl --user start leaseholder.target)
+variant: the box already runs make-room 
+active 2
+calls: 74 turns, TTFT p50 208 p90 290 p95 318 max 438 ms
+[10:44:38Z] v2c-fresh: 3 LHDBG lines
+[10:44:38Z] v2c-grow: build build.py.debug-v2c, agents grow (restart: systemctl --user start leaseholder.target)
+variant: the box already runs make-room 
+active 2
+calls: 73 turns, TTFT p50 202 p90 286 p95 305 max 462 ms
+[10:52:45Z] v2c-grow: 3 LHDBG lines
+[10:52:45Z] redeploy main and pause Gray
+Linger=yes
+inactive inactive inactive 4 MiB
+[10:53:16Z] done
