@@ -35,13 +35,16 @@ def test_build_adds_the_change_and_nothing_else(tmp_path: Path) -> None:
     added = "\n".join(line[2:] for line in diff if line.startswith("+ "))
     assert removed == ["from vllm.v1.core.sched.scheduler import Scheduler"]
     for line in (
+        'logger = init_logger("vllm.v1.core.sched.scheduler")',
         "make_room = (",
-        "make_room_victims = self._make_room(waiting_req, scheduled_timestamp)",
-        "first_tokens_priority = self._make_room_first_tokens_priority(waiting_req)",
+        "waiting_req = self._make_room_waiting_req()",
+        "make_room_victims = self._make_room(",
+        "first_tokens_priority = self._make_room_first_tokens_priority(",
         "if request in make_room_victims:",
-        "and request.priority > first_tokens_priority",
-        "and self._num_blocks_short(request) > 0",
-        "def _make_room(self, request: Request, timestamp: float) -> set[Request]:",
+        "self._make_room_count_hold(num_new_tokens, 0)",
+        "if request_queue is self.waiting and self._make_room_holds_back(",
+        "self._make_room_untried.discard(request)",
+        "def _make_room(",
         "victim, timestamp, drop_stale_output=self.requires_kv_delivery",
     ):
         assert line in added
