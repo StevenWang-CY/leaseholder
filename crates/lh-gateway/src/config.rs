@@ -426,7 +426,13 @@ impl RawConfig {
         let mut listeners = Vec::with_capacity(self.listen.len());
         for (i, raw) in self.listen.into_iter().enumerate() {
             let addr = match (raw.tcp, raw.unix) {
-                (Some(addr), None) => ListenAddr::Tcp(addr),
+                (Some(addr), None) if addr.ip().is_loopback() => ListenAddr::Tcp(addr),
+                (Some(addr), None) => {
+                    return Err(format!(
+                        "listen[{i}]: tcp {addr} is not a loopback address: the gateway has no TLS, so API keys \
+                         would cross the network in cleartext"
+                    ));
+                }
                 (None, Some(path)) if path.is_absolute() => ListenAddr::Unix(path),
                 (None, Some(path)) => {
                     return Err(format!(
@@ -1146,6 +1152,34 @@ mod tests {
         let err = with("").unwrap_err();
         assert!(err.starts_with("no cache_salt_secret_file"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tcp_listener_binds_loopback() {
+        // The review's probe P1: beyond loopback, bearer keys would cross the network in cleartext, and the
+        // keyless /metrics, /health and /ready would answer it.
+        let listen = |tcp: &str| {
+            Config::from_toml(&format!(
+                "upstream = \"http://127.0.0.1:18000\"\n{}\n[[listen]]\ntcp = \"{tcp}\"\n\
+                 [tenants.a]\nkeys_sha256 = [\"{KEY}\"]",
+                secret_file(&SECRET_FILE)
+            ))
+            .map_err(|e| e.to_string())
+        };
+        for tcp in ["0.0.0.0:18080", "[::]:18080", "192.0.2.7:18080"] {
+            let err = listen(tcp).unwrap_err();
+            assert!(
+                err.starts_with(&format!("listen[0]: tcp {tcp} is not a loopback address")),
+                "{err}"
+            );
+        }
+        for tcp in ["127.0.0.1:18080", "127.0.0.2:18080", "[::1]:18080"] {
+            let config = listen(tcp).unwrap();
+            assert_eq!(
+                config.listeners[0].addr,
+                ListenAddr::Tcp(tcp.parse().unwrap())
+            );
+        }
     }
 
     #[test]
